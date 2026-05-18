@@ -1,0 +1,15 @@
+{
+  "config": {
+    "flow_title": "Fermob {name}",
+    "step": {
+      "bluetooth_confirm": {
+        "description": "Configure the Fermob lamp **{name}** (`{address}`)?",
+        "title": "Fermob lamp detected"
+      }
+    },
+    "abort": {
+      "already_configured": "This lamp is already configured.",
+      "no_devices_found": "No Fermob lamp found nearby. Make sure the lamp is powered on and not connected to the Fermob app, then try again."
+    }
+  }
+}

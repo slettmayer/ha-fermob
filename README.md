@@ -1,2 +1,146 @@
-# ha-fermob
-Home Assistant integration for Fermob Bluetooth lamps (Hoopik GL1200)
+# Fermob — Home Assistant Integration
+
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+
+Control your **Fermob Bluetooth lamps** (Hoopik GL1200 and compatible) directly from Home Assistant, without a hub or cloud dependency.
+
+---
+
+## Features
+
+- **Local BLE control** — no internet, no Fermob cloud account required
+- **Auto-discovery** — HA detects nearby Fermob lamps automatically
+- **Brightness control** — full dimming support via the HA light slider
+- **Physical button sync** — HA state updates when the lamp's button is pressed, while the BLE connection is active
+- **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
+- **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources; state is re-synced on the next reconnect
+
+## Supported devices
+
+| Model | Tested |
+|---|---|
+| Hoopik GL1200 | ✅ |
+
+Other Fermob lamps using the Linkio BLE protocol (advertisement UUID `41C13060-6DEF-11E5-BCDE-0002A5D5C51B`) may work but have not been tested.
+
+## Requirements
+
+- Home Assistant 2024.1 or later
+- A Bluetooth adapter accessible to HA (built-in, USB dongle, or [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html))
+- The lamp must **not** be actively connected to the official Fermob app during setup
+
+## Installation
+
+### Via HACS (recommended)
+
+1. Open HACS → **Integrations** → ⋮ menu → **Custom repositories**
+2. Add `https://github.com/YOUR_GITHUB_USERNAME/ha-fermob` with category **Integration**
+3. Click **Download** on the Fermob integration
+4. Restart Home Assistant
+
+### Manual
+
+1. Copy the `fermob/` folder into your `config/custom_components/` directory
+2. Restart Home Assistant
+
+## Setup
+
+### Automatic discovery (recommended)
+
+1. Make sure your lamp is powered on and **not connected to the Fermob app**
+2. **Power-cycle the lamp** (switch off, wait 2 seconds, switch on) — this triggers a burst of BLE advertisements that HA picks up
+3. Within a few seconds, a notification should appear in **Settings → Devices & Services**: *"Fermob lamp detected"*
+4. Click **Configure** and confirm
+5. The first toggle will perform the initial BLE pairing (~4 s)
+6. Subsequent toggles use fast reconnect (~1 s)
+
+> **Nothing appearing?** Make sure your HA instance has a working Bluetooth adapter. You can check in **Settings → System → Hardware**. If your HA server has no Bluetooth, a [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) on an ESP32 nearby works perfectly.
+
+### Manual addition
+
+If the automatic notification does not appear:
+
+1. Power-cycle the lamp to make it advertise
+2. Wait ~15 seconds for HA to pick up the advertisement
+3. Go to **Settings → Devices & Services → Add Integration → Fermob**
+4. The lamp should appear in the list — select it and confirm
+
+> If you see *"No Fermob lamp found"*, the lamp has not been seen by the BLE scanner yet. Power-cycle it again and retry immediately.
+
+## Usage
+
+### Brightness
+
+The lamp appears as a dimmable light in HA. Use the brightness slider in the UI, or set it via automation:
+
+```yaml
+service: light.turn_on
+target:
+  entity_id: light.fermob_hoopik
+data:
+  brightness_pct: 75
+```
+
+### Physical button
+
+When the lamp's physical button is pressed **while the BLE connection is active**, HA detects the state change and updates the entity automatically.
+
+The BLE connection is active for 30 seconds after the last HA command. If the button is pressed after the connection has been released (idle timeout), HA will catch up on the next toggle: it reconnects, reads the real lamp state, and updates accordingly.
+
+### Unpair service
+
+To remove the lamp from HA and reset it for use with the Fermob app:
+
+1. Go to **Developer Tools → Services**
+2. Select `fermob.unpair`, target your lamp entity
+3. Call the service — the lamp will flash 3× and the integration will be removed
+
+Or via automation:
+
+```yaml
+service: fermob.unpair
+target:
+  entity_id: light.fermob_hoopik
+```
+
+## Factory reset
+
+If the lamp has stale keys from a previous client and won't pair:
+
+1. **Hold the lamp's physical reset button for 10 seconds** until it flashes — this clears all stored credentials
+2. Delete `.storage/fermob_*` in your HA config directory
+3. Restart HA
+4. Power-cycle the lamp and retry setup
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Lamp not discovered | Move HA closer, or use a [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) |
+| *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA |
+| Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
+| Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
+| Physical button not reflected in HA | Expected if the BLE connection was idle. The next HA command will re-sync the state automatically |
+| Integration not loading | Check logs for `custom_components.fermob` errors |
+
+## Debug logging
+
+```yaml
+# configuration.yaml
+logger:
+  default: warning
+  logs:
+    custom_components.fermob: debug
+```
+
+## Contributing
+
+Pull requests welcome. If you have a different Fermob model and want to add support, open an issue with the model name and the debug log output.
+
+## License
+
+MIT
+
+---
+
+*This integration is an independent community project, not affiliated with or endorsed by Fermob.*

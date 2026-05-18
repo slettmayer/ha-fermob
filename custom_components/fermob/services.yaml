@@ -1,0 +1,10 @@
+unpair:
+  name: Unpair lamp
+  description: >
+    Unpair the Fermob lamp from Home Assistant (equivalent to "Forget" in the
+    Fermob app). The lamp will flash 3× and reset its crypto state to NONE.
+    The integration will be removed automatically.
+  target:
+    entity:
+      domain: light
+      integration: fermob
