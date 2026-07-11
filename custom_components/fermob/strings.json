@@ -11,5 +11,16 @@
       "already_configured": "This lamp is already configured.",
       "no_devices_found": "No Fermob lamp found nearby. Make sure the lamp is powered on and not connected to the Fermob app, then try again."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fermob lamp type",
+        "description": "How this lamp is controlled. **Auto-detect** picks tunable white for every lamp except the Hoopik L1200 string light. Change this only if the lamp is detected as the wrong type.",
+        "data": {
+          "light_type": "Lamp type"
+        }
+      }
+    }
   }
 }
