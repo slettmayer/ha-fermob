@@ -65,10 +65,6 @@ from .protocol import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# JS device-class table (manufacturer_id 7): only Hoopik L1200 is DW.
-MODULE_TYPE_DW = 401
-MODULE_TYPE_TW = 404
-
 DEFAULT_BRIGHTNESS_PCT = 50
 DEFAULT_KELVIN         = 4000
 
@@ -528,21 +524,18 @@ class FermobBLEConnection:
 def _resolve_light_type(entry: ConfigEntry) -> str:
     """Decide DW vs TW for this lamp.
 
-    Priority:
+    The app's device-class table (manufacturer_id 7) keys this off module_type
+    (401 = DW, 404 = TW), but the Linkio advertisement is a rotating encrypted
+    payload, so the model is not readable before pairing. Hence a name heuristic
+    plus a manual override:
+
       1. Explicit override in entry.options / entry.data ("light_type").
-      2. module_type captured at discovery (401 = DW, 404 = TW).
-      3. Name heuristic: only the Hoopik string light is DW; everything else
-         (MOOON / table lamps) is tunable white.
+      2. Name heuristic: only the Hoopik string light is DW; everything else
+         (MOOON! / table lamps) is tunable white.
     """
     override = entry.options.get("light_type") or entry.data.get("light_type")
     if override in (LIGHT_TYPE_DW, LIGHT_TYPE_TW):
         return override
-
-    module_type = entry.data.get("module_type")
-    if module_type == MODULE_TYPE_DW:
-        return LIGHT_TYPE_DW
-    if module_type == MODULE_TYPE_TW:
-        return LIGHT_TYPE_TW
 
     name = (entry.data.get("name") or entry.data.get(CONF_ADDRESS) or "").lower()
     if "hoop" in name:
@@ -559,7 +552,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    address    = entry.data.get(CONF_ADDRESS, "ED:BC:18:EA:CA:99")
+    address    = entry.data[CONF_ADDRESS]
     light_type = _resolve_light_type(entry)
     store      = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
     conn       = FermobBLEConnection(hass, address, store, light_type=light_type)
@@ -599,13 +592,13 @@ class FermobLight(LightEntity):
             self._attr_color_mode            = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
-        addr               = entry.data.get(CONF_ADDRESS, "ED:BC:18:EA:CA:99")
+        addr               = entry.data[CONF_ADDRESS]
         self._attr_name    = entry.data.get("name", addr)
         self._attr_unique_id = f"fermob_{addr.replace(':', '_').lower()}"
 
     @property
     def device_info(self) -> DeviceInfo:
-        addr = self._entry.data.get(CONF_ADDRESS, "ED:BC:18:EA:CA:99")
+        addr = self._entry.data[CONF_ADDRESS]
         model = "MOOON (tunable white)" if self._light_type == LIGHT_TYPE_TW \
             else "Hoopik GL1200 (dimmable white)"
         return DeviceInfo(
@@ -636,7 +629,7 @@ class FermobLight(LightEntity):
                 self._attr_brightness = round(level / 100 * 255)
 
         _LOGGER.debug("Fermob %s: state is_on=%s ch1=%d ch2=%d",
-                      self._entry.data.get(CONF_ADDRESS), is_on, ch1, ch2)
+                      self._entry.data[CONF_ADDRESS], is_on, ch1, ch2)
         self.schedule_update_ha_state()
 
     # ------------------------------------------------------------------
@@ -657,7 +650,7 @@ class FermobLight(LightEntity):
                 await self._conn.send_led(on, brightness_pct, warm_ratio)
             except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
                 _LOGGER.error("Fermob %s %s error: %s",
-                              self._entry.data.get(CONF_ADDRESS), action,
+                              self._entry.data[CONF_ADDRESS], action,
                               exc, exc_info=True)
                 await self._conn.disconnect()
                 self._attr_available = False
@@ -709,7 +702,7 @@ class FermobLight(LightEntity):
                 await self._conn.unpair()
             except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
                 _LOGGER.error("Fermob %s unpair error: %s",
-                              self._entry.data.get(CONF_ADDRESS), exc, exc_info=True)
+                              self._entry.data[CONF_ADDRESS], exc, exc_info=True)
             finally:
                 await self._conn.disconnect()
                 await self._conn._store.async_remove()
