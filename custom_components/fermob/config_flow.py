@@ -1,11 +1,11 @@
 """Config flow for Fermob integration — BLE discovery + lamp-type options."""
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
@@ -54,7 +54,7 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> "FermobOptionsFlow":
+    def async_get_options_flow(config_entry: ConfigEntry) -> FermobOptionsFlow:
         """Return the options flow (lamp-type override)."""
         return FermobOptionsFlow(config_entry)
 
@@ -116,7 +116,9 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
         current_addresses = self._async_current_ids()
         seen: dict[str, BluetoothServiceInfoBleak] = {}
         for connectable in (True, False):
-            for info in async_discovered_service_info(self.hass, connectable=connectable):
+            for info in async_discovered_service_info(
+                self.hass, connectable=connectable
+            ):
                 if _is_fermob_device(info) and info.address not in current_addresses:
                     seen[info.address] = info
         self._discovered_devices = seen
@@ -138,12 +140,16 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
         # Multiple lamps → let the user pick
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({
-                vol.Required(CONF_ADDRESS): vol.In({
-                    addr: f"{info.name or addr} ({addr})"
-                    for addr, info in self._discovered_devices.items()
-                })
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ADDRESS): vol.In(
+                        {
+                            addr: f"{info.name or addr} ({addr})"
+                            for addr, info in self._discovered_devices.items()
+                        }
+                    )
+                }
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -181,11 +187,15 @@ class FermobOptionsFlow(OptionsFlow):
         current = self._entry.options.get(CONF_LIGHT_TYPE, LIGHT_TYPE_AUTO)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({
-                vol.Required(CONF_LIGHT_TYPE, default=current): vol.In({
-                    LIGHT_TYPE_AUTO: "Auto-detect (by name)",
-                    LIGHT_TYPE_TW: "Tunable white (MOOON / table lamps)",
-                    LIGHT_TYPE_DW: "Dimmable white (Hoopik L1200)",
-                })
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_LIGHT_TYPE, default=current): vol.In(
+                        {
+                            LIGHT_TYPE_AUTO: "Auto-detect (by name)",
+                            LIGHT_TYPE_TW: "Tunable white (MOOON / table lamps)",
+                            LIGHT_TYPE_DW: "Dimmable white (Hoopik L1200)",
+                        }
+                    )
+                }
+            ),
         )

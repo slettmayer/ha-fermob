@@ -30,6 +30,7 @@ total output:
 
 warm_ratio 1.0 = 3000 K (all warm), 0.0 = 6000 K (all cold).
 """
+
 from __future__ import annotations
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -38,35 +39,35 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 CHAR_UUID = "00005002-0000-1000-8000-00805f9b34fb"
 
 # Encryption modes (JS lms_header_encryption)
-ENCRYPT_NONE    = 0
-ENCRYPT_PUBLIC  = 1
+ENCRYPT_NONE = 0
+ENCRYPT_PUBLIC = 1
 ENCRYPT_PRIVATE = 2
 
 # Frame message types
-MSG_FIRE     = 0   # CMD_WITH_NO_ACK — lmp_short_frame (ft=2)
-MSG_CMD      = 1   # CMD_WITH_ACK    — local_short_frame (ft=0)
-MSG_MESH_CMD = 2   # CMD_WITH_ACK    — lmp_short_frame  (ft=2, SHORT addr)
-MSG_EVENT    = 4   # unsolicited notification from the lamp
+MSG_FIRE = 0  # CMD_WITH_NO_ACK — lmp_short_frame (ft=2)
+MSG_CMD = 1  # CMD_WITH_ACK    — local_short_frame (ft=0)
+MSG_MESH_CMD = 2  # CMD_WITH_ACK    — lmp_short_frame  (ft=2, SHORT addr)
+MSG_EVENT = 4  # unsolicited notification from the lamp
 
 # LMP command IDs (JS CODES)
-CMD_REGISTER             = 16
-CMD_UNREGISTER           = 17
+CMD_REGISTER = 16
+CMD_UNREGISTER = 17
 CMD_CRYPT_NONCE_GENERATE = 19
-CMD_CRYPT_NONCE_SET      = 21
-CMD_CRYPT_AUTHKEY_GEN    = 22
-CMD_CRYPT_AUTHKEY_GET    = 23
-CMD_CRYPT_AUTHKEY_SET    = 24
-CMD_CRYPT_SET            = 25
-CMD_MODULE_INFO_GET      = 48
-CMD_DEVICE_INFO_GET      = 50
-CMD_DEVICE_DATA_SET      = 65
-CMD_DEVICE_DATA_GET      = 66
+CMD_CRYPT_NONCE_SET = 21
+CMD_CRYPT_AUTHKEY_GEN = 22
+CMD_CRYPT_AUTHKEY_GET = 23
+CMD_CRYPT_AUTHKEY_SET = 24
+CMD_CRYPT_SET = 25
+CMD_MODULE_INFO_GET = 48
+CMD_DEVICE_INFO_GET = 50
+CMD_DEVICE_DATA_SET = 65
+CMD_DEVICE_DATA_GET = 66
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
 LMP_EVENT_DEVICE_DATA = 146
 
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
-LMP_PARAM_API_VERSION   = 184  # 0xb8
+LMP_PARAM_API_VERSION = 184  # 0xb8
 
 # JS lmp_led_mode.LEDS_MODE_COLOR — used for BOTH DW and TW commands
 LED_MODE_COLOR = 1
@@ -74,8 +75,8 @@ LED_MODE_COLOR = 1
 FADE = 50
 
 # Lamp families
-LIGHT_TYPE_DW = "dw"   # dimmable white  (Hoopik, module_type 401)
-LIGHT_TYPE_TW = "tw"   # tunable  white  (MOOON,  module_type 404)
+LIGHT_TYPE_DW = "dw"  # dimmable white  (Hoopik, module_type 401)
+LIGHT_TYPE_TW = "tw"  # tunable  white  (MOOON,  module_type 404)
 
 # Tunable-white colour-temperature envelope (Fermob spec: 3000 K .. 6000 K)
 MIN_KELVIN = 3000
@@ -85,6 +86,7 @@ MAX_KELVIN = 6000
 # ---------------------------------------------------------------------------
 # Crypto / frame helpers
 # ---------------------------------------------------------------------------
+
 
 def crypt(data16: bytes, mode: int, pub: bytes, priv: bytes, nonce: bytes) -> bytes:
     """XOR `data16` with the AES-ECB keystream derived from the nonce.
@@ -97,7 +99,9 @@ def crypt(data16: bytes, mode: int, pub: bytes, priv: bytes, nonce: bytes) -> by
     key = pub if mode == ENCRYPT_PUBLIC else priv
     encryptor = Cipher(algorithms.AES(bytes(key)), modes.ECB()).encryptor()
     keystream = encryptor.update(bytes(nonce)) + encryptor.finalize()
-    return bytes(a ^ b for a, b in zip(keystream, data16))
+    # strict: a short body would otherwise be silently truncated, producing a
+    # mis-parsed payload instead of a visible failure.
+    return bytes(a ^ b for a, b in zip(keystream, data16, strict=True))
 
 
 def crc(data: bytes) -> int:
@@ -118,32 +122,42 @@ def pad15(payload: list[int]) -> list[int]:
     return p[:15]
 
 
-def build_short(msg_type: int, enc: int, payload: list[int],
-                cmd_id: int, pub: bytes, priv: bytes, nonce: bytes,
-                b2: int = 0, b3: int = 0) -> bytes:
+def build_short(
+    msg_type: int,
+    enc: int,
+    payload: list[int],
+    cmd_id: int,
+    pub: bytes,
+    priv: bytes,
+    nonce: bytes,
+    b2: int = 0,
+    b3: int = 0,
+) -> bytes:
     """Build a single 20-byte frame."""
     ft = 2 if msg_type in (MSG_FIRE, MSG_MESH_CMD) else 0
     hdr = ((msg_type & 7) << 5) | ((enc & 3) << 3) | ft
     p = pad15(payload)
-    enc_data = crypt(bytes([crc(bytes(p))] + p), enc, pub, priv, nonce)
+    enc_data = crypt(bytes([crc(bytes(p)), *p]), enc, pub, priv, nonce)
     return bytes([hdr, cmd_id, b2, b3]) + enc_data
 
 
-def build_long(enc: int, payload: list[int],
-               cmd_id: int, pub: bytes, priv: bytes, nonce: bytes) -> list[bytes]:
+def build_long(
+    enc: int, payload: list[int], cmd_id: int, pub: bytes, priv: bytes, nonce: bytes
+) -> list[bytes]:
     """Build a multi-fragment frame sequence for payloads longer than 15 bytes."""
-    chunks = [pad15(payload[i:i + 15]) for i in range(0, len(payload), 15)]
+    chunks = [pad15(payload[i : i + 15]) for i in range(0, len(payload), 15)]
     frames = []
     for idx, chunk in enumerate(chunks):
         ft = 3 if idx == 0 else 6
         h0 = ((MSG_CMD & 7) << 5) | ((enc & 3) << 3) | ft
-        enc_data = crypt(bytes([crc(bytes(chunk))] + chunk), enc, pub, priv, nonce)
+        enc_data = crypt(bytes([crc(bytes(chunk)), *chunk]), enc, pub, priv, nonce)
         frames.append(bytes([h0, cmd_id, idx, len(chunks)]) + enc_data)
     return frames
 
 
-def decode_fragment(frame: bytes, enc: int,
-                    pub: bytes, priv: bytes, nonce: bytes) -> bytes:
+def decode_fragment(
+    frame: bytes, enc: int, pub: bytes, priv: bytes, nonce: bytes
+) -> bytes:
     """Decrypt one received frame and strip the CRC byte."""
     plain = crypt(bytes(frame[4:20]), enc, pub, priv, nonce)
     return plain[1:16]
@@ -195,24 +209,33 @@ def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
 # Light payloads
 # ---------------------------------------------------------------------------
 
-def build_led_payload(light_type: str, on: bool, level: int,
-                      warm_ratio: float = 0.5) -> list[int]:
+
+def build_led_payload(
+    light_type: str, on: bool, level: int, warm_ratio: float = 0.5
+) -> list[int]:
     """Build the DEVICE_DATA_SET body for one lamp family.
 
     `level` is a brightness percentage (0..100). For tunable white it is split
     across the warm and cold channels so that warm + cold == level.
     """
-    level   = max(0, min(100, int(level)))
+    level = max(0, min(100, int(level)))
     on_byte = (0x01 if on else 0x00) | (LED_MODE_COLOR << 4)
 
     if light_type == LIGHT_TYPE_TW:
         warm = max(0, min(100, round(level * warm_ratio)))
         cold = max(0, min(100, level - warm))
-        return [7, CMD_DEVICE_DATA_SET, 0x00, on_byte,
-                cold, warm, FADE & 0xFF, FADE >> 8]
+        return [
+            7,
+            CMD_DEVICE_DATA_SET,
+            0x00,
+            on_byte,
+            cold,
+            warm,
+            FADE & 0xFF,
+            FADE >> 8,
+        ]
 
-    return [6, CMD_DEVICE_DATA_SET, 0x00, on_byte,
-            level, FADE & 0xFF, FADE >> 8]
+    return [6, CMD_DEVICE_DATA_SET, 0x00, on_byte, level, FADE & 0xFF, FADE >> 8]
 
 
 def kelvin_to_warm_ratio(kelvin: int) -> float:
