@@ -11,7 +11,7 @@ Runs on push to `main`, every PR, weekly (Mondays 04:00 UTC), and on demand.
 | `Ruff (lint + format)` | `ruff check .` then `ruff format . --check` |
 | `Pytest` | `pip install -r requirements_test.txt && python -m pytest tests/ -v` |
 | `Hassfest` | `home-assistant/actions/hassfest@master` — validates `manifest.json` |
-| `HACS Validation` | `hacs/action@main`, `category: integration`, `ignore: brands` |
+| `HACS Validation` | `hacs/action@main`, `category: integration`, **no ignored checks** |
 | `gate` | Aggregates the four; `if: always()` and fails unless all four succeeded |
 
 **`gate` exists because the branch ruleset needs a single required check.** Adding a job means adding it to
@@ -20,12 +20,27 @@ Runs on push to `main`, every PR, weekly (Mondays 04:00 UTC), and on demand.
 The weekly schedule is deliberate: `hacs/action@main` and `hassfest@master` are floating refs, so a new HACS or
 HA release can break validation without any commit of ours.
 
-### Why `brands` is ignored
+### HACS default store
 
-The HACS `brands` check requires the `fermob` domain to be registered in
-[home-assistant/brands](https://github.com/home-assistant/brands), which is a prerequisite for inclusion in the
-**HACS default store**. This is a custom repository and is not seeking that, so the check does not apply. Every
-other HACS check still runs.
+The action runs with **every check enabled** — do not reintroduce an `ignore:` key. Default-store submission
+requires a run with no ignored checks, and a link to that run is part of the submission PR.
+
+The `brands` check used to be ignored, because it demanded the `fermob` domain be registered in
+[home-assistant/brands](https://github.com/home-assistant/brands). It now passes on its own: the check looks
+for `custom_components/fermob/brand/icon.png` first and only falls back to the brands CDN if that file is
+missing. See [BRANDING.md](BRANDING.md).
+
+Standing requirements for the default store, all currently satisfied — breaking any of them un-lists the
+repository:
+
+| Requirement | Where it lives |
+|---|---|
+| Public, unarchived, issues enabled, description set, topics defined | GitHub repository settings |
+| At least one published **release** (a tag alone is not enough) | `release.yml` handles this |
+| `hacs.json` present with at least a `name` | repository root |
+| Valid `manifest.json` | `custom_components/fermob/` |
+| HACS action passing with no ignores, plus hassfest | `validate.yml` |
+| A brand `icon.png` | `custom_components/fermob/brand/` |
 
 ### An unexplained flake
 
