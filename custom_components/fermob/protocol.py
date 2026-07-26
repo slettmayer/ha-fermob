@@ -248,3 +248,65 @@ def warm_ratio_to_kelvin(warm_ratio: float) -> int:
     """Inverse of `kelvin_to_warm_ratio`."""
     warm_ratio = max(0.0, min(1.0, warm_ratio))
     return round(MAX_KELVIN - warm_ratio * (MAX_KELVIN - MIN_KELVIN))
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (scratch branch only — see docs/domain/BATTERY-PROBE.md)
+#
+# Pure helpers backing the battery probe in light.py. Nothing here is used by
+# the light path; delete this section along with the probe if the answer turns
+# out to be "the lamp does not tell us".
+# ---------------------------------------------------------------------------
+
+# MODULE_INFO_GET TLV types `parse_module_info` already consumes. Anything else
+# in that list is a candidate carrier for a charge level.
+KNOWN_MODULE_INFO_PARAMS = frozenset({LMP_PARAM_SHORT_ADDRESS, LMP_PARAM_API_VERSION})
+
+# Standard BLE characteristics worth reading once, if the lamp exposes them.
+# 0x2A19 is the SIG Battery Level (uint8 percent) — the happy path.
+BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+DEVICE_INFO_UUIDS = {
+    "00002a24-0000-1000-8000-00805f9b34fb": "model_number",
+    "00002a25-0000-1000-8000-00805f9b34fb": "serial_number",
+    "00002a26-0000-1000-8000-00805f9b34fb": "firmware_revision",
+    "00002a27-0000-1000-8000-00805f9b34fb": "hardware_revision",
+    "00002a29-0000-1000-8000-00805f9b34fb": "manufacturer_name",
+}
+
+
+def iter_tlv(payload: bytes) -> list[tuple[int, bytes]]:
+    """Walk a `[length, type, *value]` TLV list and return every entry.
+
+    `length` counts the type byte plus the value bytes, so the value is
+    `payload[i + 2 : i + 1 + length]`. A zero length or a truncated tail ends
+    the walk, matching `parse_module_info`.
+
+    That function keeps its own copy of this walk on purpose: it is the shipping
+    path, its exact indexing is pinned by tests, and a diagnostic helper has no
+    business perturbing it. Fold the two together only if the probe graduates.
+    """
+    out: list[tuple[int, bytes]] = []
+    i = 0
+    while i < len(payload):
+        t_len = payload[i]
+        if t_len == 0:
+            break
+        if i + 1 >= len(payload):
+            break
+        out.append((payload[i + 1], bytes(payload[i + 2 : i + 1 + t_len])))
+        i += t_len + 1
+    return out
+
+
+def unknown_module_info_tlvs(payload: bytes) -> list[tuple[int, bytes]]:
+    """Return the MODULE_INFO_GET TLV entries we currently throw away."""
+    return [(t, v) for t, v in iter_tlv(payload) if t not in KNOWN_MODULE_INFO_PARAMS]
+
+
+def byte_table(payload: bytes) -> str:
+    """Render a payload as `index=decimal` pairs.
+
+    Two of these logged at different charge levels can be diffed by eye: a
+    state-of-charge byte is the one that drops while everything else holds.
+    """
+    return " ".join(f"{i:02d}={b:03d}" for i, b in enumerate(payload))

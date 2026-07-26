@@ -31,6 +31,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
 
 from .protocol import (
+    BATTERY_LEVEL_UUID,
     CHAR_UUID,
     CMD_CRYPT_AUTHKEY_GEN,
     CMD_CRYPT_AUTHKEY_GET,
@@ -41,6 +42,7 @@ from .protocol import (
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
+    DEVICE_INFO_UUIDS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
@@ -56,14 +58,27 @@ from .protocol import (
     build_led_payload,
     build_long,
     build_short,
+    byte_table,
     decode_fragment,
     kelvin_to_warm_ratio,
     parse_device_state,
     parse_module_info,
+    unknown_module_info_tlvs,
     warm_ratio_to_kelvin,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Battery probe (scratch branch only — see docs/domain/BATTERY-PROBE.md).
+# Its own logger, and it logs at WARNING so a debug session needs no logger
+# configuration: everything it finds lands in the default HA log.
+_DIAG = logging.getLogger(f"{__name__}.battery_probe")
+
+# Master switch for the probe, and a separate one for the two LMP info
+# commands — those are the only part that can cost time (a 3 s ACK timeout
+# each, if the lamp declines to answer them in gateway mode).
+_PROBE_ENABLED = True
+_PROBE_LMP_COMMANDS = True
 
 DEFAULT_BRIGHTNESS_PCT = 50
 DEFAULT_KELVIN = 4000
@@ -171,6 +186,17 @@ class FermobBLEConnection:
             )
             return
         if len(pl) < 10 or pl[1] != LMP_EVENT_DEVICE_DATA:
+            # PROBE: normally a silent drop. Any event type other than
+            # DEVICE_DATA (146) is unexplored territory and a candidate carrier
+            # for a charge level.
+            _DIAG.warning(
+                "Fermob %s: PROBE other EVENT type=%s len=%d hex=%s | %s",
+                self._address,
+                pl[1] if len(pl) > 1 else "?",
+                len(pl),
+                pl.hex(),
+                byte_table(pl),
+            )
             return
         state = parse_device_state(pl)
         if state is None:
@@ -397,7 +423,17 @@ class FermobBLEConnection:
             self._addr_b2, self._addr_b3, _ = parse_module_info(pl)
 
         # Step 8: optional device info
-        await self._send(ENCRYPT_PRIVATE, [1, CMD_DEVICE_INFO_GET])
+        # PROBE: the shipping code discards this response. Here it is the one
+        # DEVICE_INFO_GET we know the lamp answers — the lamp is not in gateway
+        # mode yet — so log it before it goes in the bin.
+        info_pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_DEVICE_INFO_GET])
+        if info_pl:
+            _DIAG.warning(
+                "Fermob %s: PROBE DEVICE_INFO_GET (pairing) hex=%s | %s",
+                self._address,
+                info_pl.hex(),
+                byte_table(info_pl),
+            )
 
         # Persist keys before REGISTER_END so they survive a missing EVENT
         await self._save_keys()
@@ -505,7 +541,113 @@ class FermobBLEConnection:
         self._ready = True
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
+        await self._probe_battery_sources()
         self._schedule_idle_disconnect()
+
+    # ------------------------------------------------------------------
+    # Battery probe (scratch branch only — see docs/domain/BATTERY-PROBE.md)
+    #
+    # Answers one question: does the lamp hand us a state of charge anywhere?
+    # Runs on every connect so the same lines can be compared across a
+    # discharge cycle. Delete this block, the protocol.py diagnostics section
+    # and the PROBE log lines to get back to a shippable tree.
+    # ------------------------------------------------------------------
+
+    async def _probe_battery_sources(self) -> None:
+        """Log every place a charge level could be hiding. Never raises."""
+        if not _PROBE_ENABLED:
+            return
+        try:
+            await self._probe_gatt_services()
+            if _PROBE_LMP_COMMANDS:
+                await self._probe_lmp_info()
+        except Exception:  # a diagnostic must never break the light path
+            _DIAG.warning("Fermob %s: PROBE failed", self._address, exc_info=True)
+
+    async def _probe_gatt_services(self) -> None:
+        """Dump the GATT table, then read the standard battery/info chars.
+
+        The shipping code never enumerates services — it writes straight to the
+        Linkio characteristic — so a plain SIG Battery Service (0x180F) on this
+        lamp would have gone unnoticed. That is the cheapest possible win here.
+        """
+        client = self._client
+        if client is None:
+            return
+
+        for service in client.services:
+            for char in service.characteristics:
+                _DIAG.warning(
+                    "Fermob %s: PROBE gatt svc=%s char=%s props=%s desc=%s",
+                    self._address,
+                    service.uuid,
+                    char.uuid,
+                    ",".join(char.properties),
+                    char.description,
+                )
+
+        for uuid, label in (
+            (BATTERY_LEVEL_UUID, "battery_level"),
+            *DEVICE_INFO_UUIDS.items(),
+        ):
+            char = client.services.get_characteristic(uuid)
+            if char is None or "read" not in char.properties:
+                continue
+            try:
+                value = bytes(await client.read_gatt_char(uuid))
+            except Exception:
+                _DIAG.warning(
+                    "Fermob %s: PROBE read %s failed",
+                    self._address,
+                    label,
+                    exc_info=True,
+                )
+                continue
+            _DIAG.warning(
+                "Fermob %s: PROBE %s raw=%s int=%s text=%r",
+                self._address,
+                label,
+                value.hex(),
+                value[0] if value else None,
+                value.decode("utf-8", "replace"),
+            )
+
+    async def _probe_lmp_info(self) -> None:
+        """Re-ask MODULE_INFO_GET / DEVICE_INFO_GET on an established link.
+
+        Both responses are currently thrown away — MODULE_INFO_GET keeps only
+        two TLV types, DEVICE_INFO_GET keeps nothing.
+
+        Whether the lamp still answers these in gateway mode is itself unknown:
+        DEVICE_DATA_GET is not. If it does not, each call costs a 3 s ACK
+        timeout and logs one — which is the answer, recorded. Set
+        `_PROBE_LMP_COMMANDS = False` to stop paying for it.
+        """
+        pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_MODULE_INFO_GET])
+        if pl:
+            _DIAG.warning(
+                "Fermob %s: PROBE MODULE_INFO_GET hex=%s | %s",
+                self._address,
+                pl.hex(),
+                byte_table(pl),
+            )
+            for t_type, value in unknown_module_info_tlvs(pl):
+                _DIAG.warning(
+                    "Fermob %s: PROBE unparsed TLV type=%d (0x%02x) value=%s",
+                    self._address,
+                    t_type,
+                    t_type,
+                    value.hex(),
+                )
+
+        pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_DEVICE_INFO_GET])
+        if pl:
+            _DIAG.warning(
+                "Fermob %s: PROBE DEVICE_INFO_GET hex=%s | %s",
+                self._address,
+                pl.hex(),
+                byte_table(pl),
+            )
 
     # ------------------------------------------------------------------
     # Lamp commands
