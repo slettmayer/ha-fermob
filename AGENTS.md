@@ -25,6 +25,7 @@
 | Write or run tests | [TESTING.md](docs/tech/TESTING.md) |
 | Understand CI / ruleset / release | [INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md) |
 | Know how this fork relates to upstream | [UPSTREAM.md](docs/tech/UPSTREAM.md) |
+| Change the icon, or understand the licence stance | [BRANDING.md](docs/tech/BRANDING.md) |
 | Understand the lamps and what we control | [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md) |
 | Work on frames, crypto or payloads | [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md) |
 | Debug pairing, ownership or resets | [PAIRING.md](docs/domain/PAIRING.md) |
@@ -76,7 +77,9 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them
   from `protocol.py`, so the two must be kept in sync by hand. See
   [CONVENTIONS.md](docs/tech/CONVENTIONS.md#protocol-code).
-- `hacs/action@main` and `home-assistant/actions/hassfest@master` are floating CI refs; the HACS `brands` check is ignored by configuration.
+- `hacs/action@main` and `home-assistant/actions/hassfest@master` are floating CI refs. The HACS action runs with
+  **no ignored checks** — reintroducing an `ignore:` key would disqualify the repository from the HACS default
+  store. See [BRANDING.md](docs/tech/BRANDING.md).
 - Only the MOOON! Moon2AD2 has been confirmed by anyone; other MOOON! sizes are inferred from the same `module_type`.
 
 ## Development Workflow

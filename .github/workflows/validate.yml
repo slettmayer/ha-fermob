@@ -47,11 +47,10 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # `brands` requires the domain to be registered in
-          # home-assistant/brands, which gates HACS *default store* inclusion.
-          # This is a custom repository and is not seeking that, so the check
-          # does not apply. Every other HACS check still runs.
-          ignore: brands
+          # No `ignore:` here on purpose -- HACS default-store submission
+          # requires the action to pass with every check enabled. `brands` is
+          # satisfied by custom_components/fermob/brand/icon.png; see
+          # docs/tech/BRANDING.md.
 
   gate:
     name: gate
