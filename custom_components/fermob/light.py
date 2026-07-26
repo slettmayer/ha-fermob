@@ -314,7 +314,7 @@ class FermobBLEConnection:
     # Initial pairing handshake (first-time only, mirrors JS startPairing)
     # ------------------------------------------------------------------
 
-    async def _pairing_handshake(self) -> tuple[bool, int, int] | None:
+    async def _pairing_handshake(self) -> None:
         """Full pairing sequence — run ONCE, when we have no stored keys.
 
         JS flow (startPairing → setPublicKey → getNonce → setPublicEncryptionMode
@@ -370,8 +370,14 @@ class FermobBLEConnection:
         # Step 9: REGISTER_END → lamp enters GATEWAY mode
         await self._send(ENCRYPT_PRIVATE, [2, CMD_REGISTER, 1])
 
-        # Step 10: capture the state EVENT the lamp emits on entering GATEWAY mode
-        return await self._wait_for_event(timeout=0.5)
+        # Step 10: wait for the state EVENT the lamp emits on entering GATEWAY
+        # mode. This is a confirmation + timing gate (it mirrors the app's 100 ms
+        # settle after setMeshConnection); the state it carries is the lamp's
+        # *pre-command* state and is about to be overwritten by the command that
+        # triggered this connection, so it is only logged.
+        state = await self._wait_for_event(timeout=0.5)
+        if state is None:
+            _LOGGER.debug("Fermob %s: no EVENT after REGISTER_END", self._address)
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -419,17 +425,17 @@ class FermobBLEConnection:
 
         self._idle_task = asyncio.ensure_future(_idle())
 
-    async def ensure_connected(self) -> tuple[bool, int, int] | None:
+    async def ensure_connected(self) -> None:
         """Ensure an authenticated BLE connection is up.
 
-        Returns the real lamp state from the post-REGISTER_END EVENT on first
-        pairing, otherwise None (the lamp emits no EVENT after a plain reconnect).
+        Runs the full pairing handshake on first use and a plain BLE reconnect
+        afterwards; the lamp keeps its GATEWAY+PRIVATE state across disconnects.
         """
         have_keys = await self._load_keys()
 
         if self._connected and self._client and self._client.is_connected:
             self._schedule_idle_disconnect()
-            return None
+            return
 
         device = async_ble_device_from_address(
             self.hass, self._address, connectable=True
@@ -446,11 +452,9 @@ class FermobBLEConnection:
 
         await self._client.start_notify(CHAR_UUID, self._notif_handler)
 
-        lamp_state: tuple[bool, int, int] | None = None
-
         if not have_keys:
             # First pairing: full handshake (sets _have_keys and saves keys)
-            lamp_state = await self._pairing_handshake()
+            await self._pairing_handshake()
         else:
             # Reconnect: the lamp retains GATEWAY+PRIVATE state across BLE
             # disconnects, so no crypto handshake is needed. It also emits no
@@ -463,7 +467,6 @@ class FermobBLEConnection:
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
         self._schedule_idle_disconnect()
-        return lamp_state
 
     # ------------------------------------------------------------------
     # Lamp commands
@@ -572,6 +575,11 @@ async def async_setup_entry(
 class FermobLight(LightEntity):
     """Representation of a Fermob BLE lamp (dimmable-white or tunable-white)."""
 
+    # State is pushed: by our own commands, and by EVENT notifications while the
+    # BLE link is up. There is nothing to poll -- the lamp does not answer
+    # DEVICE_DATA_GET in GATEWAY mode (see FermobBLEConnection.get_state).
+    _attr_should_poll = False
+
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry,
                  conn: FermobBLEConnection, light_type: str) -> None:
         self.hass          = hass
@@ -614,6 +622,7 @@ class FermobLight(LightEntity):
     def on_lamp_state_change(self, is_on: bool, ch1: int, ch2: int) -> None:
         """ch1/ch2 = (level, 0) for DW, (cold_white, warm_white) for TW."""
         self._attr_is_on = is_on
+        self._attr_available = True  # we just heard from the lamp
         if self._light_type == LIGHT_TYPE_TW:
             cold, warm = ch1, ch2
             total = cold + warm
@@ -634,6 +643,30 @@ class FermobLight(LightEntity):
     # Commands
     # ------------------------------------------------------------------
 
+    async def _async_send_led(self, action: str, on: bool,
+                              brightness_pct: int, warm_ratio: float) -> bool:
+        """Connect if needed and send one LED command.
+
+        Returns True on success. On failure the BLE link is dropped and the
+        entity is marked unavailable, so the UI stops implying the last known
+        state is still true (the lamp is typically off, asleep or out of range).
+        """
+        async with self._conn.lock:
+            try:
+                await self._conn.ensure_connected()
+                await self._conn.send_led(on, brightness_pct, warm_ratio)
+            except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
+                _LOGGER.error("Fermob %s %s error: %s",
+                              self._entry.data.get(CONF_ADDRESS), action,
+                              exc, exc_info=True)
+                await self._conn.disconnect()
+                self._attr_available = False
+                self.async_write_ha_state()
+                return False
+
+        self._attr_available = True
+        return True
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         brightness_ha  = kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 128)
         brightness_pct = max(1, round(brightness_ha / 255 * 100))
@@ -645,20 +678,13 @@ class FermobLight(LightEntity):
                          min(MAX_KELVIN, kwargs.get(ATTR_COLOR_TEMP_KELVIN, kelvin)))
             warm_ratio = kelvin_to_warm_ratio(kelvin)
 
-        async with self._conn.lock:
-            try:
-                await self._conn.ensure_connected()
-                await self._conn.send_led(True, brightness_pct, warm_ratio)
-                self._attr_is_on      = True
-                self._attr_brightness = brightness_ha
-                if self._light_type == LIGHT_TYPE_TW:
-                    self._attr_color_temp_kelvin = kelvin
-            except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
-                _LOGGER.error("Fermob %s turn_on error: %s",
-                              self._entry.data.get(CONF_ADDRESS), exc, exc_info=True)
-                await self._conn.disconnect()
-                return
+        if not await self._async_send_led("turn_on", True, brightness_pct, warm_ratio):
+            return
 
+        self._attr_is_on      = True
+        self._attr_brightness = brightness_ha
+        if self._light_type == LIGHT_TYPE_TW:
+            self._attr_color_temp_kelvin = kelvin
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
@@ -669,17 +695,10 @@ class FermobLight(LightEntity):
             warm_ratio = kelvin_to_warm_ratio(
                 self._attr_color_temp_kelvin or DEFAULT_KELVIN)
 
-        async with self._conn.lock:
-            try:
-                await self._conn.ensure_connected()
-                await self._conn.send_led(False, 0, warm_ratio)
-                self._attr_is_on = False
-            except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
-                _LOGGER.error("Fermob %s turn_off error: %s",
-                              self._entry.data.get(CONF_ADDRESS), exc, exc_info=True)
-                await self._conn.disconnect()
-                return
+        if not await self._async_send_led("turn_off", False, 0, warm_ratio):
+            return
 
+        self._attr_is_on = False
         self.async_write_ha_state()
 
     async def async_unpair(self) -> None:
