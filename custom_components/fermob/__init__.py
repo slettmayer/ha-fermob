@@ -1,4 +1,5 @@
 """Fermob BLE light integration."""
+
 from __future__ import annotations
 
 import logging
@@ -9,8 +10,8 @@ from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-DOMAIN     = "fermob"
-PLATFORMS  = [Platform.LIGHT]
+DOMAIN = "fermob"
+PLATFORMS = [Platform.LIGHT]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

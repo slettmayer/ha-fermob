@@ -8,6 +8,7 @@ here can run. The one exception is `test_dw_payload_matches_upstream_literal`,
 which re-expresses the original Hoopik payload independently of the
 implementation and so does substantiate the "dimmable white is unchanged" claim.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -19,7 +20,9 @@ import pytest
 # Load protocol.py directly rather than as custom_components.fermob.protocol:
 # the package __init__ imports Home Assistant, and the point of this module is
 # that it needs none of it. Keeps CI to `pip install pytest cryptography`.
-_PATH = Path(__file__).resolve().parents[1] / "custom_components" / "fermob" / "protocol.py"
+_PATH = (
+    Path(__file__).resolve().parents[1] / "custom_components" / "fermob" / "protocol.py"
+)
 _SPEC = importlib.util.spec_from_file_location("fermob_protocol", _PATH)
 protocol = importlib.util.module_from_spec(_SPEC)
 sys.modules["fermob_protocol"] = protocol
@@ -52,14 +55,15 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     warm_ratio_to_kelvin,
 )
 
-KEY_PUB   = bytes(range(16))
-KEY_PRIV  = bytes(range(16, 32))
-NONCE     = bytes(range(32, 48))
+KEY_PUB = bytes(range(16))
+KEY_PRIV = bytes(range(16, 32))
+NONCE = bytes(range(32, 48))
 
 
 # ---------------------------------------------------------------------------
 # Light payloads
 # ---------------------------------------------------------------------------
+
 
 def test_dw_payload_matches_upstream_literal():
     """The Hoopik (dimmable-white) body must stay byte-identical to 0.1.0.
@@ -76,18 +80,19 @@ def test_dw_payload_matches_upstream_literal():
 def test_tw_payload_layout():
     """Tunable white adds a channel: [7, .., cold, warm, ..] with a 7-byte body."""
     # 4000 K at 100 % -> warm_ratio 2/3 -> warm 67, cold 33
-    payload = build_led_payload(LIGHT_TYPE_TW, True, 100,
-                                kelvin_to_warm_ratio(4000))
+    payload = build_led_payload(LIGHT_TYPE_TW, True, 100, kelvin_to_warm_ratio(4000))
     assert payload == [7, CMD_DEVICE_DATA_SET, 0x00, 0x11, 33, 67, 50, 0]
 
 
 def test_tw_extremes_are_single_channel():
-    warm_only = build_led_payload(LIGHT_TYPE_TW, True, 80,
-                                  kelvin_to_warm_ratio(MIN_KELVIN))
-    cold_only = build_led_payload(LIGHT_TYPE_TW, True, 80,
-                                  kelvin_to_warm_ratio(MAX_KELVIN))
-    assert warm_only[4:6] == [0, 80]   # cold=0,  warm=80
-    assert cold_only[4:6] == [80, 0]   # cold=80, warm=0
+    warm_only = build_led_payload(
+        LIGHT_TYPE_TW, True, 80, kelvin_to_warm_ratio(MIN_KELVIN)
+    )
+    cold_only = build_led_payload(
+        LIGHT_TYPE_TW, True, 80, kelvin_to_warm_ratio(MAX_KELVIN)
+    )
+    assert warm_only[4:6] == [0, 80]  # cold=0,  warm=80
+    assert cold_only[4:6] == [80, 0]  # cold=80, warm=0
 
 
 @pytest.mark.parametrize("level", range(0, 101))
@@ -95,7 +100,8 @@ def test_tw_extremes_are_single_channel():
 def test_tw_channels_sum_to_brightness(level, kelvin):
     """warm + cold == level for every brightness/temperature combination."""
     _, _, _, _, cold, warm, _, _ = build_led_payload(
-        LIGHT_TYPE_TW, True, level, kelvin_to_warm_ratio(kelvin))
+        LIGHT_TYPE_TW, True, level, kelvin_to_warm_ratio(kelvin)
+    )
     assert cold + warm == level
     assert 0 <= cold <= 100
     assert 0 <= warm <= 100
@@ -123,9 +129,10 @@ def test_fade_is_little_endian():
 # Colour temperature mapping
 # ---------------------------------------------------------------------------
 
+
 def test_kelvin_ratio_endpoints():
-    assert kelvin_to_warm_ratio(MIN_KELVIN) == 1.0   # 3000 K = all warm
-    assert kelvin_to_warm_ratio(MAX_KELVIN) == 0.0   # 6000 K = all cold
+    assert kelvin_to_warm_ratio(MIN_KELVIN) == 1.0  # 3000 K = all warm
+    assert kelvin_to_warm_ratio(MAX_KELVIN) == 0.0  # 6000 K = all cold
     assert kelvin_to_warm_ratio(4500) == 0.5
 
 
@@ -145,6 +152,7 @@ def test_kelvin_clamped_outside_envelope():
 # Crypto / framing
 # ---------------------------------------------------------------------------
 
+
 def test_crypt_none_is_passthrough():
     data = bytes(range(16))
     assert crypt(data, ENCRYPT_NONE, KEY_PUB, KEY_PRIV, NONCE) == data
@@ -153,7 +161,7 @@ def test_crypt_none_is_passthrough():
 @pytest.mark.parametrize("mode", (ENCRYPT_PUBLIC, ENCRYPT_PRIVATE))
 def test_crypt_is_symmetric(mode):
     data = bytes(range(100, 116))
-    once  = crypt(data, mode, KEY_PUB, KEY_PRIV, NONCE)
+    once = crypt(data, mode, KEY_PUB, KEY_PRIV, NONCE)
     twice = crypt(once, mode, KEY_PUB, KEY_PRIV, NONCE)
     assert once != data
     assert twice == data
@@ -161,8 +169,9 @@ def test_crypt_is_symmetric(mode):
 
 def test_crypt_public_and_private_use_different_keys():
     data = bytes(16)
-    assert (crypt(data, ENCRYPT_PUBLIC, KEY_PUB, KEY_PRIV, NONCE)
-            != crypt(data, ENCRYPT_PRIVATE, KEY_PUB, KEY_PRIV, NONCE))
+    assert crypt(data, ENCRYPT_PUBLIC, KEY_PUB, KEY_PRIV, NONCE) != crypt(
+        data, ENCRYPT_PRIVATE, KEY_PUB, KEY_PRIV, NONCE
+    )
 
 
 def test_crc_is_xor():
@@ -177,8 +186,17 @@ def test_pad15_terminator_then_filler():
 
 
 def test_build_short_frame_shape():
-    frame = build_short(MSG_FIRE, ENCRYPT_PRIVATE, [1, 2], 0x2A,
-                        KEY_PUB, KEY_PRIV, NONCE, b2=0xAB, b3=0xCD)
+    frame = build_short(
+        MSG_FIRE,
+        ENCRYPT_PRIVATE,
+        [1, 2],
+        0x2A,
+        KEY_PUB,
+        KEY_PRIV,
+        NONCE,
+        b2=0xAB,
+        b3=0xCD,
+    )
     assert len(frame) == 20
     assert frame[0] == (MSG_FIRE << 5) | (ENCRYPT_PRIVATE << 3) | 2  # ft=2
     assert frame[1] == 0x2A
@@ -187,11 +205,13 @@ def test_build_short_frame_shape():
 
 def test_frame_type_depends_on_message_type():
     def ft(msg_type):
-        return build_short(msg_type, ENCRYPT_NONE, [1], 0,
-                           KEY_PUB, KEY_PRIV, NONCE)[0] & 7
-    assert ft(MSG_FIRE) == 2       # lmp_short_frame
-    assert ft(MSG_MESH_CMD) == 2   # lmp_short_frame, short address
-    assert ft(MSG_CMD) == 0        # local_short_frame
+        return (
+            build_short(msg_type, ENCRYPT_NONE, [1], 0, KEY_PUB, KEY_PRIV, NONCE)[0] & 7
+        )
+
+    assert ft(MSG_FIRE) == 2  # lmp_short_frame
+    assert ft(MSG_MESH_CMD) == 2  # lmp_short_frame, short address
+    assert ft(MSG_CMD) == 0  # local_short_frame
 
 
 @pytest.mark.parametrize("enc", (ENCRYPT_NONE, ENCRYPT_PUBLIC, ENCRYPT_PRIVATE))
@@ -206,19 +226,20 @@ def test_build_long_fragments():
     frames = build_long(ENCRYPT_PRIVATE, payload, 0x07, KEY_PUB, KEY_PRIV, NONCE)
     assert len(frames) == 3
     assert all(len(f) == 20 for f in frames)
-    assert [f[2] for f in frames] == [0, 1, 2]        # fragment index
-    assert all(f[3] == 3 for f in frames)             # total count
-    assert frames[0][0] & 7 == 3                      # first fragment
-    assert all(f[0] & 7 == 6 for f in frames[1:])     # continuation
+    assert [f[2] for f in frames] == [0, 1, 2]  # fragment index
+    assert all(f[3] == 3 for f in frames)  # total count
+    assert frames[0][0] & 7 == 3  # first fragment
+    assert all(f[0] & 7 == 6 for f in frames[1:])  # continuation
 
 
 # ---------------------------------------------------------------------------
 # Inbound parsing
 # ---------------------------------------------------------------------------
 
+
 def _state_payload(is_on: bool, ch1: int, ch2: int) -> bytes:
     pl = bytearray(15)
-    pl[7] = 0                       # status OK
+    pl[7] = 0  # status OK
     pl[8] = 0x01 if is_on else 0x00
     pl[9] = ch1
     pl[10] = ch2
@@ -232,14 +253,14 @@ def test_parse_device_state_tw():
 
 def test_parse_device_state_uses_low_nibble_for_on():
     pl = bytearray(_state_payload(False, 10, 20))
-    pl[8] = 0x10          # led_mode bits set, on bits clear
+    pl[8] = 0x10  # led_mode bits set, on bits clear
     assert parse_device_state(bytes(pl))[0] is False
     pl[8] = 0x11
     assert parse_device_state(bytes(pl))[0] is True
 
 
 def test_parse_device_state_rejects_bad_payloads():
-    assert parse_device_state(b"\x00" * 9) is None        # too short
+    assert parse_device_state(b"\x00" * 9) is None  # too short
     bad_status = bytearray(_state_payload(True, 1, 2))
     bad_status[7] = 5
     assert parse_device_state(bytes(bad_status)) is None  # non-zero status

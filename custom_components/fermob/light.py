@@ -6,6 +6,7 @@ integration by edouardrosset.
 The frame/payload construction lives in `protocol.py` (no Home Assistant imports,
 unit-tested); this module owns the BLE connection lifecycle and the HA entity.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +15,6 @@ from typing import Any
 
 from bleak import BleakClient
 from bleak_retry_connector import establish_connection
-
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
@@ -66,7 +66,7 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BRIGHTNESS_PCT = 50
-DEFAULT_KELVIN         = 4000
+DEFAULT_KELVIN = 4000
 
 _STORAGE_VERSION = 1
 
@@ -85,30 +85,36 @@ _IDLE_DISCONNECT_DELAY = 30.0
 #                      GATEWAY+PRIVATE state across BLE disconnects.
 # ---------------------------------------------------------------------------
 
+
 class FermobBLEConnection:
     """Manages a persistent BLE connection to one Fermob lamp."""
 
-    def __init__(self, hass: HomeAssistant, address: str, store: Store,
-                 light_type: str = LIGHT_TYPE_TW) -> None:
-        self.hass     = hass
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        address: str,
+        store: Store,
+        light_type: str = LIGHT_TYPE_TW,
+    ) -> None:
+        self.hass = hass
         self._address = address
-        self._store   = store
-        self.light_type = light_type      # "dw" | "tw"
-        self._client  = None
-        self._seq     = 0
+        self._store = store
+        self.light_type = light_type  # "dw" | "tw"
+        self._client = None
+        self._seq = 0
 
         # Crypto keys (persisted)
-        self._pub     = bytes(16)
-        self._priv    = bytes(16)
-        self._nonce   = bytes(16)
+        self._pub = bytes(16)
+        self._priv = bytes(16)
+        self._nonce = bytes(16)
         self._addr_b2 = 0
         self._addr_b3 = 0
         self._keys_loaded = False
-        self._have_keys   = False  # True after successful pairing
+        self._have_keys = False  # True after successful pairing
 
         # Runtime state
-        self._connected = False   # BLE link is up
-        self._ready     = False   # post-connect setup complete, commands allowed
+        self._connected = False  # BLE link is up
+        self._ready = False  # post-connect setup complete, commands allowed
         self._idle_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
 
@@ -126,9 +132,9 @@ class FermobBLEConnection:
         self._keys_loaded = True
         data = await self._store.async_load()
         if data and all(k in data for k in ("pub", "priv", "nonce")):
-            self._pub     = bytes.fromhex(data["pub"])
-            self._priv    = bytes.fromhex(data["priv"])
-            self._nonce   = bytes.fromhex(data["nonce"])
+            self._pub = bytes.fromhex(data["pub"])
+            self._priv = bytes.fromhex(data["priv"])
+            self._nonce = bytes.fromhex(data["nonce"])
             self._addr_b2 = data.get("addr_b2", 0)
             self._addr_b3 = data.get("addr_b3", 0)
             self._have_keys = True
@@ -137,13 +143,15 @@ class FermobBLEConnection:
         return False
 
     async def _save_keys(self) -> None:
-        await self._store.async_save({
-            "pub":     self._pub.hex(),
-            "priv":    self._priv.hex(),
-            "nonce":   self._nonce.hex(),
-            "addr_b2": self._addr_b2,
-            "addr_b3": self._addr_b3,
-        })
+        await self._store.async_save(
+            {
+                "pub": self._pub.hex(),
+                "priv": self._priv.hex(),
+                "nonce": self._nonce.hex(),
+                "addr_b2": self._addr_b2,
+                "addr_b3": self._addr_b3,
+            }
+        )
         _LOGGER.debug("Fermob %s: keys saved", self._address)
 
     # ------------------------------------------------------------------
@@ -154,9 +162,13 @@ class FermobBLEConnection:
         """Decode an EVENT frame and push the lamp state to the entity."""
         try:
             pl = decode_fragment(frame, resp_enc, self._pub, self._priv, self._nonce)
-        except Exception:  # noqa: BLE001 — malformed/undecodable frame
-            _LOGGER.debug("Fermob %s: undecodable EVENT frame %s",
-                          self._address, frame.hex(), exc_info=True)
+        except Exception:  # malformed or undecodable frame
+            _LOGGER.debug(
+                "Fermob %s: undecodable EVENT frame %s",
+                self._address,
+                frame.hex(),
+                exc_info=True,
+            )
             return
         if len(pl) < 10 or pl[1] != LMP_EVENT_DEVICE_DATA:
             return
@@ -164,8 +176,9 @@ class FermobBLEConnection:
         if state is None:
             return
         is_on, ch1, ch2 = state
-        _LOGGER.debug("Fermob %s: EVENT is_on=%s ch1=%d ch2=%d",
-                      self._address, is_on, ch1, ch2)
+        _LOGGER.debug(
+            "Fermob %s: EVENT is_on=%s ch1=%d ch2=%d", self._address, is_on, ch1, ch2
+        )
         self.on_state_change(is_on, ch1, ch2)
 
     def _notif_handler(self, sender, data: bytearray) -> None:
@@ -201,7 +214,7 @@ class FermobBLEConnection:
             if len(frames) > 1:
                 await asyncio.sleep(0.05)
 
-        deadline   = asyncio.get_event_loop().time() + 3.0
+        deadline = asyncio.get_event_loop().time() + 3.0
         fragments: dict[int, bytes] = {}
         seq_total: int | None = None
         first_enc = 0
@@ -210,24 +223,36 @@ class FermobBLEConnection:
         while True:
             rem = deadline - asyncio.get_event_loop().time()
             if rem <= 0:
-                _LOGGER.warning("Fermob %s: ACK timeout seq=%02x", self._address, my_seq)
+                _LOGGER.warning(
+                    "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
+                )
                 return None, 0
             try:
                 frame = await asyncio.wait_for(self._ack_queue.get(), timeout=rem)
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Fermob %s: ACK timeout seq=%02x", self._address, my_seq)
+            except TimeoutError:
+                _LOGGER.warning(
+                    "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
+                )
                 return None, 0
 
             if len(frame) < 20:
                 continue
-            h0       = frame[0]
-            mt       = (h0 >> 5) & 7
-            ft       = h0 & 7
-            cmd      = frame[1]
+            h0 = frame[0]
+            mt = (h0 >> 5) & 7
+            ft = h0 & 7
+            cmd = frame[1]
             resp_enc = (h0 >> 3) & 3
 
-            _LOGGER.debug("Fermob %s ← mt=%d ft=%d enc=%d cmd=%02x seq=%02x raw=%s",
-                          self._address, mt, ft, resp_enc, cmd, my_seq, frame.hex())
+            _LOGGER.debug(
+                "Fermob %s ← mt=%d ft=%d enc=%d cmd=%02x seq=%02x raw=%s",
+                self._address,
+                mt,
+                ft,
+                resp_enc,
+                cmd,
+                my_seq,
+                frame.hex(),
+            )
 
             # mt=4 arrived while we were waiting for an ACK: re-route appropriately
             if mt == MSG_EVENT:
@@ -238,8 +263,13 @@ class FermobBLEConnection:
                 continue
 
             if mt != 2 or cmd != my_seq:
-                _LOGGER.debug("Fermob %s: ignored frame (mt=%d cmd=%02x expected=%02x)",
-                              self._address, mt, cmd, my_seq)
+                _LOGGER.debug(
+                    "Fermob %s: ignored frame (mt=%d cmd=%02x expected=%02x)",
+                    self._address,
+                    mt,
+                    cmd,
+                    my_seq,
+                )
                 continue
 
             if not fragments:
@@ -264,14 +294,18 @@ class FermobBLEConnection:
     async def _send(self, enc: int, payload: list[int]) -> tuple[bytes | None, int]:
         sid = self._next_seq()
         if len(payload) <= 15:
-            frames = [build_short(MSG_CMD, enc, payload, sid,
-                                  self._pub, self._priv, self._nonce)]
+            frames = [
+                build_short(
+                    MSG_CMD, enc, payload, sid, self._pub, self._priv, self._nonce
+                )
+            ]
         else:
-            frames = build_long(enc, payload, sid,
-                                self._pub, self._priv, self._nonce)
+            frames = build_long(enc, payload, sid, self._pub, self._priv, self._nonce)
         return await self._send_frames(frames)
 
-    async def _wait_for_event(self, timeout: float = 0.5) -> tuple[bool, int, int] | None:
+    async def _wait_for_event(
+        self, timeout: float = 0.5
+    ) -> tuple[bool, int, int] | None:
         """Wait for the lamp's post-REGISTER_END state EVENT (mt=4).
 
         After REGISTER(1) the lamp emits its current state as an EVENT ~200-300 ms
@@ -285,7 +319,7 @@ class FermobBLEConnection:
                 return None
             try:
                 frame = await asyncio.wait_for(self._ack_queue.get(), timeout=rem)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return None
             if len(frame) < 20:
                 continue
@@ -293,17 +327,23 @@ class FermobBLEConnection:
             if (h0 >> 5) & 7 != MSG_EVENT:
                 continue  # discard stray ACKs
             try:
-                pl = decode_fragment(frame, (h0 >> 3) & 3,
-                                     self._pub, self._priv, self._nonce)
-            except Exception:  # noqa: BLE001 — malformed/undecodable frame
-                _LOGGER.debug("Fermob %s: undecodable EVENT frame %s",
-                              self._address, frame.hex(), exc_info=True)
+                pl = decode_fragment(
+                    frame, (h0 >> 3) & 3, self._pub, self._priv, self._nonce
+                )
+            except Exception:
+                _LOGGER.debug(
+                    "Fermob %s: undecodable EVENT frame %s",
+                    self._address,
+                    frame.hex(),
+                    exc_info=True,
+                )
                 continue
             if len(pl) >= 10 and pl[1] == LMP_EVENT_DEVICE_DATA:
                 state = parse_device_state(pl)
                 if state is not None:
-                    _LOGGER.debug("Fermob %s: EVENT after REGISTER_END %s",
-                                  self._address, state)
+                    _LOGGER.debug(
+                        "Fermob %s: EVENT after REGISTER_END %s", self._address, state
+                    )
                     return state
 
     # ------------------------------------------------------------------
@@ -381,18 +421,20 @@ class FermobBLEConnection:
 
     async def disconnect(self) -> None:
         self._connected = False
-        self._ready     = False
+        self._ready = False
         if self._client:
             try:
                 await self._client.stop_notify(CHAR_UUID)
-            except Exception:  # noqa: BLE001 — link may already be gone
-                _LOGGER.debug("Fermob %s: stop_notify failed", self._address,
-                              exc_info=True)
+            except Exception:  # the link may already be gone
+                _LOGGER.debug(
+                    "Fermob %s: stop_notify failed", self._address, exc_info=True
+                )
             try:
                 await self._client.disconnect()
-            except Exception:  # noqa: BLE001 — link may already be gone
-                _LOGGER.debug("Fermob %s: disconnect failed", self._address,
-                              exc_info=True)
+            except Exception:  # the link may already be gone
+                _LOGGER.debug(
+                    "Fermob %s: disconnect failed", self._address, exc_info=True
+                )
             self._client = None
         _LOGGER.debug("Fermob %s: disconnected", self._address)
 
@@ -456,10 +498,11 @@ class FermobBLEConnection:
             # disconnects, so no crypto handshake is needed. It also emits no
             # spontaneous EVENT here, and DEVICE_DATA_GET is not ACKed in this
             # state, so there is no state to read back.
-            _LOGGER.debug("Fermob %s: reconnected (lamp keeps GATEWAY state)",
-                          self._address)
+            _LOGGER.debug(
+                "Fermob %s: reconnected (lamp keeps GATEWAY state)", self._address
+            )
 
-        self._ready     = True
+        self._ready = True
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
         self._schedule_idle_disconnect()
@@ -477,17 +520,25 @@ class FermobBLEConnection:
         """
         payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
         sid = self._next_seq()
-        frame = build_short(MSG_MESH_CMD, ENCRYPT_PRIVATE, payload, sid,
-                            self._pub, self._priv, self._nonce,
-                            b2=self._addr_b2, b3=self._addr_b3)
+        frame = build_short(
+            MSG_MESH_CMD,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2,
+            b3=self._addr_b3,
+        )
         pl, _ = await self._send_frames([frame])
         if pl:
             return parse_device_state(pl)
         return None
 
-    async def send_led(self, on: bool,
-                       brightness_pct: int | None = None,
-                       warm_ratio: float = 0.5) -> None:
+    async def send_led(
+        self, on: bool, brightness_pct: int | None = None, warm_ratio: float = 0.5
+    ) -> None:
         """Send DEVICE_DATA_SET (CMD_WITH_NO_ACK / FIRE, PRIVATE, lmp_short)."""
         if brightness_pct is None:
             brightness_pct = DEFAULT_BRIGHTNESS_PCT
@@ -495,22 +546,34 @@ class FermobBLEConnection:
         payload = build_led_payload(self.light_type, on, brightness_pct, warm_ratio)
         sid = self._next_seq()
         pkt = build_short(
-            MSG_FIRE, ENCRYPT_PRIVATE, payload,
-            sid, self._pub, self._priv, self._nonce,
-            b2=self._addr_b2, b3=self._addr_b3,
+            MSG_FIRE,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2,
+            b3=self._addr_b3,
         )
-        _LOGGER.debug("Fermob %s →FIRE (%s) %s",
-                      self._address, self.light_type, pkt.hex())
+        _LOGGER.debug(
+            "Fermob %s →FIRE (%s) %s", self._address, self.light_type, pkt.hex()
+        )
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
 
     async def unpair(self) -> None:
         """Send LMP_COMMAND_UNREGISTER broadcast (JS "Forget")."""
         sid = self._next_seq()
         pkt = build_short(
-            MSG_FIRE, ENCRYPT_PRIVATE,
+            MSG_FIRE,
+            ENCRYPT_PRIVATE,
             [1, CMD_UNREGISTER],
-            sid, self._pub, self._priv, self._nonce,
-            b2=0xFF, b3=0xFF,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=0xFF,
+            b3=0xFF,
         )
         _LOGGER.warning("Fermob %s: sending UNREGISTER broadcast", self._address)
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
@@ -520,6 +583,7 @@ class FermobBLEConnection:
 # ---------------------------------------------------------------------------
 # Lamp-type resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_light_type(entry: ConfigEntry) -> str:
     """Decide DW vs TW for this lamp.
@@ -547,16 +611,17 @@ def _resolve_light_type(entry: ConfigEntry) -> str:
 # HA platform
 # ---------------------------------------------------------------------------
 
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    address    = entry.data[CONF_ADDRESS]
+    address = entry.data[CONF_ADDRESS]
     light_type = _resolve_light_type(entry)
-    store      = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
-    conn       = FermobBLEConnection(hass, address, store, light_type=light_type)
-    entity     = FermobLight(hass, entry, conn, light_type)
+    store = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    conn = FermobBLEConnection(hass, address, store, light_type=light_type)
+    entity = FermobLight(hass, entry, conn, light_type)
     conn.on_state_change = entity.on_lamp_state_change
     entry.async_on_unload(conn.async_shutdown)
     async_add_entities([entity])
@@ -573,34 +638,42 @@ class FermobLight(LightEntity):
     # DEVICE_DATA_GET in GATEWAY mode (see FermobBLEConnection.get_state).
     _attr_should_poll = False
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry,
-                 conn: FermobBLEConnection, light_type: str) -> None:
-        self.hass          = hass
-        self._entry        = entry
-        self._conn         = conn
-        self._light_type   = light_type
-        self._attr_is_on   = False
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        conn: FermobBLEConnection,
+        light_type: str,
+    ) -> None:
+        self.hass = hass
+        self._entry = entry
+        self._conn = conn
+        self._light_type = light_type
+        self._attr_is_on = False
         self._attr_brightness = 128
 
         if light_type == LIGHT_TYPE_TW:
-            self._attr_color_mode            = ColorMode.COLOR_TEMP
+            self._attr_color_mode = ColorMode.COLOR_TEMP
             self._attr_supported_color_modes = {ColorMode.COLOR_TEMP}
             self._attr_min_color_temp_kelvin = MIN_KELVIN
             self._attr_max_color_temp_kelvin = MAX_KELVIN
-            self._attr_color_temp_kelvin     = DEFAULT_KELVIN
+            self._attr_color_temp_kelvin = DEFAULT_KELVIN
         else:
-            self._attr_color_mode            = ColorMode.BRIGHTNESS
+            self._attr_color_mode = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
 
-        addr               = entry.data[CONF_ADDRESS]
-        self._attr_name    = entry.data.get("name", addr)
+        addr = entry.data[CONF_ADDRESS]
+        self._attr_name = entry.data.get("name", addr)
         self._attr_unique_id = f"fermob_{addr.replace(':', '_').lower()}"
 
     @property
     def device_info(self) -> DeviceInfo:
         addr = self._entry.data[CONF_ADDRESS]
-        model = "MOOON (tunable white)" if self._light_type == LIGHT_TYPE_TW \
+        model = (
+            "MOOON (tunable white)"
+            if self._light_type == LIGHT_TYPE_TW
             else "Hoopik GL1200 (dimmable white)"
+        )
         return DeviceInfo(
             identifiers={("fermob", addr)},
             name=self._attr_name,
@@ -628,16 +701,22 @@ class FermobLight(LightEntity):
             if level > 0:
                 self._attr_brightness = round(level / 100 * 255)
 
-        _LOGGER.debug("Fermob %s: state is_on=%s ch1=%d ch2=%d",
-                      self._entry.data[CONF_ADDRESS], is_on, ch1, ch2)
+        _LOGGER.debug(
+            "Fermob %s: state is_on=%s ch1=%d ch2=%d",
+            self._entry.data[CONF_ADDRESS],
+            is_on,
+            ch1,
+            ch2,
+        )
         self.schedule_update_ha_state()
 
     # ------------------------------------------------------------------
     # Commands
     # ------------------------------------------------------------------
 
-    async def _async_send_led(self, action: str, on: bool,
-                              brightness_pct: int, warm_ratio: float) -> bool:
+    async def _async_send_led(
+        self, action: str, on: bool, brightness_pct: int, warm_ratio: float
+    ) -> bool:
         """Connect if needed and send one LED command.
 
         Returns True on success. On failure the BLE link is dropped and the
@@ -648,10 +727,14 @@ class FermobLight(LightEntity):
             try:
                 await self._conn.ensure_connected()
                 await self._conn.send_led(on, brightness_pct, warm_ratio)
-            except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
-                _LOGGER.error("Fermob %s %s error: %s",
-                              self._entry.data[CONF_ADDRESS], action,
-                              exc, exc_info=True)
+            except Exception as exc:  # reported to the user via the log
+                _LOGGER.error(
+                    "Fermob %s %s error: %s",
+                    self._entry.data[CONF_ADDRESS],
+                    action,
+                    exc,
+                    exc_info=True,
+                )
                 await self._conn.disconnect()
                 self._attr_available = False
                 self.async_write_ha_state()
@@ -661,20 +744,21 @@ class FermobLight(LightEntity):
         return True
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        brightness_ha  = kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 128)
+        brightness_ha = kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 128)
         brightness_pct = max(1, round(brightness_ha / 255 * 100))
 
         warm_ratio = 0.5
         kelvin = self._attr_color_temp_kelvin or DEFAULT_KELVIN
         if self._light_type == LIGHT_TYPE_TW:
-            kelvin = max(MIN_KELVIN,
-                         min(MAX_KELVIN, kwargs.get(ATTR_COLOR_TEMP_KELVIN, kelvin)))
+            kelvin = max(
+                MIN_KELVIN, min(MAX_KELVIN, kwargs.get(ATTR_COLOR_TEMP_KELVIN, kelvin))
+            )
             warm_ratio = kelvin_to_warm_ratio(kelvin)
 
         if not await self._async_send_led("turn_on", True, brightness_pct, warm_ratio):
             return
 
-        self._attr_is_on      = True
+        self._attr_is_on = True
         self._attr_brightness = brightness_ha
         if self._light_type == LIGHT_TYPE_TW:
             self._attr_color_temp_kelvin = kelvin
@@ -686,7 +770,8 @@ class FermobLight(LightEntity):
         warm_ratio = 0.5
         if self._light_type == LIGHT_TYPE_TW:
             warm_ratio = kelvin_to_warm_ratio(
-                self._attr_color_temp_kelvin or DEFAULT_KELVIN)
+                self._attr_color_temp_kelvin or DEFAULT_KELVIN
+            )
 
         if not await self._async_send_led("turn_off", False, 0, warm_ratio):
             return
@@ -700,13 +785,17 @@ class FermobLight(LightEntity):
             try:
                 await self._conn.ensure_connected()
                 await self._conn.unpair()
-            except Exception as exc:  # noqa: BLE001 — surfaced to the user in the log
-                _LOGGER.error("Fermob %s unpair error: %s",
-                              self._entry.data[CONF_ADDRESS], exc, exc_info=True)
+            except Exception as exc:  # reported to the user via the log
+                _LOGGER.error(
+                    "Fermob %s unpair error: %s",
+                    self._entry.data[CONF_ADDRESS],
+                    exc,
+                    exc_info=True,
+                )
             finally:
                 await self._conn.disconnect()
                 await self._conn._store.async_remove()
                 self._conn._keys_loaded = False
-                self._conn._have_keys   = False
+                self._conn._have_keys = False
 
         await self.hass.config_entries.async_remove(self._entry.entry_id)
