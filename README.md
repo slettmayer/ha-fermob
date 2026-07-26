@@ -198,6 +198,7 @@ logger:
 | [AGENTS.md](AGENTS.md) | Project context for humans and AI coding agents — start here |
 | [docs/tech/](docs/tech/README.md) | Architecture, tech stack, conventions, testing, CI/release, upstream relationship |
 | [docs/domain/](docs/domain/README.md) | The lamps, the Linkio BLE protocol, pairing and recovery |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development cycle, versioning policy, changelog format, protocol-change obligations |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Development
