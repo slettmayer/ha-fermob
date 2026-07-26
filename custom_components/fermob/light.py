@@ -12,6 +12,10 @@ import asyncio
 import logging
 from typing import Any
 
+from bleak import BleakClient
+from bleak_retry_connector import establish_connection
+
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
@@ -22,6 +26,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
 
@@ -389,6 +394,19 @@ class FermobBLEConnection:
             self._client = None
         _LOGGER.debug("Fermob %s: disconnected", self._address)
 
+    async def async_shutdown(self) -> None:
+        """Release the BLE link and cancel the idle timer.
+
+        Registered via entry.async_on_unload, so an entry unload *or reload*
+        (e.g. after changing the lamp-type option) closes the connection instead
+        of leaking an open BleakClient and a pending idle task.
+        """
+        if self._idle_task:
+            self._idle_task.cancel()
+            self._idle_task = None
+        async with self.lock:  # wait for any in-flight command to finish
+            await self.disconnect()
+
     def _schedule_idle_disconnect(self) -> None:
         if self._idle_task:
             self._idle_task.cancel()
@@ -407,10 +425,6 @@ class FermobBLEConnection:
         Returns the real lamp state from the post-REGISTER_END EVENT on first
         pairing, otherwise None (the lamp emits no EVENT after a plain reconnect).
         """
-        from bleak import BleakClient
-        from bleak_retry_connector import establish_connection
-        from homeassistant.components.bluetooth import async_ble_device_from_address
-
         have_keys = await self._load_keys()
 
         if self._connected and self._client and self._client.is_connected:
@@ -548,6 +562,7 @@ async def async_setup_entry(
     conn       = FermobBLEConnection(hass, address, store, light_type=light_type)
     entity     = FermobLight(hass, entry, conn, light_type)
     conn.on_state_change = entity.on_lamp_state_change
+    entry.async_on_unload(conn.async_shutdown)
     async_add_entities([entity])
 
     platform = entity_platform.async_get_current_platform()
@@ -581,8 +596,7 @@ class FermobLight(LightEntity):
         self._attr_unique_id = f"fermob_{addr.replace(':', '_').lower()}"
 
     @property
-    def device_info(self):
-        from homeassistant.helpers.device_registry import DeviceInfo
+    def device_info(self) -> DeviceInfo:
         addr = self._entry.data.get(CONF_ADDRESS, "ED:BC:18:EA:CA:99")
         model = "MOOON (tunable white)" if self._light_type == LIGHT_TYPE_TW \
             else "Hoopik GL1200 (dimmable white)"
