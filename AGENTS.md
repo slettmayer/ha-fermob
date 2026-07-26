@@ -80,6 +80,7 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Update `CHANGELOG.md`** in the same PR when behaviour changes, under the version `manifest.json` will carry — `release.yml` reads that section as the release notes.
 - **Update `docs/`** in the same PR as the code change that affects it. A wrong doc is worse than a missing one.
 - **Run `ruff check . && ruff format . --check && pytest tests/ -q` before pushing** — these are exactly what `gate` enforces.
+- **Bump `manifest.json` + `CHANGELOG.md` to release**; documentation-only and CI-only changes need neither. Full cycle and versioning policy: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Detailed Guides
 

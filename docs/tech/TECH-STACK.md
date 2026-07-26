@@ -55,3 +55,8 @@ pure-function tests would be waste.
 
 Swap it in the moment a test needs real HA machinery (an entity, a config flow, a coordinator). That is a
 normal evolution, not a violation.
+
+**When you do, add `asyncio_mode = "auto"` back to `[tool.pytest.ini_options]` in `pyproject.toml`.**
+`ha-geosphere-next` sets it; we omit it *because* of the lean dependencies — without `pytest-asyncio` (which
+arrives with `pytest-homeassistant-custom-component`) that key is an unknown ini option and pytest warns on
+every run. The two settings move together.
