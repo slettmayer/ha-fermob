@@ -32,7 +32,7 @@ warm_ratio 1.0 = 3000 K (all warm), 0.0 = 6000 K (all cold).
 """
 from __future__ import annotations
 
-from Crypto.Cipher import AES
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # BLE characteristic (JS LINKIO_TXRX_CHARACTERISTIC)
 CHAR_UUID = "00005002-0000-1000-8000-00805f9b34fb"
@@ -95,7 +95,8 @@ def crypt(data16: bytes, mode: int, pub: bytes, priv: bytes, nonce: bytes) -> by
     if mode == ENCRYPT_NONE:
         return data16
     key = pub if mode == ENCRYPT_PUBLIC else priv
-    keystream = AES.new(bytes(key), AES.MODE_ECB).encrypt(bytes(nonce))
+    encryptor = Cipher(algorithms.AES(bytes(key)), modes.ECB()).encryptor()
+    keystream = encryptor.update(bytes(nonce)) + encryptor.finalize()
     return bytes(a ^ b for a, b in zip(keystream, data16))
 
 
