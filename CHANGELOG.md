@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Bump dependency (Dependabot)
+
 ## 0.3.0
 
 First release of this fork. Carries upstream
