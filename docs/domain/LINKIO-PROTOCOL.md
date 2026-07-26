@@ -12,7 +12,8 @@ rather than observed, it says so.
 
 | | |
 |---|---|
-| Advertisement service UUID | `41c13060-6def-11e5-bcde-0002a5d5c51b` (the `bluetooth:` matcher in `manifest.json`) |
+| Advertisement service UUID | `41c13060-6def-11e5-bcde-0002a5d5c51b` (the `bluetooth:` matcher in `manifest.json`; advertised in an *incomplete list* of 128-bit service UUIDs, AD type `0x06`) |
+| GATT service UUID | `41c15000…` — **not the advertisement UUID**; only reachable post-connection, so useless for discovery. *Inferred:* from one `config_flow.py` comment, unconfirmed |
 | Manufacturer data | company `0x04AA`, rotating/encrypted payload |
 | Write/notify characteristic | `00005002-0000-1000-8000-00805f9b34fb` (app's `LINKIO_TXRX_CHARACTERISTIC`) |
 | Connections | **one client at a time** — see [PAIRING.md](PAIRING.md) |
@@ -83,6 +84,11 @@ We use `cryptography` for this, not pycryptodome. See [TECH-STACK.md](../tech/TE
 `[length, type, ...value]`, and we pick out `LMP_PARAM_SHORT_ADDRESS` (177 / `0xb1`, two address bytes) and
 `LMP_PARAM_API_VERSION` (184 / `0xb8`).
 
+**Only the short address is actually used.** `parse_module_info` returns the API version as its third value,
+but the sole caller discards it (`self._addr_b2, self._addr_b3, _ = parse_module_info(pl)`); it is never
+stored, logged or branched on. It is parsed because the TLV walk has to skip the entry anyway, and it is
+returned in case a future version needs to gate on it.
+
 ## The light command
 
 Both families use `DEVICE_DATA_SET` (`0x41`) as a `MSG_FIRE` frame under `ENCRYPT_PRIVATE`, addressed with
@@ -122,9 +128,18 @@ warm_white + cold_white == brightness%
 (all cold). `protocol.kelvin_to_warm_ratio` and `warm_ratio_to_kelvin` are exact inverses across the whole
 envelope, and both clamp outside it.
 
-A consequence worth knowing: at very low brightness the split quantises hard. At `level = 1` and mid
-colour temperature, `warm = 1` and `cold = 0`, so the lamp skews warm. That is inherent to expressing
+A consequence worth knowing: at very low brightness the split quantises hard, and **which way it skews
+alternates**, because `warm` is computed with Python's `round()` — which is half-to-even, not half-up. At mid
+colour temperature (`warm_ratio = 0.5`): `level = 1` gives `cold = 1, warm = 0` (skews **cold**, since
+`round(0.5) == 0`), while `level = 3` gives `cold = 1, warm = 2` (skews warm). That is inherent to expressing
 temperature as two integer percentages, not a bug in the conversion.
+
+Exact splits *are* pinned in a few places — `test_tw_payload_layout` fixes `cold = 33, warm = 67` at 100 % /
+4000 K, and `test_tw_extremes_are_single_channel` fixes both endpoints — so a gross rounding change (a switch
+to `floor`, or an off-by-one) fails CI immediately. What is **not** covered is the **tie-breaking rule**: none
+of the pinned cases lands on a `.5` boundary (66.667 and the 0/80 extremes are not ties), so swapping
+half-to-even for half-up would keep the suite green while changing behaviour at low brightness. Verify ties by
+hand if you touch this.
 
 ## Inbound state
 

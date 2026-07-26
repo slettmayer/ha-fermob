@@ -35,8 +35,9 @@ Pairing happens lazily, on the **first command** — not when the config entry i
 Keys are **persisted before** step 9, deliberately: if the confirming EVENT never arrives, the keys the lamp
 now holds are still on disk, so we are not locked out.
 
-Storage is `.storage/fermob_<mac_with_underscores>` in the HA config directory, holding the public key,
-private key, nonce and short address as hex.
+Storage is `.storage/fermob_<mac_with_underscores>` in the HA config directory — the MAC is **lowercased**, so
+grep for it in lower case during recovery. It holds five keys: `pub`, `priv` and `nonce` as hex strings, plus
+`addr_b2` and `addr_b3` (the short address) as plain integers, not hex.
 
 ## Reconnects
 
