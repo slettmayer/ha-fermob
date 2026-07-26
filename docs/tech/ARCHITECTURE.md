@@ -74,8 +74,15 @@ acquires it, and `ensure_connected()`/`send_led()` assume it is already held.
 `FermobLight` is deliberately thin:
 
 - **Colour modes are fixed at construction** from the resolved family: `ColorMode.COLOR_TEMP` with the 3000–6000 K envelope for tunable white, `ColorMode.BRIGHTNESS` for dimmable white.
-- **All commands funnel through `_async_send_led()`**, which owns connect → send → on failure disconnect, mark unavailable and write state. Attribute updates happen only after it reports success, so a failed command never leaves HA claiming a state the lamp does not have.
+- **All light commands funnel through `_async_send_led()`**, which owns connect → send → on failure disconnect, mark
+  unavailable and write state. Attribute updates happen only after it reports success, so a failed command never leaves
+  HA claiming a state the lamp does not have. `async_unpair()` deliberately does not use it — see
+  [CONVENTIONS.md](CONVENTIONS.md#entity-and-connection-code).
 - **Availability is tracked explicitly** — optimistic at startup, `False` after a failed command, `True` after a successful one or an inbound EVENT. It is not derived from the Bluetooth stack's presence cache, which would flap for a lamp that stops advertising while connected.
 - **`unique_id`** is `fermob_<mac_with_underscores>`; the device identifier is `("fermob", address)`.
+- **`fermob.unpair` is an entity service**, registered in `async_setup_entry` via
+  `entity_platform.async_get_current_platform().async_register_entity_service("unpair", {}, "async_unpair")` — not a
+  plain method and not a `hass.services` registration. It takes no schema. See
+  [PAIRING.md](../domain/PAIRING.md#unpairing) for what it does to the lamp.
 
 See [OVERVIEW.md](../domain/OVERVIEW.md#state-model-and-its-limits) for why there is no state resync.

@@ -33,12 +33,25 @@ The one exception is the test module, which loads `protocol.py` by file path del
 
 - **No `homeassistant` imports in `protocol.py`.** See [ARCHITECTURE.md](ARCHITECTURE.md#why-protocolpy-has-no-ha-imports).
 - **Every protocol constant lives in `protocol.py`** — commands, encryption modes, message types, TLV parameter IDs, the light families, `FADE`, the Kelvin envelope. Never inline a literal like `0x41` or `146` at a call site.
+- **Known exception: `config_flow.py` redeclares the lamp-family strings.** It defines its own
+  `LIGHT_TYPE_AUTO`/`LIGHT_TYPE_DW`/`LIGHT_TYPE_TW` rather than importing `LIGHT_TYPE_DW`/`LIGHT_TYPE_TW` from
+  `protocol.py`, so the two copies must be kept in sync by hand — the comment above them says so. `light.py` imports
+  them properly. If you change a family string, change it in **both** files; better, delete the duplicates and import.
+- `config_flow.py` also owns `FERMOB_ADV_UUID`, the discovery-side advertisement UUID. That one is genuinely a
+  config-flow concern (it is also declared in `manifest.json`) and is not the same value as the GATT service UUID — see
+  [LINKIO-PROTOCOL.md](../domain/LINKIO-PROTOCOL.md#transport).
 - **Functions there are pure**: bytes in, bytes out, no I/O, no logging, no clock.
 - Public names (no leading underscore) since they cross a module boundary.
 
 ## Entity and connection code
 
-- **One command path.** `FermobLight._async_send_led()` owns connect → send → failure handling → availability. Do not write a second copy of that block; `async_turn_on`/`async_turn_off` only compute parameters and record attributes after it succeeds.
+- **One light-command path.** `FermobLight._async_send_led()` owns connect → send → failure handling → availability. Do
+  not write a second copy of that block; `async_turn_on`/`async_turn_off` only compute parameters and record attributes
+  after it succeeds.
+- **`async_unpair()` is the one sanctioned exception.** It runs its own lock → `ensure_connected()` → `unpair()` →
+  `disconnect()` block and reaches into the connection's private key state, because it is removing the config entry:
+  there is no availability to maintain and no entity left to update afterwards. It is not a precedent — any *new*
+  command belongs in `_async_send_led()`.
 - **Update attributes only after a confirmed send**, so a failure never leaves HA asserting a state the lamp does not have.
 - **Branch on `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`**, never on model names or `module_type`.
 - **Hold the connection lock for the whole connect-and-send.** `ensure_connected()` and `send_led()` assume the caller holds it.

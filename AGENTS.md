@@ -4,7 +4,7 @@
 
 > **Editing this guide:** `AGENTS.md` is the single source of truth for project context, read by all AI
 > coding agents and humans. Keep it concise — put detail in `docs/` and link it. When you change code that
-> alters documented behavior, update the matching `docs/` file in the **same PR** — see
+> alters documented behaviour, update the matching `docs/` file in the **same PR** — see
 > [docs/README.md](docs/README.md) for the doc-structure contract.
 
 ## Quick Reference
@@ -52,7 +52,9 @@ commands and by EVENT notifications while the link is up. See
 - Keep `protocol.py` free of `homeassistant` imports — that is what makes the frame layer testable without a `hass` instance.
 - All protocol constants (commands, encryption modes, message types, light families, Kelvin envelope) live in `protocol.py` — never inline literals.
 - Import at **module level**, never inside a coroutine: HA imports integration modules in an executor, and an in-loop import trips core's blocking-call detection.
-- Every command goes through `FermobLight._async_send_led()`, which owns the connect/send/failure/availability path — do not add a second copy.
+- Every **light** command goes through `FermobLight._async_send_led()`, which owns the connect/send/failure/availability
+  path — do not add a second copy. `async_unpair()` is the one deliberate exception: it tears the entry down, so it has
+  no availability state to maintain.
 - Lamp families are the strings `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`; anything family-dependent branches on those, not on model names.
 - Ruff-enforced: 4 spaces, double quotes, line length 88, rule set `E,W,F,I,UP,B,SIM,C4,RUF`. See [CONVENTIONS.md](docs/tech/CONVENTIONS.md).
 
@@ -71,6 +73,9 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Lamp-family detection is a name heuristic** (`"hoop"` in the name → dimmable white, everything else → tunable white). It is wrong for a renamed Hoopik; the options flow is the escape hatch. The model cannot be read from the advertisement — it is rotating and encrypted.
 - **State drifts silently after the 30 s idle disconnect.** The lamp emits no EVENT on reconnect and stops answering `DEVICE_DATA_GET` in gateway mode, so a physical button press outside the connected window is unrecoverable. `FermobBLEConnection.get_state()` exists but is intentionally unused — see its docstring before wiring it in.
 - **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA holds the link, and re-pairing from the app invalidates our stored keys. See [PAIRING.md](docs/domain/PAIRING.md).
+- **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them
+  from `protocol.py`, so the two must be kept in sync by hand. See
+  [CONVENTIONS.md](docs/tech/CONVENTIONS.md#protocol-code).
 - `hacs/action@main` and `home-assistant/actions/hassfest@master` are floating CI refs; the HACS `brands` check is ignored by configuration.
 - Only the MOOON! Moon2AD2 has been confirmed by anyone; other MOOON! sizes are inferred from the same `module_type`.
 
@@ -79,7 +84,7 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Never commit to `main`** — it is protected by a ruleset (linear history, PR required, `gate` must pass, squash-only, no force-push or deletion). Branch, PR, squash-merge.
 - **Update `CHANGELOG.md`** in the same PR when behaviour changes, under the version `manifest.json` will carry — `release.yml` reads that section as the release notes.
 - **Update `docs/`** in the same PR as the code change that affects it. A wrong doc is worse than a missing one.
-- **Run `ruff check . && ruff format . --check && pytest tests/ -q` before pushing** — these are exactly what `gate` enforces.
+- **Run `ruff check . && ruff format . --check && pytest tests/ -q` before pushing** — the same three checks `gate` enforces (CI runs pytest with `-v`; the flag is the only difference).
 - **Bump `manifest.json` + `CHANGELOG.md` to release**; documentation-only and CI-only changes need neither. Full cycle and versioning policy: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Detailed Guides

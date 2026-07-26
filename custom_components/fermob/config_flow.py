@@ -23,11 +23,12 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "fermob"
 
-# UUID present in BLE advertisements (incomplete 128-bit UUID, type 0x06).
-# Distinct from the GATT service UUID (41c15000) used after connection.
+# UUID present in BLE advertisements, carried in an incomplete list of 128-bit
+# service UUIDs (AD type 0x06). Distinct from the GATT service UUID (41c15000)
+# used after connection.
 FERMOB_ADV_UUID = "41c13060-6def-11e5-bcde-0002a5d5c51b"
 
-# Lamp-type override values (must match light.py LIGHT_TYPE_* / "auto").
+# Lamp-type override values (must match protocol.LIGHT_TYPE_* / "auto").
 CONF_LIGHT_TYPE = "light_type"
 LIGHT_TYPE_AUTO = "auto"
 LIGHT_TYPE_DW = "dw"
