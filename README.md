@@ -10,7 +10,8 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 > [@fjcompiled](https://github.com/fjcompiled) — MOOON! tunable-white support —
 > plus a hardening pass: the AES dependency is one Home Assistant actually ships,
 > the BLE link is released on unload, the entity reports unavailability, and the
-> protocol layer has unit tests and CI. See the commit log for detail.
+> protocol layer has unit tests and CI. See [docs/tech/UPSTREAM.md](docs/tech/UPSTREAM.md)
+> for exactly what changed and why.
 
 ---
 
@@ -26,11 +27,14 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 
 ## Supported devices
 
-| Model | Type | Tested |
+| Model | Type | Hardware-tested by |
 |---|---|---|
-| Hoopik GL1200 | Dimmable white | ✅ |
-| MOOON! (Moon2AD2) | Tunable white | ✅ |
-| Other MOOON! / table lamps | Tunable white | ⚠️ untested, same protocol |
+| Hoopik GL1200 | Dimmable white | Upstream's author |
+| MOOON! (Moon2AD2) | Tunable white | The contributor of the tunable-white support |
+| Other MOOON! / table lamps | Tunable white | ⚠️ nobody — same `module_type`, so expected to work |
+
+See [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md#confidence) for what each of
+those claims actually rests on.
 
 Fermob lamps fall into two LED families that share an identical BLE
 handshake and command header, differing only in the light payload:
@@ -49,7 +53,9 @@ Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 ## Requirements
 
 - Home Assistant 2024.4 or later
-- A Bluetooth adapter accessible to HA (built-in, USB dongle, or [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html))
+- A Bluetooth adapter accessible to HA (built-in, USB dongle, or an **active**
+  [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) — a
+  passive proxy can see the lamp advertise but cannot connect to it)
 - The lamp must **not** be actively connected to the official Fermob app during setup
 
 ## Installation
@@ -185,9 +191,41 @@ logger:
     custom_components.fermob: debug
 ```
 
+## Documentation
+
+| | |
+|---|---|
+| [AGENTS.md](AGENTS.md) | Project context for humans and AI coding agents — start here |
+| [docs/tech/](docs/tech/README.md) | Architecture, tech stack, conventions, testing, CI/release, upstream relationship |
+| [docs/domain/](docs/domain/README.md) | The lamps, the Linkio BLE protocol, pairing and recovery |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+
+## Development
+
+```bash
+pip install -r requirements_test.txt
+python -m pytest tests/ -q            # 794 tests, no Home Assistant needed
+ruff check . --fix && ruff format .   # lint + format
+```
+
+`protocol.py` deliberately imports nothing from Home Assistant, which is what lets
+the protocol layer be tested standalone in under a second.
+
+`main` is protected: branch, open a PR, and let CI (`ruff`, `pytest`, `hassfest`,
+`HACS`) go green — merges are squash-only. Releases are automatic: merge a bumped
+`manifest.json` version plus the matching `CHANGELOG.md` section and the release
+workflow tags it. See
+[docs/tech/INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md).
+
 ## Contributing
 
-Pull requests welcome. If you have a different Fermob model and want to add support, open an issue with the model name and the debug log output.
+Pull requests welcome. If you have a different Fermob model and want to add
+support, open an issue with the model name and debug log output — and please read
+[docs/tech/CONVENTIONS.md](docs/tech/CONVENTIONS.md) first.
+
+Protocol claims must state whether they are verified on hardware, taken from the
+official app's JS, or inferred. This project rests entirely on reverse
+engineering, and a confident wrong note costs the next person hours.
 
 ## License
 
