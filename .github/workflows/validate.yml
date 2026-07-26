@@ -4,42 +4,70 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
   schedule:
-    # Catch breakage from new Home Assistant / HACS releases, not just our own commits.
-    - cron: "0 6 * * 1"
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
 
 jobs:
-  hassfest:
-    name: hassfest
+  ruff:
+    name: Ruff (lint + format)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: ".python-version"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format . --check
+
+  pytest:
+    name: Pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: ".python-version"
+      - run: pip install -r requirements_test.txt
+      - run: python -m pytest tests/ -v
+
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
-    name: HACS
+    name: HACS Validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: hacs/action@main
         with:
           category: integration
-          # `brands` requires the domain to be listed in home-assistant/brands,
-          # which is a prerequisite for the HACS *default store* only. This is a
-          # custom repository and is not seeking default-store inclusion, so the
-          # check is not applicable; every other HACS check still runs.
+          # `brands` requires the domain to be registered in
+          # home-assistant/brands, which gates HACS *default store* inclusion.
+          # This is a custom repository and is not seeking that, so the check
+          # does not apply. Every other HACS check still runs.
           ignore: brands
 
-  tests:
-    name: protocol tests
+  gate:
+    name: gate
+    needs: [ruff, pytest, hassfest, hacs]
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      # protocol.py imports nothing from Home Assistant, so the test run needs
-      # only these two packages.
-      - run: pip install pytest cryptography
-      - run: pytest tests/ -q
+      - name: Check validation results
+        run: |
+          if [[ "${{ needs.ruff.result }}" == "success" && \
+                "${{ needs.pytest.result }}" == "success" && \
+                "${{ needs.hassfest.result }}" == "success" && \
+                "${{ needs.hacs.result }}" == "success" ]]; then
+            echo "All checks passed"
+            exit 0
+          else
+            echo "One or more checks failed"
+            exit 1
+          fi
