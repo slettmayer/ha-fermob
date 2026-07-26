@@ -4,6 +4,14 @@
 
 Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) directly from Home Assistant, without a hub or cloud dependency.
 
+> **This is a fork.** Upstream is [edouardrosset/ha-fermob](https://github.com/edouardrosset/ha-fermob),
+> which supports the Hoopik only. This fork carries
+> [PR #2](https://github.com/edouardrosset/ha-fermob/pull/2) by
+> [@fjcompiled](https://github.com/fjcompiled) — MOOON! tunable-white support —
+> plus a hardening pass: the AES dependency is one Home Assistant actually ships,
+> the BLE link is released on unload, the entity reports unavailability, and the
+> protocol layer has unit tests and CI. See the commit log for detail.
+
 ---
 
 ## Features
