@@ -25,6 +25,11 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # `brands` requires the domain to be listed in home-assistant/brands,
+          # which is a prerequisite for the HACS *default store* only. This is a
+          # custom repository and is not seeking default-store inclusion, so the
+          # check is not applicable; every other HACS check still runs.
+          ignore: brands
 
   tests:
     name: protocol tests
