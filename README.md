@@ -4,6 +4,14 @@
 
 Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) directly from Home Assistant, without a hub or cloud dependency.
 
+> **This is a fork.** Upstream is [edouardrosset/ha-fermob](https://github.com/edouardrosset/ha-fermob),
+> which supports the Hoopik only. This fork carries
+> [PR #2](https://github.com/edouardrosset/ha-fermob/pull/2) by
+> [@fjcompiled](https://github.com/fjcompiled) — MOOON! tunable-white support —
+> plus a hardening pass: the AES dependency is one Home Assistant actually ships,
+> the BLE link is released on unload, the entity reports unavailability, and the
+> protocol layer has unit tests and CI. See the commit log for detail.
+
 ---
 
 ## Features
@@ -14,7 +22,7 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 - **Colour temperature** — warm↔cold white for tunable-white lamps (MOOON!), 3000–6000 K
 - **Physical button sync** — HA state updates when the lamp's button is pressed, while the BLE connection is active
 - **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
-- **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources; state is re-synced on the next reconnect
+- **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources
 
 ## Supported devices
 
@@ -40,7 +48,7 @@ Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 
 ## Requirements
 
-- Home Assistant 2024.1 or later
+- Home Assistant 2024.4 or later
 - A Bluetooth adapter accessible to HA (built-in, USB dongle, or [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html))
 - The lamp must **not** be actively connected to the official Fermob app during setup
 
@@ -49,7 +57,7 @@ Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 ### Via HACS (recommended)
 
 1. Open HACS → **Integrations** → ⋮ menu → **Custom repositories**
-2. Add `https://github.com/YOUR_GITHUB_USERNAME/ha-fermob` with category **Integration**
+2. Add `https://github.com/slettmayer/ha-fermob` with category **Integration**
 3. Click **Download** on the Fermob integration
 4. Restart Home Assistant
 
@@ -122,7 +130,14 @@ the integration converts to/from Kelvin automatically.
 
 When the lamp's physical button is pressed **while the BLE connection is active**, HA detects the state change and updates the entity automatically.
 
-The BLE connection is active for 30 seconds after the last HA command. If the button is pressed after the connection has been released (idle timeout), HA will catch up on the next toggle: it reconnects, reads the real lamp state, and updates accordingly.
+The BLE connection is active for 30 seconds after the last HA command.
+
+**A button press after that window is not seen by HA.** The lamp emits no state
+notification when a link is re-established, and it stops answering
+`DEVICE_DATA_GET` once it is in gateway mode, so there is nothing to read back on
+reconnect. HA keeps showing the state it last commanded until the next HA command
+sets the lamp (and the entity) to a known state again. If a command fails, the
+entity goes *unavailable* rather than continuing to claim a stale state.
 
 ### Unpair service
 
@@ -157,7 +172,7 @@ If the lamp has stale keys from a previous client and won't pair:
 | *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
-| Physical button not reflected in HA | Expected if the BLE connection was idle. The next HA command will re-sync the state automatically |
+| Physical button not reflected in HA | Expected if the BLE connection was idle — the press cannot be recovered. The next HA command puts the lamp back into a known state |
 | Integration not loading | Check logs for `custom_components.fermob` errors |
 
 ## Debug logging

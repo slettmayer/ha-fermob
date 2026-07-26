@@ -1,7 +1,6 @@
 {
   "name": "Fermob",
-  "description": "Control Fermob Bluetooth lamps (Hoopik GL1200 and compatible) from Home Assistant",
   "content_in_root": false,
   "render_readme": true,
-  "homeassistant": "2024.1.0"
+  "homeassistant": "2024.4.0"
 }
