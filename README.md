@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
-Control your **Fermob Bluetooth lamps** (Hoopik GL1200 and compatible) directly from Home Assistant, without a hub or cloud dependency.
+Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) directly from Home Assistant, without a hub or cloud dependency.
 
 ---
 
@@ -11,17 +11,32 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200 and compatible) directly 
 - **Local BLE control** — no internet, no Fermob cloud account required
 - **Auto-discovery** — HA detects nearby Fermob lamps automatically
 - **Brightness control** — full dimming support via the HA light slider
+- **Colour temperature** — warm↔cold white for tunable-white lamps (MOOON!), 3000–6000 K
 - **Physical button sync** — HA state updates when the lamp's button is pressed, while the BLE connection is active
 - **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
 - **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources; state is re-synced on the next reconnect
 
 ## Supported devices
 
-| Model | Tested |
-|---|---|
-| Hoopik GL1200 | ✅ |
+| Model | Type | Tested |
+|---|---|---|
+| Hoopik GL1200 | Dimmable white | ✅ |
+| MOOON! (Moon2AD2) | Tunable white | ✅ |
+| Other MOOON! / table lamps | Tunable white | ⚠️ untested, same protocol |
 
-Other Fermob lamps using the Linkio BLE protocol (advertisement UUID `41C13060-6DEF-11E5-BCDE-0002A5D5C51B`) may work but have not been tested.
+Fermob lamps fall into two LED families that share an identical BLE
+handshake and command header, differing only in the light payload:
+
+- **Dimmable white** — the Hoopik L1200 string light (brightness only).
+- **Tunable white** — every MOOON! / table lamp (brightness **and** colour
+  temperature via two warm/cold channels).
+
+The integration auto-detects the family by name (only the Hoopik is treated
+as dimmable-white; everything else as tunable-white). If it ever guesses
+wrong, override it under **Configure → Lamp type**.
+
+Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
+`41C13060-6DEF-11E5-BCDE-0002A5D5C51B`) may work but have not all been tested.
 
 ## Requirements
 
@@ -80,6 +95,28 @@ target:
 data:
   brightness_pct: 75
 ```
+
+### Colour temperature (tunable-white lamps)
+
+MOOON! lamps expose a colour-temperature slider (3000 K warm … 6000 K cold):
+
+```yaml
+service: light.turn_on
+target:
+  entity_id: light.fermob_moon
+data:
+  brightness_pct: 80
+  color_temp_kelvin: 4000
+```
+
+Internally the lamp mixes two intensity channels
+(`warm_white = brightness% × warm_ratio`, `cold_white = brightness% − warm_white`);
+the integration converts to/from Kelvin automatically.
+
+> **One controller at a time.** These lamps can be paired to a single client.
+> If the Fermob app connects, it takes ownership and HA loses control until you
+> **Forget** the lamp in the app, **power-cycle** it, and re-pair in HA. Pick
+> HA *or* the app, and keep the other disconnected.
 
 ### Physical button
 

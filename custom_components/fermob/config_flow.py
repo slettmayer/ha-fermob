@@ -1,15 +1,23 @@
-"""Config flow for Fermob integration — BLE discovery."""
+"""Config flow for Fermob integration — BLE discovery + lamp-type options."""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.core import callback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +26,12 @@ DOMAIN = "fermob"
 # UUID present in BLE advertisements (incomplete 128-bit UUID, type 0x06).
 # Distinct from the GATT service UUID (41c15000) used after connection.
 FERMOB_ADV_UUID = "41c13060-6def-11e5-bcde-0002a5d5c51b"
+
+# Lamp-type override values (must match light.py LIGHT_TYPE_* / "auto").
+CONF_LIGHT_TYPE = "light_type"
+LIGHT_TYPE_AUTO = "auto"
+LIGHT_TYPE_DW = "dw"
+LIGHT_TYPE_TW = "tw"
 
 
 def _is_fermob_device(info: BluetoothServiceInfoBleak) -> bool:
@@ -37,6 +51,12 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._discovered_info: BluetoothServiceInfoBleak | None = None
         self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> "FermobOptionsFlow":
+        """Return the options flow (lamp-type override)."""
+        return FermobOptionsFlow(config_entry)
 
     # ------------------------------------------------------------------
     # Passive discovery — HA calls this when a matching advertisement is seen
@@ -116,7 +136,6 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_bluetooth_confirm()
 
         # Multiple lamps → let the user pick
-        import voluptuous as vol
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
@@ -138,4 +157,35 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ADDRESS: info.address,
                 "name": name,
             },
+        )
+
+
+class FermobOptionsFlow(OptionsFlow):
+    """Let the user override the lamp type (dimmable vs tunable white).
+
+    The Linkio advertisement is a rotating/encrypted payload, so the model
+    cannot be read from it. light.py auto-detects by name (only the Hoopik
+    string light is dimmable-white; everything else is tunable-white). This
+    flow is the manual escape hatch for any lamp the heuristic gets wrong.
+    """
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self._entry.options.get(CONF_LIGHT_TYPE, LIGHT_TYPE_AUTO)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Required(CONF_LIGHT_TYPE, default=current): vol.In({
+                    LIGHT_TYPE_AUTO: "Auto-detect (by name)",
+                    LIGHT_TYPE_TW: "Tunable white (MOOON / table lamps)",
+                    LIGHT_TYPE_DW: "Dimmable white (Hoopik L1200)",
+                })
+            }),
         )
