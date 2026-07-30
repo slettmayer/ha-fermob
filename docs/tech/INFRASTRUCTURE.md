@@ -83,7 +83,8 @@ another.
 `.github/workflows/dependabot-version-bump.yml` then bumps the patch version in `manifest.json` and prepends a
 `CHANGELOG.md` entry on Dependabot's PR, so the merge produces a release.
 
-> **It needs `GH_ACTION_APP_ID` and `GH_ACTION_APP_PRIVATE_KEY` in BOTH secret stores.**
+> **It needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in BOTH secret stores.**
+> The client ID (`Iv23li…`) is not the numeric App ID — `create-github-app-token` deprecated `app-id`.
 > Dependabot-triggered `pull_request` runs read the **Dependabot** secret store, not the Actions one —
 > Actions-only secrets arrive as empty strings and `actions/create-github-app-token` fails. Set them under
 > Settings → Secrets and variables → **Actions** *and* → **Dependabot**.
