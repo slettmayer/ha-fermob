@@ -8,7 +8,7 @@ Runs on push to `main`, every PR, weekly (Mondays 04:00 UTC), and on demand.
 
 | Job | Does |
 |---|---|
-| `Ruff (lint + format)` | `ruff check .` then `ruff format . --check` |
+| `Ruff (lint + format)` | `pip install -r requirements_lint.txt`, then `ruff check .` and `ruff format . --check` |
 | `Pytest` | `pip install -r requirements_test.txt && python -m pytest tests/ -v` |
 | `Hassfest` | `home-assistant/actions/hassfest@master` — validates `manifest.json` |
 | `HACS Validation` | `hacs/action@main`, `category: integration`, **no ignored checks** |

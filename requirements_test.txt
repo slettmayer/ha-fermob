@@ -3,4 +3,3 @@
 # latter when the first test needs a real hass instance.
 pytest>=9.1.1
 cryptography>=49.0.0
-ruff>=0.16.0

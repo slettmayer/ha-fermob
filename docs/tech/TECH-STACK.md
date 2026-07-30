@@ -48,13 +48,21 @@ discovery.
 
 ## Test dependencies
 
-`requirements_test.txt` pins `pytest`, `cryptography` and `ruff` — deliberately **not**
+`requirements_test.txt` pins `pytest` and `cryptography` — deliberately **not**
 `pytest-homeassistant-custom-component`, which the sibling `ha-geosphere-next` repo uses. `protocol.py` imports
 nothing from Home Assistant, so no current test needs a `hass` instance, and installing all of HA to run
 pure-function tests would be waste.
 
 Swap it in the moment a test needs real HA machinery (an entity, a config flow, a coordinator). That is a
 normal evolution, not a violation.
+
+## Lint dependencies
+
+`requirements_lint.txt` pins `ruff` with `==`, in its own file so the Ruff job does not install the test
+suite to run a linter. The `==` is the point: with a `>=` floor pip resolves whatever is newest, so the pin
+describes the version rather than choosing it — which is how CI ran ruff 0.16.0, a release that expanded the
+default rule set from 59 rules to 413, for a week before anyone chose it. Dependabot's `pip` ecosystem bumps
+the pin, and the bump PR is where a breaking release now surfaces.
 
 **When you do, add `asyncio_mode = "auto"` back to `[tool.pytest.ini_options]` in `pyproject.toml`.**
 `ha-geosphere-next` sets it; we omit it *because* of the lean dependencies — without `pytest-asyncio` (which

@@ -74,7 +74,7 @@ with the Fermob app.
 ### Code Style
 
 - Enforced by [Ruff](https://docs.astral.sh/ruff/) — runs in CI
-- Run locally: `pip install ruff && ruff check . --fix && ruff format .`
+- Run locally: `pip install -r requirements_lint.txt && ruff check . --fix && ruff format .`
 - See `pyproject.toml` for rule configuration, and [docs/tech/CONVENTIONS.md](docs/tech/CONVENTIONS.md) for the conventions ruff cannot enforce
 - Note that `ruff format` also formats Python code blocks inside Markdown, so run it after editing docs that contain Python
 
