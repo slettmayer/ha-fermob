@@ -13,7 +13,7 @@ rather than observed, it says so.
 | | |
 |---|---|
 | Advertisement service UUID | `41c13060-6def-11e5-bcde-0002a5d5c51b` (the `bluetooth:` matcher in `manifest.json`; advertised in an *incomplete list* of 128-bit service UUIDs, AD type `0x06`) |
-| GATT service UUID | `41c15000…` — **not the advertisement UUID**; only reachable post-connection, so useless for discovery. *Inferred:* from one `config_flow.py` comment, unconfirmed |
+| GATT service UUID | `41c15000-6def-11e5-bcde-0002a5d5c51b` — **not the advertisement UUID**; only reachable post-connection, so useless for discovery. **Confirmed** by enumerating a real H134's GATT table (2026-08-02) |
 | Manufacturer data | company `0x04AA`, rotating/encrypted payload |
 | Write/notify characteristic | `00005002-0000-1000-8000-00805f9b34fb` (app's `LINKIO_TXRX_CHARACTERISTIC`) |
 | Connections | **one client at a time** — see [PAIRING.md](PAIRING.md) |
@@ -80,14 +80,41 @@ We use `cryptography` for this, not pycryptodome. See [TECH-STACK.md](../tech/TE
 | `CMD_DEVICE_DATA_SET` | 65 (`0x41`) | **Set the light** |
 | `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — **not answered in gateway mode**, see below |
 
-`CMD_MODULE_INFO_GET` returns a TLV list walked by `protocol.parse_module_info`: each entry is
-`[length, type, ...value]`, and we pick out `LMP_PARAM_SHORT_ADDRESS` (177 / `0xb1`, two address bytes) and
-`LMP_PARAM_API_VERSION` (184 / `0xb8`).
+### MODULE_INFO_GET
 
-**Only the short address is actually used.** `parse_module_info` returns the API version as its third value,
-but the sole caller discards it (`self._addr_b2, self._addr_b3, _ = parse_module_info(pl)`); it is never
-stored, logged or branched on. It is parsed because the TLV walk has to skip the entry anyway, and it is
-returned in case a future version needs to gate on it.
+`CMD_MODULE_INFO_GET` returns a TLV list — each entry `[length, type, ...value]`, where `length` counts the type
+byte plus the value. `protocol.iter_tlv` walks it and `protocol.parse_module_info` picks out four fields into a
+`ModuleInfo` named tuple.
+
+The table below is the **complete** TLV set of a real MOOON! H134, captured 2026-08-02. It is pinned verbatim as
+`H134_MODULE_INFO` in `tests/test_protocol.py` — the only hardware-derived expectation in that suite.
+
+| Type | Value on the H134 | What it is |
+|---|---|---|
+| `0x80` | `00` | status/ack; always zero here |
+| `0xaf` | MAC, `07`, `000000`, `9401`, `04` | composite block: address, manufacturer_id **7**, module_type, unknown |
+| `0xb4` | `9401` | **`LMP_PARAM_MODULE_TYPE`** — little-endian uint16, `404` |
+| `0xb5` | `00 02 03 15` | unidentified; plausibly a version |
+| `0xb6` | `01 00 00` | unidentified |
+| `0xb8` | `02` | `LMP_PARAM_API_VERSION` |
+| `0xc1` | `00` | unidentified single byte |
+| `0xb9` | `00` | unidentified single byte |
+| `0xb0` | MAC | full address, little-endian |
+| `0xb1` | `757e` | **`LMP_PARAM_SHORT_ADDRESS`** |
+| `0xb2` | `Fermob` | manufacturer name, NUL-padded to 16 |
+| `0xb3` | `MOOON - H134` | **`LMP_PARAM_MODEL`** — NUL-padded to 16 |
+| `0xb7` | `Moon7E75` | the lamp's own device name |
+
+`module_type` (`0xb4`) and the model string (`0xb3`) are what make lamp-family detection exact — see
+[OVERVIEW.md](OVERVIEW.md#lamp-family-detection). The API version is parsed and returned but still not branched
+on by anything.
+
+**The lamp answers this command in GATEWAY mode**, promptly (~1.5 s including the connect), which is *not* true
+of `DEVICE_DATA_GET`. That is why the family read can happen on a plain reconnect rather than only during
+pairing.
+
+**`DEVICE_INFO_GET` (50), by contrast, returns nothing usable** — the observed response is `02 80 00 00`, a
+zero status TLV then the terminator. Do not expect device details from it.
 
 ## The light command
 
@@ -161,4 +188,5 @@ which lamp it is talking to.
 - **`DEVICE_DATA_GET` is not answered once the lamp is in gateway mode.** `FermobBLEConnection.get_state()` builds the frame correctly and is deliberately never called: every invocation would just burn the 3 s ACK timeout before each command. It is kept because it documents the command and other lamp families may answer it.
 - **The lamp emits no EVENT after a plain BLE reconnect.** Only the post-`REGISTER_END` EVENT during first pairing arrives unsolicited. So there is no way to resync state on reconnect, and a button press outside the connected window is simply lost.
 - **The post-`REGISTER_END` EVENT's state payload is useless to us.** Connections are only ever established *from* a command, so whatever state it reports is overwritten a few milliseconds later by the command that triggered the connection. The EVENT is still waited for — as a gateway-mode confirmation and settle gate — but its contents are only logged.
-- **The model is not in the advertisement.** It rotates and is encrypted. Do not try again to sniff `module_type` (401 dimmable / 404 tunable) before pairing; a branch that attempted this was removed as dead code.
+- **The model is not in the advertisement.** It rotates and is encrypted, so `module_type` (401 dimmable / 404 tunable) cannot be sniffed *before* pairing — a branch that attempted this was removed as dead code. It **is** readable after connecting, from `MODULE_INFO_GET`; that is a different question and it is now answered.
+- **There is no battery level in the GATT table, and none in `DEVICE_INFO_GET`.** Both were checked on hardware — see the GATT table in [TECH-STACK.md](../tech/TECH-STACK.md#bluetooth). A charge level does exist (the official app displays one), so it is carried somewhere we have not looked: the untested candidates are the `DEVICE_DATA` EVENT payload past byte 10, ACK bodies, and commands absent from our constant list.

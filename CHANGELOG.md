@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.0
+
+**First release verified on hardware by this repository's own maintainer**, a
+Fermob MOOON! H134: pairing, on/off, brightness and colour temperature.
+
+- **The lamp family is now read from the lamp instead of guessed from its name.**
+  `MODULE_INFO_GET` reports `module_type` (401 dimmable / 404 tunable) and a
+  model string, both of which are persisted into the config entry. A renamed
+  Hoopik — or a lamp whose name says nothing — is no longer misidentified. The
+  name heuristic remains as the first-run guess and as the fallback for an
+  unrecognised `module_type`; the manual override still wins over both.
+- **Lamps paired with an earlier version pick this up automatically.** The
+  connection re-requests `MODULE_INFO_GET` on reconnect until it answers once,
+  then persists it — one extra round trip per install, not per connect.
+- **The device page shows the real model** (e.g. `MOOON - H134`) instead of a
+  family label, once the lamp has reported it.
+- **`FermobBLEConnection` and `FermobLight` have tests for the first time**
+  (`tests/test_light.py`, 31 of them): family resolution order, module-info
+  persistence and its no-op cases, entity capabilities per family, and the
+  command path's availability handling. The suite is now 840 tests. What remains
+  untested is listed explicitly in `docs/tech/TESTING.md` — the pairing
+  handshake, ACK matching and long-frame reassembly among them.
+- **A real hardware capture is pinned as a test vector.** The H134's complete
+  `MODULE_INFO_GET` response is in `tests/test_protocol.py` as
+  `H134_MODULE_INFO`, the one expectation in that suite derived from a lamp
+  rather than from our reading of the app.
+- Recorded two dead ends confirmed on hardware, so nobody repeats them: the GATT
+  table has **no Battery Service** (`0x180F`/`0x2A19` do not exist on this lamp)
+  and **`DEVICE_INFO_GET` returns nothing usable**. The GATT service UUID
+  `41c15000-…`, previously only inferred from a code comment, is now confirmed.
+
 ## 0.4.0
 
 Prepares the repository for submission to the

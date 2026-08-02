@@ -53,11 +53,13 @@ from .protocol import (
     MSG_EVENT,
     MSG_FIRE,
     MSG_MESH_CMD,
+    ModuleInfo,
     build_led_payload,
     build_long,
     build_short,
     decode_fragment,
     kelvin_to_warm_ratio,
+    module_type_to_light_type,
     parse_device_state,
     parse_module_info,
     warm_ratio_to_kelvin,
@@ -112,6 +114,11 @@ class FermobBLEConnection:
         self._keys_loaded = False
         self._have_keys = False  # True after successful pairing
 
+        # What the lamp says it is (MODULE_INFO_GET). None until read once.
+        self.module_type: int | None = None
+        self.model: str | None = None
+        self.on_module_info: Any = None  # (module_type, model) -> None
+
         # Runtime state
         self._connected = False  # BLE link is up
         self._ready = False  # post-connect setup complete, commands allowed
@@ -137,6 +144,8 @@ class FermobBLEConnection:
             self._nonce = bytes.fromhex(data["nonce"])
             self._addr_b2 = data.get("addr_b2", 0)
             self._addr_b3 = data.get("addr_b3", 0)
+            self.module_type = data.get("module_type")
+            self.model = data.get("model")
             self._have_keys = True
             _LOGGER.debug("Fermob %s: keys loaded", self._address)
             return True
@@ -150,6 +159,8 @@ class FermobBLEConnection:
                 "nonce": self._nonce.hex(),
                 "addr_b2": self._addr_b2,
                 "addr_b3": self._addr_b3,
+                "module_type": self.module_type,
+                "model": self.model,
             }
         )
         _LOGGER.debug("Fermob %s: keys saved", self._address)
@@ -391,10 +402,12 @@ class FermobBLEConnection:
         # Step 6: switch to PRIVATE encryption
         await self._send(ENCRYPT_PUBLIC, [2, CMD_CRYPT_SET, ENCRYPT_PRIVATE])
 
-        # Step 7: get the short address
+        # Step 7: get the short address (and, for free, what the lamp says it is)
         pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_MODULE_INFO_GET])
         if pl:
-            self._addr_b2, self._addr_b3, _ = parse_module_info(pl)
+            info = parse_module_info(pl)
+            self._addr_b2, self._addr_b3 = info.addr_b2, info.addr_b3
+            self._store_module_info(info)
 
         # Step 8: optional device info
         await self._send(ENCRYPT_PRIVATE, [1, CMD_DEVICE_INFO_GET])
@@ -501,11 +514,64 @@ class FermobBLEConnection:
             _LOGGER.debug(
                 "Fermob %s: reconnected (lamp keeps GATEWAY state)", self._address
             )
+            await self._fetch_module_info_once()
 
         self._ready = True
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
         self._schedule_idle_disconnect()
+
+    # ------------------------------------------------------------------
+    # What the lamp says it is
+    # ------------------------------------------------------------------
+
+    def _store_module_info(self, info: ModuleInfo) -> None:
+        """Record a reported module_type / model and announce any change."""
+        changed = (
+            info.module_type is not None and info.module_type != self.module_type
+        ) or (info.model is not None and info.model != self.model)
+        if info.module_type is not None:
+            self.module_type = info.module_type
+        if info.model is not None:
+            self.model = info.model
+        if not changed:
+            return
+
+        _LOGGER.info(
+            "Fermob %s: reports module_type=%s model=%s",
+            self._address,
+            self.module_type,
+            self.model,
+        )
+        if self.on_module_info:
+            self.on_module_info(self.module_type, self.model)
+
+    async def _fetch_module_info_once(self) -> None:
+        """Read MODULE_INFO_GET on reconnect, but only until it has answered.
+
+        Lamps paired before this existed never ran the handshake step that reads
+        it, so without this their family stays a name guess forever. The lamp
+        does answer this command in GATEWAY mode (unlike DEVICE_DATA_GET), and
+        the result is persisted, so this costs one extra round trip per install
+        rather than one per connect.
+
+        Diagnostic only -- a failure must never stop the light from working.
+        """
+        if self.module_type is not None:
+            return
+        try:
+            pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_MODULE_INFO_GET])
+        except Exception as err:
+            # Broad on purpose: any transport failure here is non-fatal.
+            _LOGGER.debug("Fermob %s: MODULE_INFO_GET failed: %s", self._address, err)
+            return
+        if not pl:
+            _LOGGER.debug("Fermob %s: MODULE_INFO_GET not answered", self._address)
+            return
+        info = parse_module_info(pl)
+        self._store_module_info(info)
+        if self._have_keys:
+            await self._save_keys()
 
     # ------------------------------------------------------------------
     # Lamp commands
@@ -589,17 +655,25 @@ def _resolve_light_type(entry: ConfigEntry) -> str:
     """Decide DW vs TW for this lamp.
 
     The app's device-class table (manufacturer_id 7) keys this off module_type
-    (401 = DW, 404 = TW), but the Linkio advertisement is a rotating encrypted
-    payload, so the model is not readable before pairing. Hence a name heuristic
-    plus a manual override:
+    (401 = DW, 404 = TW). The Linkio advertisement is a rotating encrypted
+    payload, so that is not readable *before* pairing -- but the lamp does report
+    it in MODULE_INFO_GET once connected, and we persist what it said into
+    entry.data. Hence:
 
       1. Explicit override in entry.options / entry.data ("light_type").
-      2. Name heuristic: only the Hoopik string light is DW; everything else
-         (MOOON! / table lamps) is tunable white.
+      2. module_type as reported by the lamp itself -- exact, but only available
+         from the second setup onwards, since it takes a connection to learn.
+      3. Name heuristic: only the Hoopik string light is DW; everything else
+         (MOOON! / table lamps) is tunable white. This is the first-run guess
+         and the fallback for a lamp that reports a module_type we don't know.
     """
     override = entry.options.get("light_type") or entry.data.get("light_type")
     if override in (LIGHT_TYPE_DW, LIGHT_TYPE_TW):
         return override
+
+    reported = module_type_to_light_type(entry.data.get("module_type"))
+    if reported is not None:
+        return reported
 
     name = (entry.data.get("name") or entry.data.get(CONF_ADDRESS) or "").lower()
     if "hoop" in name:
@@ -623,6 +697,26 @@ async def async_setup_entry(
     conn = FermobBLEConnection(hass, address, store, light_type=light_type)
     entity = FermobLight(hass, entry, conn, light_type)
     conn.on_state_change = entity.on_lamp_state_change
+
+    def _remember_module_info(module_type: int | None, model: str | None) -> None:
+        """Persist what the lamp reported into the config entry.
+
+        Runs while the connection lock is held, so it must not await a reload:
+        async_update_entry only *schedules* the update listener, and the reload
+        that listener triggers then waits on the lock we are inside. Writing
+        entry.data is also what makes this self-limiting -- once stored,
+        _resolve_light_type agrees with the lamp and nothing changes again.
+        """
+        updates = {
+            k: v
+            for k, v in (("module_type", module_type), ("model", model))
+            if v is not None and entry.data.get(k) != v
+        }
+        if not updates:
+            return
+        hass.config_entries.async_update_entry(entry, data={**entry.data, **updates})
+
+    conn.on_module_info = _remember_module_info
     entry.async_on_unload(conn.async_shutdown)
     async_add_entities([entity])
 
@@ -669,7 +763,8 @@ class FermobLight(LightEntity):
     @property
     def device_info(self) -> DeviceInfo:
         addr = self._entry.data[CONF_ADDRESS]
-        model = (
+        # Prefer the model string the lamp reported over our family guess.
+        model = self._entry.data.get("model") or (
             "MOOON (tunable white)"
             if self._light_type == LIGHT_TYPE_TW
             else "Hoopik GL1200 (dimmable white)"
