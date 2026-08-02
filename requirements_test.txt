@@ -1,12 +1,22 @@
 # tests/test_protocol.py needs only pytest + cryptography -- protocol.py imports
 # nothing from Home Assistant, and that is deliberate (see docs/tech/TESTING.md).
-pytest>=9.1.1
-cryptography>=49.0.0
+#
+# pytest and cryptography are deliberately UNPINNED. Installing Home Assistant
+# alongside them makes it the authority on both: the harness hard-pins an exact
+# pytest, and HA's own constraints pin cryptography (48.0.1 at the time of
+# writing -- which is exactly why protocol.py uses it, see TECH-STACK.md). Any
+# floor of our own either agrees by luck or makes the install unresolvable: the
+# previous `pytest>=9.1.1` / `cryptography>=49.0.0` floors sent pip backtracking
+# through every PHCC release ever published, then failed with
+# ResolutionImpossible. Let the pinned dependency win.
+pytest
+cryptography
 
 # tests/test_light.py needs a real hass instance. This also brings pytest-asyncio,
 # which is why pyproject.toml sets asyncio_mode = "auto" -- without it every test
-# in the suite errors at setup, including the pure ones.
-pytest-homeassistant-custom-component>=0.13.0
+# in the suite errors at setup, including the pure ones. The floor is high because
+# older releases pin pytest 7.x, which nothing else here works with.
+pytest-homeassistant-custom-component>=0.13.351
 
 # Transitive requirements of the Home Assistant integrations we import, which a
 # pip-installed HA does *not* pull in but a real HA install always has. Importing

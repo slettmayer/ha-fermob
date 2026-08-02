@@ -72,6 +72,14 @@ together.** The harness registers autouse *async* event-loop fixtures, so withou
 suite errors at setup — including the pure ones, which is a confusing way to discover the linkage. Conversely,
 dropping the harness means dropping the key, or pytest warns about an unknown ini option on every run.
 
+**`pytest` and `cryptography` must stay unpinned in `requirements_test.txt`.** Installing Home Assistant makes
+it the authority on both — the harness hard-pins an exact `pytest`, and HA's constraints pin `cryptography`
+(48.0.1, which is the very reason `protocol.py` uses it rather than pycryptodome). The floors this repo carried
+before (`pytest>=9.1.1`, `cryptography>=49.0.0`) were harmless while HA was absent and became unresolvable the
+moment it was not: pip backtracked through every PHCC release ever published and failed with
+`ResolutionImpossible`. Verify a change here in a **fresh** venv, not an existing one — an already-satisfied
+environment hides the conflict.
+
 **The Bluetooth transitive pins (`aiousbwatcher`, `serialx`, `bleak-esphome`, `bleak-retry-connector`,
 `habluetooth`) are a test-only artefact.** `homeassistant.components.bluetooth` imports
 `homeassistant.components.usb`, whose own requirements `pip install homeassistant` does not resolve — a real HA
