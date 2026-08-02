@@ -2,6 +2,11 @@
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-p no:cacheprovider"
+# Required by pytest-homeassistant-custom-component: its autouse event-loop
+# fixtures are async, so without this *every* test errors at setup -- including
+# the pure ones. The two settings move together; see
+# docs/tech/TECH-STACK.md#test-dependencies.
+asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py314"

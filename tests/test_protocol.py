@@ -274,8 +274,96 @@ def test_parse_device_state_tolerates_missing_second_channel():
 def test_parse_module_info_reads_short_address():
     # TLV: len=3, type=0xb1 (short address), b2, b3 | len=2, type=0xb8, api=4
     payload = bytes([3, 0xB1, 0x12, 0x34, 2, 0xB8, 4, 0])
-    assert parse_module_info(payload) == (0x12, 0x34, 4)
+    assert parse_module_info(payload) == (0x12, 0x34, 4, None, None)
 
 
 def test_parse_module_info_defaults_when_absent():
-    assert parse_module_info(b"\x00") == (0, 0, 2)
+    assert parse_module_info(b"\x00") == (0, 0, 2, None, None)
+
+
+# ---------------------------------------------------------------------------
+# MODULE_INFO_GET — module_type and model
+#
+# Unlike everything above, the payload below is *observed*, not constructed: it
+# is the verbatim MODULE_INFO_GET response of a real Fermob MOOON! H134, read
+# over a BLE proxy on 2026-08-02 (lamp D6:86:76:E8:7E:75). It is the one place in
+# this suite where the expected values come from hardware rather than from our
+# reading of the app.
+# ---------------------------------------------------------------------------
+
+H134_MODULE_INFO = bytes.fromhex(
+    "0280000eaf757ee87686d60700000094010403b4940105b50002031504b601000002"
+    "b80202c10002b90007b0757ee87686d603b1757e11b24665726d6f62000000000000"
+    "0000000011b34d4f4f4f4e202d20483133340000000009b74d6f6f6e3745373500ff"
+    "ffffff"
+)
+
+
+def test_parse_module_info_real_h134_capture():
+    """Every field we consume, read off one real lamp's response."""
+    info = parse_module_info(H134_MODULE_INFO)
+    assert info.addr_b2 == 0x75
+    assert info.addr_b3 == 0x7E
+    assert info.api_version == 2
+    assert info.module_type == protocol.MODULE_TYPE_TW == 404
+    assert info.model == "MOOON - H134"
+
+
+def test_real_capture_resolves_to_tunable_white():
+    """The point of the whole change: TW by report, not by name guess."""
+    info = parse_module_info(H134_MODULE_INFO)
+    assert (
+        protocol.module_type_to_light_type(info.module_type) == protocol.LIGHT_TYPE_TW
+    )
+
+
+def test_parse_module_info_module_type_is_little_endian():
+    # 0x0194 == 404 must be read low byte first, not as 0x9401 (37889).
+    assert parse_module_info(bytes([3, 0xB4, 0x94, 0x01, 0])).module_type == 404
+    # And the dimmable-white value, 401 == 0x0191.
+    assert parse_module_info(bytes([3, 0xB4, 0x91, 0x01, 0])).module_type == 401
+
+
+def test_module_type_to_light_type_maps_both_families():
+    assert protocol.module_type_to_light_type(401) == protocol.LIGHT_TYPE_DW
+    assert protocol.module_type_to_light_type(404) == protocol.LIGHT_TYPE_TW
+
+
+@pytest.mark.parametrize("unknown", [None, 0, 1, 402, 999, 37889])
+def test_module_type_to_light_type_returns_none_when_unrecognised(unknown):
+    """An unknown module_type must fall through to the name heuristic.
+
+    Guessing a family here would silently send the wrong payload layout, which
+    is exactly the tunable-white bug this integration exists to fix.
+    """
+    assert protocol.module_type_to_light_type(unknown) is None
+
+
+def test_model_string_strips_nul_padding():
+    value = b"MOOON - H134".ljust(16, b"\x00")
+    payload = bytes([17, 0xB3]) + value + b"\x00"
+    assert parse_module_info(payload).model == "MOOON - H134"
+
+
+def test_model_string_absent_stays_none_not_empty():
+    """All-NUL must read as "not reported", so a caller can tell it apart."""
+    payload = bytes([17, 0xB3]) + bytes(16) + b"\x00"
+    assert parse_module_info(payload).model is None
+
+
+def test_iter_tlv_walks_every_entry_and_stops_at_terminator():
+    payload = bytes([2, 0xB8, 0x02, 3, 0xB1, 0x12, 0x34, 0, 0xFF, 0xFF])
+    assert protocol.iter_tlv(payload) == [(0xB8, b"\x02"), (0xB1, b"\x124")]
+
+
+def test_iter_tlv_survives_a_truncated_tail():
+    """A length that overruns the buffer must not raise; it yields short."""
+    assert protocol.iter_tlv(bytes([9, 0xB3, 0x41])) == [(0xB3, b"A")]
+    assert protocol.iter_tlv(bytes([3])) == []
+
+
+def test_parse_module_info_ignores_unknown_tlvs():
+    """Unknown types must be skipped by length, not misread as known ones."""
+    payload = bytes([2, 0xC1, 0x00, 7, 0xB0, 1, 2, 3, 4, 5, 6, 3, 0xB1, 0xAB, 0xCD, 0])
+    info = parse_module_info(payload)
+    assert (info.addr_b2, info.addr_b3) == (0xAB, 0xCD)

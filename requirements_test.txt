@@ -1,5 +1,21 @@
-# Deliberately lean: protocol.py imports nothing from Home Assistant, so the
-# test suite needs neither HA nor pytest-homeassistant-custom-component. Add the
-# latter when the first test needs a real hass instance.
+# tests/test_protocol.py needs only pytest + cryptography -- protocol.py imports
+# nothing from Home Assistant, and that is deliberate (see docs/tech/TESTING.md).
 pytest>=9.1.1
 cryptography>=49.0.0
+
+# tests/test_light.py needs a real hass instance. This also brings pytest-asyncio,
+# which is why pyproject.toml sets asyncio_mode = "auto" -- without it every test
+# in the suite errors at setup, including the pure ones.
+pytest-homeassistant-custom-component>=0.13.0
+
+# Transitive requirements of the Home Assistant integrations we import, which a
+# pip-installed HA does *not* pull in but a real HA install always has. Importing
+# homeassistant.components.bluetooth reaches homeassistant.components.usb, and
+# without these the test module fails at import with a bare ModuleNotFoundError
+# that says nothing about Bluetooth. Not runtime dependencies of this
+# integration -- manifest.json still declares "requirements": [].
+aiousbwatcher
+serialx
+bleak-esphome
+bleak-retry-connector
+habluetooth
