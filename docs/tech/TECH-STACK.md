@@ -46,15 +46,38 @@ active: true`), since a passive proxy can see advertisements but cannot open a c
 up before our platform loads, and a `bluetooth:` matcher on the advertisement service UUID for passive
 discovery.
 
+**Observed GATT table** of a MOOON! H134 (2026-08-02, enumerated over a proxy) — worth knowing because it rules
+things out:
+
+| Service | Contents |
+|---|---|
+| `0x1800` GAP | Preferred Connection Parameters, Central Address Resolution |
+| `0x1801` GATT | Service Changed |
+| `41c15000-6def-11e5-bcde-0002a5d5c51b` | the `00005002-…` write/notify characteristic we use |
+| `8e400001-f315-4f60-9fb8-838830daea50` | Nordic *Experimental Buttonless DFU* |
+
+There is **no Battery Service (`0x180F`) and no Device Information Service (`0x180A`)**. Do not reach for
+`0x2A19` for a charge level; it does not exist on this lamp. The DFU service means the lamp is an nRF part with
+over-the-air firmware update reachable over BLE — leave it alone.
+
 ## Test dependencies
 
-`requirements_test.txt` pins `pytest` and `cryptography` — deliberately **not**
-`pytest-homeassistant-custom-component`, which the sibling `ha-geosphere-next` repo uses. `protocol.py` imports
-nothing from Home Assistant, so no current test needs a `hass` instance, and installing all of HA to run
-pure-function tests would be waste.
+`requirements_test.txt` installs `pytest`, `cryptography`, `pytest-homeassistant-custom-component`, and a short
+list of transitive Bluetooth requirements. `protocol.py` still imports nothing from Home Assistant, so
+`tests/test_protocol.py` alone would run on `pytest` + `cryptography`; `tests/test_light.py` needs a real
+`hass`, which is what pulled the harness in.
 
-Swap it in the moment a test needs real HA machinery (an entity, a config flow, a coordinator). That is a
-normal evolution, not a violation.
+**`asyncio_mode = "auto"` in `[tool.pytest.ini_options]` and `pytest-homeassistant-custom-component` move
+together.** The harness registers autouse *async* event-loop fixtures, so without that key **every** test in the
+suite errors at setup — including the pure ones, which is a confusing way to discover the linkage. Conversely,
+dropping the harness means dropping the key, or pytest warns about an unknown ini option on every run.
+
+**The Bluetooth transitive pins (`aiousbwatcher`, `serialx`, `bleak-esphome`, `bleak-retry-connector`,
+`habluetooth`) are a test-only artefact.** `homeassistant.components.bluetooth` imports
+`homeassistant.components.usb`, whose own requirements `pip install homeassistant` does not resolve — a real HA
+install always has them. Without these, `tests/test_light.py` dies at import with a bare
+`ModuleNotFoundError: No module named 'aiousbwatcher'` that gives no hint it is about Bluetooth. They are
+**not** runtime dependencies: `manifest.json` still declares `"requirements": []`.
 
 ## Lint dependencies
 

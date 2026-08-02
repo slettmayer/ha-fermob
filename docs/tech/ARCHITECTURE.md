@@ -8,16 +8,16 @@ Four files in `custom_components/fermob/`:
 
 | Module | Owns | Imports `homeassistant`? |
 |---|---|---|
-| `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, all protocol constants | **No — keep it that way** |
-| `light.py` | `FermobBLEConnection` (BLE link, handshake, key persistence, ACK matching, idle disconnect) and `FermobLight` (the entity) | Yes |
+| `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, TLV walking, all protocol constants | **No — keep it that way** |
+| `light.py` | `FermobBLEConnection` (BLE link, handshake, key/module-info persistence, ACK matching, idle disconnect) and `FermobLight` (the entity) | Yes |
 | `config_flow.py` | Bluetooth discovery, manual add, the lamp-type options flow | Yes |
 | `__init__.py` | Platform forwarding, unload, the options-update listener | Yes |
 
 ### Why `protocol.py` has no HA imports
 
 It makes the frame layer testable with `pip install pytest cryptography` — no Home Assistant, no `hass`
-fixture, no async. That is what the 794 tests in `tests/test_protocol.py` exercise, and it is the reason they
-run in seconds. The test module even loads `protocol.py` **by file path** rather than as
+fixture, no async. That is what `tests/test_protocol.py` exercises, and it is the reason that
+module runs in about two seconds while `tests/test_light.py` spends most of its time importing HA. The test module even loads `protocol.py` **by file path** rather than as
 `custom_components.fermob.protocol`, because importing the package would pull in `__init__.py` and with it
 Home Assistant.
 
@@ -33,10 +33,29 @@ and holds the BLE state machine:
 first command  ─→ ensure_connected() ─→ BLE connect + start_notify ─→ _pairing_handshake()
                                                                        (keys saved, gateway mode)
 later commands ─→ ensure_connected() ─→ already connected?  ─→ reset the idle timer, return
-                                    └─→ BLE connect + start_notify only (no handshake)
+                                    └─→ BLE connect + start_notify (no handshake)
+                                          └─→ MODULE_INFO_GET, but only until it answers once
 30 s idle      ─→ disconnect()
 entry unload   ─→ async_shutdown() ─→ cancel idle task, disconnect under the lock
 ```
+
+### Learning what the lamp is, without deadlocking
+
+`_fetch_module_info_once()` runs inside `ensure_connected()`, which runs **while the connection lock is held**.
+What it discovers has to reach `entry.data`, and writing that triggers the update listener, whose reload calls
+`async_shutdown()` — which takes the same lock. So the callback path is deliberately non-awaiting:
+
+```
+_fetch_module_info_once()  →  _store_module_info()  →  on_module_info callback
+                                                        └─ hass.config_entries.async_update_entry(...)
+```
+
+`async_update_entry` only *schedules* the listener, so the reload queues behind the in-flight command instead of
+deadlocking against it. The callback must therefore stay synchronous and must not await a reload itself.
+
+It is also self-limiting: once the value is in `entry.data`, `_resolve_light_type` agrees with the lamp, the
+callback's diff is empty, and no further entry updates or reloads happen. Both halves of that matter — the
+`changed` check in `_store_module_info` and the diff in the callback — or a lamp would reload on every connect.
 
 Two flags distinguish the states: `_connected` (the BLE link is up) and `_ready` (post-connect setup is done,
 so commands and EVENT dispatch are allowed). `_ready` gates the notification handler — during the handshake,
