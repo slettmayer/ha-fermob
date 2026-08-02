@@ -33,6 +33,8 @@ warm_ratio 1.0 = 3000 K (all warm), 0.0 = 6000 K (all cold).
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # BLE characteristic (JS LINKIO_TXRX_CHARACTERISTIC)
@@ -67,7 +69,13 @@ CMD_DEVICE_DATA_GET = 66
 LMP_EVENT_DEVICE_DATA = 146
 
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
+LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"
+LMP_PARAM_MODULE_TYPE = 180  # 0xb4 — little-endian uint16
 LMP_PARAM_API_VERSION = 184  # 0xb8
+
+# module_type values from the app's device-class table (manufacturer_id 7).
+MODULE_TYPE_DW = 401
+MODULE_TYPE_TW = 404
 
 # JS lmp_led_mode.LEDS_MODE_COLOR — used for BOTH DW and TW commands
 LED_MODE_COLOR = 1
@@ -77,6 +85,11 @@ FADE = 50
 # Lamp families
 LIGHT_TYPE_DW = "dw"  # dimmable white  (Hoopik, module_type 401)
 LIGHT_TYPE_TW = "tw"  # tunable  white  (MOOON,  module_type 404)
+
+_MODULE_TYPE_FAMILIES = {
+    MODULE_TYPE_DW: LIGHT_TYPE_DW,
+    MODULE_TYPE_TW: LIGHT_TYPE_TW,
+}
 
 # Tunable-white colour-temperature envelope (Fermob spec: 3000 K .. 6000 K)
 MIN_KELVIN = 3000
@@ -163,10 +176,14 @@ def decode_fragment(
     return plain[1:16]
 
 
-def parse_module_info(payload: bytes) -> tuple[int, int, int]:
-    """Walk the MODULE_INFO_GET TLV list for the short address and API version."""
-    addr_b2 = addr_b3 = 0
-    api_ver = 2
+def iter_tlv(payload: bytes) -> list[tuple[int, bytes]]:
+    """Walk a `[length, type, *value]` TLV list and return every entry.
+
+    `length` counts the type byte plus the value bytes, so the value is
+    `payload[i + 2 : i + 1 + length]`. A zero length or a truncated tail ends
+    the walk.
+    """
+    out: list[tuple[int, bytes]] = []
     i = 0
     while i < len(payload):
         t_len = payload[i]
@@ -174,14 +191,54 @@ def parse_module_info(payload: bytes) -> tuple[int, int, int]:
             break
         if i + 1 >= len(payload):
             break
-        t_type = payload[i + 1]
-        if t_type == LMP_PARAM_SHORT_ADDRESS and t_len >= 2:
-            addr_b2 = payload[i + 2]
-            addr_b3 = payload[i + 3]
-        elif t_type == LMP_PARAM_API_VERSION and t_len >= 1:
-            api_ver = payload[i + 2]
+        out.append((payload[i + 1], bytes(payload[i + 2 : i + 1 + t_len])))
         i += t_len + 1
-    return addr_b2, addr_b3, api_ver
+    return out
+
+
+class ModuleInfo(NamedTuple):
+    """What we read out of a MODULE_INFO_GET response.
+
+    `module_type` and `model` are None when the lamp did not include them, so a
+    caller can tell "not reported" from "reported as something we don't know".
+    """
+
+    addr_b2: int
+    addr_b3: int
+    api_version: int
+    module_type: int | None
+    model: str | None
+
+
+def parse_module_info(payload: bytes) -> ModuleInfo:
+    """Read the short address, API version, module_type and model string."""
+    addr_b2 = addr_b3 = 0
+    api_ver = 2
+    module_type: int | None = None
+    model: str | None = None
+
+    for t_type, value in iter_tlv(payload):
+        if t_type == LMP_PARAM_SHORT_ADDRESS and len(value) >= 2:
+            addr_b2 = value[0]
+            addr_b3 = value[1]
+        elif t_type == LMP_PARAM_API_VERSION and len(value) >= 1:
+            api_ver = value[0]
+        elif t_type == LMP_PARAM_MODULE_TYPE and len(value) >= 2:
+            module_type = value[0] | (value[1] << 8)
+        elif t_type == LMP_PARAM_MODEL and value:
+            # NUL-padded to a fixed width; anything undecodable is dropped
+            # rather than allowed to raise on a diagnostic string.
+            text = value.split(b"\x00", 1)[0].decode("ascii", "ignore").strip()
+            model = text or None
+
+    return ModuleInfo(addr_b2, addr_b3, api_ver, module_type, model)
+
+
+def module_type_to_light_type(module_type: int | None) -> str | None:
+    """Map a reported module_type to a lamp family, or None if unrecognised."""
+    if module_type is None:
+        return None
+    return _MODULE_TYPE_FAMILIES.get(module_type)
 
 
 def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
