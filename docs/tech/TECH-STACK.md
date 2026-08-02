@@ -7,7 +7,7 @@
 | Crypto | `cryptography` (AES-ECB single block) |
 | BLE | `bleak` + `bleak_retry_connector`, through HA's Bluetooth stack |
 | Lint / format | Ruff |
-| Tests | pytest (no Home Assistant needed) |
+| Tests | pytest; `test_protocol.py` needs no Home Assistant, `test_light.py` does |
 | Distribution | HACS custom repository |
 | Runtime PyPI requirements | **none** |
 
@@ -94,8 +94,3 @@ suite to run a linter. The `==` is the point: with a `>=` floor pip resolves wha
 describes the version rather than choosing it — which is how CI ran ruff 0.16.0, a release that expanded the
 default rule set from 59 rules to 413, for a week before anyone chose it. Dependabot's `pip` ecosystem bumps
 the pin, and the bump PR is where a breaking release now surfaces.
-
-**When you do, add `asyncio_mode = "auto"` back to `[tool.pytest.ini_options]` in `pyproject.toml`.**
-`ha-geosphere-next` sets it; we omit it *because* of the lean dependencies — without `pytest-asyncio` (which
-arrives with `pytest-homeassistant-custom-component`) that key is an unknown ini option and pytest warns on
-every run. The two settings move together.
