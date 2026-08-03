@@ -37,10 +37,21 @@ from custom_components.fermob.protocol import (
     MIN_KELVIN,
     MODULE_TYPE_DW,
     MODULE_TYPE_TW,
+    Battery,
     ModuleInfo,
 )
 
 ADDRESS = "D6:86:76:E8:7E:75"
+
+# A stored key set, so `_load_keys` reports the lamp as paired. Only the three
+# hex fields are load-bearing -- the check-in refuses to run without them.
+_KEYS = {
+    "pub": "00" * 16,
+    "priv": "11" * 16,
+    "nonce": "22" * 16,
+    "addr_b2": 0x75,
+    "addr_b3": 0x7E,
+}
 
 
 def _entry(**data) -> SimpleNamespace:
@@ -397,3 +408,96 @@ async def test_event_reporting_off_clears_is_on(hass: HomeAssistant):
     light.on_lamp_state_change(False, 0, 0)
 
     assert light.is_on is False
+
+
+# ---------------------------------------------------------------------------
+# Scheduled battery check-in
+#
+# The point of the feature is that it refreshes the level *without* touching the
+# light, so the tests assert what it does not do as much as what it does.
+# ---------------------------------------------------------------------------
+
+
+async def test_check_in_connects_and_lets_the_connect_path_read_battery(
+    hass: HomeAssistant,
+):
+    """When disconnected, connecting is enough -- ensure_connected asks."""
+    conn = _conn(hass)
+    conn._store.async_load = AsyncMock(return_value=_KEYS)
+    conn.ensure_connected = AsyncMock()
+    conn.request_battery = AsyncMock()
+
+    await conn.async_poll_battery()
+
+    conn.ensure_connected.assert_awaited_once()
+    # Not sent twice: ensure_connected already requests it on a fresh connect.
+    conn.request_battery.assert_not_called()
+
+
+async def test_check_in_asks_explicitly_when_already_connected(hass: HomeAssistant):
+    """A lamp held connected all evening would otherwise never refresh.
+
+    `ensure_connected` returns early when the link is up, so it never reaches
+    its battery request -- the check-in has to send one itself.
+    """
+    conn = _conn(hass)
+    conn._store.async_load = AsyncMock(return_value=_KEYS)
+    conn._connected = True
+    conn._client = MagicMock(is_connected=True)
+    conn.ensure_connected = AsyncMock()
+    conn.request_battery = AsyncMock()
+
+    await conn.async_poll_battery()
+
+    conn.request_battery.assert_awaited_once()
+
+
+async def test_check_in_never_sends_a_light_command(hass: HomeAssistant):
+    """The whole feature is worthless if it disturbs the lamp."""
+    conn = _conn(hass)
+    conn._store.async_load = AsyncMock(return_value=_KEYS)
+    conn.ensure_connected = AsyncMock()
+    conn.request_battery = AsyncMock()
+    conn.send_led = AsyncMock()
+
+    await conn.async_poll_battery()
+
+    conn.send_led.assert_not_called()
+
+
+async def test_check_in_survives_an_unreachable_lamp(hass: HomeAssistant):
+    """Out of range is the normal case for a balcony lamp, not an error."""
+    conn = _conn(hass)
+    conn._store.async_load = AsyncMock(return_value=_KEYS)
+    conn.battery = Battery(percent=42, charging=False)
+    conn.ensure_connected = AsyncMock(side_effect=RuntimeError("device not found"))
+
+    await conn.async_poll_battery()  # must not raise
+
+    # The last known level survives -- the reading is "as of last contact".
+    assert conn.battery == Battery(percent=42, charging=False)
+
+
+async def test_check_in_does_not_pair_an_unpaired_lamp(hass: HomeAssistant):
+    """Pairing makes the lamp flash; a 3 a.m. timer must never trigger it."""
+    conn = _conn(hass)  # store.async_load returns None -> no keys
+    conn.ensure_connected = AsyncMock()
+
+    await conn.async_poll_battery()
+
+    conn.ensure_connected.assert_not_called()
+
+
+async def test_check_in_holds_the_command_lock(hass: HomeAssistant):
+    """It must queue behind an in-flight command, not interleave frames."""
+    conn = _conn(hass)
+    conn._store.async_load = AsyncMock(return_value=_KEYS)
+    conn.ensure_connected = AsyncMock()
+
+    async with conn.lock:
+        task = asyncio.ensure_future(conn.async_poll_battery())
+        await asyncio.sleep(0)
+        conn.ensure_connected.assert_not_called()  # blocked on the lock
+
+    await task
+    conn.ensure_connected.assert_awaited_once()

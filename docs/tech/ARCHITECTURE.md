@@ -26,8 +26,8 @@ If you need something from `homeassistant` in `protocol.py`, that is a signal th
 
 ## The connection lifecycle
 
-There is **no `DataUpdateCoordinator`** and no polling. `FermobBLEConnection` is created once per config entry
-and holds the BLE state machine:
+There is **no `DataUpdateCoordinator`**, and the light itself is never polled — its state is push-only.
+`FermobBLEConnection` is created once per config entry and holds the BLE state machine:
 
 ```
 first command  ─→ ensure_connected() ─→ BLE connect + start_notify ─→ _pairing_handshake()
@@ -35,9 +35,23 @@ first command  ─→ ensure_connected() ─→ BLE connect + start_notify ─�
 later commands ─→ ensure_connected() ─→ already connected?  ─→ reset the idle timer, return
                                     └─→ BLE connect + start_notify (no handshake)
                                           └─→ MODULE_INFO_GET, but only until it answers once
+battery timer  ─→ async_poll_battery() ─→ paired? ─→ take the lock ─→ ensure_connected()
+                                                                     └─→ already up? request_battery()
 30 s idle      ─→ disconnect()
 entry unload   ─→ async_shutdown() ─→ cancel idle task, disconnect under the lock
 ```
+
+The one scheduled thing is the **battery check-in** (`BATTERY_POLL_INTERVAL`, 6 h, plus one run
+`BATTERY_POLL_STARTUP_DELAY` after setup). It exists because the lamp never reports unprompted: without it the
+level only refreshes when a light command happens to reach the lamp, so a lamp left off keeps a stale reading
+indefinitely. It reads battery **only** — it sends no light command and cannot change what the lamp is doing,
+which is also how the vendor app behaves (it polls the same command on a timer with every lamp dark, roughly
+every 40 s while its screen is open). Both timers are cancelled via `entry.async_on_unload`.
+
+It deliberately **refuses to run on an unpaired lamp**: `ensure_connected()` would otherwise start the pairing
+handshake, which makes the lamp flash, unattended and at an arbitrary hour. It also swallows every failure — an
+out-of-range balcony lamp is the normal case, and a missed check-in must leave the last known level in place
+rather than clearing it or marking the entities unavailable.
 
 ### Learning what the lamp is, without deadlocking
 

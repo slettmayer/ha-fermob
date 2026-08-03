@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -15,6 +17,25 @@ DOMAIN = "fermob"
 PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 _STORAGE_VERSION = 1
+
+# How often to reach the lamp purely to read its battery.
+#
+# The lamp never reports unprompted, so without this the level only refreshes
+# when a light command happens to reach it -- a lamp left off for a week keeps a
+# week-old reading. Six hours gives a same-day figure and four chances to catch
+# the lamp in range.
+#
+# Unhurried by choice, not by caution: the vendor app polls this same command
+# roughly every 40 s whenever its screen is open, so four connects a day is some
+# three orders of magnitude less traffic than the manufacturer's own client.
+BATTERY_POLL_INTERVAL = timedelta(hours=6)
+
+# Also read once shortly after startup, for two reasons. The interval timer
+# restarts from zero on every reload, so on a box that is restarted often the
+# 6 h tick could otherwise never fire at all; and both battery entities read as
+# unavailable until the lamp has reported once, which would otherwise last until
+# something turns the light on. The delay lets the Bluetooth stack come up first.
+BATTERY_POLL_STARTUP_DELAY = timedelta(minutes=2)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -52,6 +73,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(conn.async_shutdown)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = conn
+
+    async def _battery_check_in(_now: datetime) -> None:
+        """Scheduled battery read. Swallows its own failures by contract."""
+        await conn.async_poll_battery()
+
+    # Both cancels are registered on the entry, so a reload or unload leaves no
+    # timer firing against a connection that has already been shut down.
+    entry.async_on_unload(
+        async_track_time_interval(hass, _battery_check_in, BATTERY_POLL_INTERVAL)
+    )
+    entry.async_on_unload(
+        async_call_later(hass, BATTERY_POLL_STARTUP_DELAY, _battery_check_in)
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload the entry when the user changes the lamp-type option.

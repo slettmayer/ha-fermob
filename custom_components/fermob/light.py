@@ -539,7 +539,7 @@ class FermobBLEConnection:
         if device is None:
             raise RuntimeError(f"Fermob BLE device not found: {self._address}")
 
-        _LOGGER.warning("Fermob %s: connecting…", self._address)
+        _LOGGER.debug("Fermob %s: connecting…", self._address)
         self._client = await establish_connection(BleakClient, device, self._address)
 
         # Flush any stale frames
@@ -563,7 +563,7 @@ class FermobBLEConnection:
 
         self._ready = True
         self._connected = True
-        _LOGGER.warning("Fermob %s: ready", self._address)
+        _LOGGER.debug("Fermob %s: ready", self._address)
         await self.request_battery()
         self._schedule_idle_disconnect()
 
@@ -618,6 +618,53 @@ class FermobBLEConnection:
         self._store_module_info(info)
         if self._have_keys:
             await self._save_keys()
+
+    async def async_poll_battery(self) -> None:
+        """Refresh the battery reading on a schedule, without touching the light.
+
+        Reading the battery needs a BLE connection and nothing else. No light
+        command is involved and connecting cannot change what the lamp is doing,
+        so a check-in is invisible: the vendor app polls the same command on a
+        timer with every lamp dark, and its connect routine sends nothing at all.
+
+        Takes the command lock, because `ensure_connected` is only ever safe
+        under it -- a check-in landing mid-transition waits for the in-flight
+        command rather than interleaving frames with it.
+
+        When the link is already up this sends the request explicitly instead of
+        relying on the connect path, which would not run: a lamp held connected
+        through a long adaptive-lighting evening would otherwise keep the reading
+        it happened to take at connect time for hours.
+
+        Never raises. A lamp out of range or switched off at the socket is the
+        normal case for a balcony lamp, not an error -- it must leave the last
+        known level in place rather than clearing it or marking the entity
+        unavailable, since the reading is explicitly "as of last contact".
+        """
+        # Never pair from a background timer: an unpaired lamp would run the full
+        # handshake, which makes it flash, unattended and at an arbitrary hour.
+        if not await self._load_keys():
+            _LOGGER.debug(
+                "Fermob %s: battery check-in skipped, not paired", self._address
+            )
+            return
+
+        async with self.lock:
+            connected = bool(
+                self._connected and self._client and self._client.is_connected
+            )
+            try:
+                await self.ensure_connected()
+                if connected:
+                    await self.request_battery()
+            except Exception:
+                # Broad on purpose: out of range, adapter busy, lamp asleep --
+                # all of it is routine here and none of it is worth a warning.
+                _LOGGER.debug(
+                    "Fermob %s: battery check-in did not reach the lamp",
+                    self._address,
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Lamp commands

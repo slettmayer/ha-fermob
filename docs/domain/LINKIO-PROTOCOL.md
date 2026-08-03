@@ -112,6 +112,20 @@ cannot otherwise get:
 | `LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag.** Payload `[3, 44, addr_lo, addr_hi]`; `255, 255` broadcasts to every module. The reply carries `LMP_PARAM_BATTERY_LEVEL` (192 / `0xC0`) — one byte, `percent = b & 0x7F`, `charging = b & 0x80`. The app polls it every 20 s and lists the H134 as battery-powered. **Implemented since 0.6.0** — it is an acknowledged mesh command, so it depends on the `0x32` header fix. The ACK carries no value (a bare `[2, 0x80, 0x00]` success); the reading arrives separately as a `STATUS` push with payload `[2, 0xC0, byte]`, confirmed on an H134 |
 | `LMP_COMMAND_MODULE_BATTERY_STATUS_GET` | 45 | Defined in the app but never called; unknown whether the firmware implements it |
 
+**Reading the battery needs a connection and nothing else — no light command, and no lit lamp.** Worth stating
+plainly because it is what makes the scheduled check-in possible. In the app, `requestModuleBatteryState` sends
+the one frame and reads the reply; the poll loop that drives it (`startPeriodicBatteryStatusRequest`) gates only
+on an internal flag, a non-empty module list, loop bounds and `m_module_role !== LEAF` — **nothing about light
+state**, and it runs on a timer with every lamp dark. The app's connect routine sends nothing at all: no wake,
+no state read, and no keep-alive exists anywhere (`HEARTBEAT_REQ` 42 and `CONNECT_CHECK` 34 are defined and
+never sent). Its cadence is `m_intervalStatusRequest` = 20 s between modules with a 30 s ACK timeout, alternating
+a light pass and a battery pass, so a single-lamp install is polled roughly every 40 s while the app is open.
+
+Two related commands are **dead** in the app — defined in `CODES` and never called: `MODULE_PROPERTY_GET` (54)
+and `DEVICE_PROPERTY_GET` (68), alongside 45 above. `requestLatestsModulePeriodicStatuses` (a `LOCAL`-addressed
+`[3, 44, 255, 255]` form) is reachable in principle but no UI path calls it. So there is no unexplored
+battery or state route left in the app.
+
 ### MODULE_INFO_GET
 
 `CMD_MODULE_INFO_GET` returns a TLV list — each entry `[length, type, ...value]`, where `length` counts the type
