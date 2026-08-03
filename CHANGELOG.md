@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.6.1
+
+No change to how the lamp behaves. This settles, on hardware, whether Home
+Assistant can ever read the lamp's light state back — and removes the dead code
+that implied it might.
+
+The short answer is no, and 0.6.0 said so, but for the wrong reason twice over.
+
+- **Reading state back is not possible on a MOOON! H134, and both candidate
+  commands have now been tried on the lamp.** `DEVICE_DATA_GET` is refused; the
+  command the official app actually uses is accepted, but the lamp answers it
+  with a record that never changes — it reported the lamp off while it was lit,
+  and returned byte-identical data across three on/off cycles.
+- **The unused `get_state()` has been removed** rather than left as a method
+  that looks usable and is not. Applying what that query returns would make
+  things worse, not better: it would push Home Assistant to "off" while the lamp
+  was on. The lamp's state in Home Assistant continues to come from the commands
+  we send it.
+- The reasoning, the frames and the traces are recorded in
+  `docs/domain/LINKIO-PROTOCOL.md` so this is not investigated a fourth time,
+  along with the one case still worth testing: whether pressing the lamp's own
+  button updates the record.
+
+Also corrects the 0.6.0 documentation of the battery command, which was still
+described as unimplemented after it shipped.
+
 ## 0.6.0
 
 Battery-powered lamps now report their state of charge.

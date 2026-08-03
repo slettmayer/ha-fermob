@@ -100,7 +100,8 @@ We use `cryptography` for this, not pycryptodome. See [TECH-STACK.md](../tech/TE
 | `CMD_MODULE_INFO_GET` | 48 | TLV list; we read the short address and API version |
 | `CMD_DEVICE_INFO_GET` | 50 | Optional info, response ignored |
 | `CMD_DEVICE_DATA_SET` | 65 (`0x41`) | **Set the light** |
-| `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — never answered so far, but see the header note above |
+| `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — rejected by the H134 with `INVALID_SIZE`; **not sent**, see Dead ends |
+| `CMD_DEVICES_DATA_LIST_GET` | 74 (`0x4A`) | The app's real state read — accepted by the H134, but returns a frozen record; **not sent**, see Dead ends |
 
 The app's full command enum runs to 60-odd entries; the ones above are what this integration sends. The
 complete table is in the APK analysis. Two worth knowing about because they are the only route to data we
@@ -108,7 +109,7 @@ cannot otherwise get:
 
 | Constant | Value | Purpose |
 |---|---|---|
-| `LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag.** Payload `[3, 44, addr_lo, addr_hi]`; `255, 255` broadcasts to every module. The reply carries `LMP_PARAM_BATTERY_LEVEL` (192 / `0xC0`) — one byte, `percent = b & 0x7F`, `charging = b & 0x80`. The app polls it every 20 s and lists the H134 as battery-powered. Not implemented here yet: it is an acknowledged mesh command, so it depends on the `0x32` header fix, and the reply's address-echo bytes are still unverified on hardware |
+| `LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag.** Payload `[3, 44, addr_lo, addr_hi]`; `255, 255` broadcasts to every module. The reply carries `LMP_PARAM_BATTERY_LEVEL` (192 / `0xC0`) — one byte, `percent = b & 0x7F`, `charging = b & 0x80`. The app polls it every 20 s and lists the H134 as battery-powered. **Implemented since 0.6.0** — it is an acknowledged mesh command, so it depends on the `0x32` header fix. The ACK carries no value (a bare `[2, 0x80, 0x00]` success); the reading arrives separately as a `STATUS` push with payload `[2, 0xC0, byte]`, confirmed on an H134 |
 | `LMP_COMMAND_MODULE_BATTERY_STATUS_GET` | 45 | Defined in the app but never called; unknown whether the firmware implements it |
 
 ### MODULE_INFO_GET
@@ -262,7 +263,15 @@ stale frame it would prevent. Revisit once we have observed what the H134 actual
 
 ## Dead ends — do not re-litigate these
 
-- ~~**`DEVICE_DATA_GET` is not answered once the lamp is in gateway mode.**~~ **Retracted 2026-08-03.** The frame was *not* built correctly: it went out with message type 2 (`CMD_ACK`), so the lamp read our query as an acknowledgement. Blaming gateway mode was a misdiagnosis. `get_state()` now sends header `0x32` as the app does, and we additionally used to discard the `MSG_STATUS`/marker-147 form its reply would most likely take. Whether the H134 answers the corrected frame is **untested** — `get_state()` is still not called by the entity. Retest before treating this as a dead end again.
+- **Reading light state back does not work on an H134 — settled on hardware 2026-08-03, both candidate commands tried.** This entry replaces two earlier wrong versions: first "gateway mode refuses the query" (the frame was simply malformed, message type 2 = `CMD_ACK`), then "the body is the wrong size" (it is not — see below). The header fix, and accepting the `MSG_STATUS`/marker-147 reply form, were both real and are kept; they are what made the probe legible.
+
+  **`DEVICE_DATA_GET` (66) is rejected with `INVALID_SIZE` (18).** Not because our body was wrong: the app's `requestModuleLightState` sends `[14, 66, 0]` + twelve `0xFF`, which is byte-for-byte what we sent. The app only ever calls it for modules whose `m_module_role !== LEAF`, and the H134 is a leaf — so it is the wrong command for this lamp, and the error name is misleading. Do not reshape the payload; that was tried and it is not the problem.
+
+  **`DEVICES_DATA_LIST_GET` (74) is the app's real state read, and the lamp accepts it.** Sent by `requestLatestsModuleStatuses` as `CMD_WITH_ACK` + SHORT with body `[12, 74, 255, 255, dev_index, 0,0,0,0, <local time, LE uint32>]`; the direct-connection form puts the short address in bytes 2–3 instead. Both forms were verified on the H134: success ACK, followed by a `DEVICE_DATA` push (`mt=4`, marker 147) — the whole path works end to end, and `parse_device_state` reads it correctly.
+
+  **But the record it returns is frozen, which is why nothing sends it.** Eight reads across ~5 minutes and three on/off cycles came back byte-identical — `0a9300250000000010191900ffffff` → `is_on=False, ch1=25, ch2=25` — *including* reads taken while the lamp was lit, and including the bytes at 3–6 that the app treats as a timestamp. The channel values never track what we actually commanded either (adaptive lighting varies them continuously; the record says 25/25 forever). The likely explanation is that the record only follows an acknowledged, addressed `DEVICE_DATA_SET`, whereas we drive the lamp with `MSG_FIRE` — but that is inference, not tested.
+
+  Wiring this to `on_state_change` is **worse than not reading at all**: during the probe it drove the HA entity to "off" while the lamp was on. If this is revisited, the open question is whether a *physical button press* updates the record — that was not tested, and it is the only case where a working read would buy anything.
 - **The lamp emits no EVENT after a plain BLE reconnect.** Only the post-`REGISTER_END` EVENT during first pairing arrives unsolicited. So there is no way to resync state on reconnect, and a button press outside the connected window is simply lost.
 - **The post-`REGISTER_END` EVENT's state payload is useless to us.** Connections are only ever established *from* a command, so whatever state it reports is overwritten a few milliseconds later by the command that triggered the connection. The EVENT is still waited for — as a gateway-mode confirmation and settle gate — but its contents are only logged.
 - **The model is not in the advertisement.** It rotates and is encrypted, so `module_type` (401 dimmable / 404 tunable) cannot be sniffed *before* pairing — a branch that attempted this was removed as dead code. It **is** readable after connecting, from `MODULE_INFO_GET`; that is a different question and it is now answered.

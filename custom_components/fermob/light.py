@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from typing import Any
 
 from bleak import BleakClient
@@ -38,9 +37,7 @@ from .protocol import (
     CMD_CRYPT_AUTHKEY_GET,
     CMD_CRYPT_NONCE_GENERATE,
     CMD_CRYPT_SET,
-    CMD_DEVICE_DATA_GET,
     CMD_DEVICE_INFO_GET,
-    CMD_DEVICES_DATA_LIST_GET,
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
@@ -74,11 +71,6 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# State-read probe (scratch commit — removed before this branch ships).
-# Separate logger so the probe output can be filtered on its own.
-_DIAG = logging.getLogger(f"{__name__}.state_probe")
-_PROBE_ENABLED = True
 
 DEFAULT_BRIGHTNESS_PCT = 50
 DEFAULT_KELVIN = 4000
@@ -235,12 +227,6 @@ class FermobBLEConnection:
         h0 = frame[0]
         mt = (h0 >> 5) & 7
 
-        # PROBE: log every inbound frame before any routing decision. The state
-        # reply is expected to arrive as a *push*, not in the ACK, so it would
-        # otherwise only be visible if it happened to pass the marker check.
-        if _PROBE_ENABLED:
-            self._probe_log_inbound(frame, h0, mt)
-
         if mt in STATE_PUSH_TYPES:
             # Not gated on on_state_change: a battery push is a state push too,
             # and it must still be dispatched when only the sensor cares.
@@ -379,8 +365,8 @@ class FermobBLEConnection:
         """Wait for the lamp's post-REGISTER_END state EVENT (mt=4).
 
         After REGISTER(1) the lamp emits its current state as an EVENT ~200-300 ms
-        later. Capturing it confirms the lamp entered GATEWAY mode and gives us the
-        real state without a separate DEVICE_DATA_GET round-trip.
+        later. Capturing it confirms the lamp entered GATEWAY mode, and it is the
+        only state the lamp ever volunteers -- no query returns usable state.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
@@ -568,8 +554,8 @@ class FermobBLEConnection:
         else:
             # Reconnect: the lamp retains GATEWAY+PRIVATE state across BLE
             # disconnects, so no crypto handshake is needed. It also emits no
-            # spontaneous EVENT here, and DEVICE_DATA_GET is not ACKed in this
-            # state, so there is no state to read back.
+            # spontaneous EVENT here, and neither state-read command returns
+            # anything usable, so there is no state to read back.
             _LOGGER.debug(
                 "Fermob %s: reconnected (lamp keeps GATEWAY state)", self._address
             )
@@ -579,154 +565,7 @@ class FermobBLEConnection:
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
         await self.request_battery()
-        await self._probe_state_read()
         self._schedule_idle_disconnect()
-
-    # ------------------------------------------------------------------
-    # State-read probe (scratch commit — see the branch's opening commit)
-    #
-    # Settles which command reads lamp state back. The APK says command 66
-    # (DEVICE_DATA_GET) is only ever sent to modules whose role is *not* LEAF,
-    # and our H134 is a leaf -- which is why it answers 66 with INVALID_SIZE
-    # even though we now send the app's byte-exact body. The app's own state
-    # read is command 74 (DEVICES_DATA_LIST_GET, `requestLatestsModuleStatuses`),
-    # whose ACK handler is just `setModuleTime` -- so the state comes back as a
-    # push, exactly as the battery value does.
-    #
-    # Delete this block and the two _PROBE/_DIAG globals to get back to a
-    # shippable tree.
-    # ------------------------------------------------------------------
-
-    def _probe_log_inbound(self, frame: bytes, h0: int, mt: int) -> None:
-        """Log every inbound frame, decoded where possible. Never raises."""
-        try:
-            pl = decode_fragment(
-                frame, (h0 >> 3) & 3, self._pub, self._priv, self._nonce
-            )
-            marker = pl[1] if len(pl) > 1 else None
-            note = ""
-            if marker in DEVICE_DATA_MARKERS:
-                note = f"  <<< DEVICE_DATA state={parse_device_state(pl)}"
-            _DIAG.warning(
-                "Fermob %s: PROBE in  mt=%d ft=%d marker=%s hex=%s%s",
-                self._address,
-                mt,
-                h0 & 7,
-                marker,
-                pl.hex(),
-                note,
-            )
-        except Exception:
-            _DIAG.warning(
-                "Fermob %s: PROBE in  mt=%d undecodable raw=%s",
-                self._address,
-                mt,
-                frame.hex(),
-            )
-
-    async def _probe_state_read(self) -> None:
-        """Ask for lamp state three ways. Never raises."""
-        if not _PROBE_ENABLED:
-            return
-        # The app stamps each state request with local wall-clock as a
-        # little-endian uint32 (getLocalTime: epoch shifted by the TZ offset).
-        local = datetime.now().astimezone()
-        offset = local.utcoffset() or timedelta(0)
-        now = int(local.timestamp() + offset.total_seconds())
-        stamp = [
-            now & 0xFF,
-            (now >> 8) & 0xFF,
-            (now >> 16) & 0xFF,
-            (now >> 24) & 0xFF,
-        ]
-        try:
-            # 1. The app's MESH/SHORT form: 255,255 in the body, real address
-            #    in the frame. Same split the battery request uses.
-            await self._probe_one(
-                "74 DEVICES_DATA_LIST_GET bcast-body",
-                [12, CMD_DEVICES_DATA_LIST_GET, 0xFF, 0xFF, 0, 0, 0, 0, 0, *stamp],
-                addressed=True,
-            )
-            # 2. The app's DIRECT/LOCAL form, which puts the short address in
-            #    the body instead -- note the app writes it high-byte-second.
-            await self._probe_one(
-                "74 DEVICES_DATA_LIST_GET addr-body",
-                [
-                    12,
-                    CMD_DEVICES_DATA_LIST_GET,
-                    self._addr_b2,
-                    self._addr_b3,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    *stamp,
-                ],
-                addressed=True,
-            )
-            # 3. Control: command 66 with the app's byte-exact body. Expected to
-            #    fail with INVALID_SIZE again; confirms the rejection is about
-            #    the command, not about our framing of it.
-            await self._probe_one(
-                "66 DEVICE_DATA_GET app-body",
-                [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12,
-                addressed=True,
-            )
-            _DIAG.warning(
-                "Fermob %s: PROBE requests sent; inbound frames logged for the "
-                "next %.0fs (idle-disconnect window)",
-                self._address,
-                _IDLE_DISCONNECT_DELAY,
-            )
-        except Exception:  # a diagnostic must never break the light path
-            _DIAG.warning("Fermob %s: PROBE failed", self._address, exc_info=True)
-
-    async def _probe_one(
-        self, label: str, payload: list[int], *, addressed: bool
-    ) -> None:
-        """Send one probe frame and dump whatever comes back.
-
-        A rejection is logged by `_send_frames` as "rejected: <NAME>" and shows
-        up here as "no ACK payload"; a silent lamp costs one 3 s timeout, which
-        `_send_frames` also logs. Both outcomes are readable in sequence.
-        """
-        sid = self._next_seq()
-        frame = build_short(
-            MSG_CMD,
-            ENCRYPT_PRIVATE,
-            payload,
-            sid,
-            self._pub,
-            self._priv,
-            self._nonce,
-            b2=self._addr_b2 if addressed else 0,
-            b3=self._addr_b3 if addressed else 0,
-            addressed=addressed,
-        )
-        _DIAG.warning(
-            "Fermob %s: PROBE out %s hdr=%02x seq=%02x body=%s",
-            self._address,
-            label,
-            frame[0],
-            sid,
-            bytes(payload).hex(),
-        )
-        pl, enc = await self._send_frames([frame])
-        if not pl:
-            _DIAG.warning(
-                "Fermob %s: PROBE out %s ← no ACK payload (rejected or timed out)",
-                self._address,
-                label,
-            )
-            return
-        _DIAG.warning(
-            "Fermob %s: PROBE out %s ← ACK enc=%d hex=%s",
-            self._address,
-            label,
-            enc,
-            pl.hex(),
-        )
 
     # ------------------------------------------------------------------
     # What the lamp says it is
@@ -816,42 +655,22 @@ class FermobBLEConnection:
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
 
-    async def get_state(self) -> tuple[bool, int, int] | None:
-        """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
-
-        Still unused by the entity, and it does not work on an H134.
-
-        The frame used to go out as message type 2, which is CMD_ACK -- the lamp
-        read our request as an acknowledgement and had no reason to answer. With
-        that fixed to CMD_WITH_ACK + SHORT address (header 0x32), the lamp does
-        answer, so the old docstring blaming GATEWAY mode for the silence was
-        wrong. What it answers with is `INVALID_SIZE` (error 18).
-
-        The body below is the app's own, byte for byte -- its
-        `requestModuleLightState` sends exactly `[14, 66, 0]` + twelve `0xFF`.
-        So the rejection is *not* about the size the error names, and reshaping
-        the body is not the fix. Why the lamp rejects a command the app sends
-        verbatim is followed up separately; see
-        `docs/domain/LINKIO-PROTOCOL.md`.
-        """
-        payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
-        sid = self._next_seq()
-        frame = build_short(
-            MSG_CMD,
-            ENCRYPT_PRIVATE,
-            payload,
-            sid,
-            self._pub,
-            self._priv,
-            self._nonce,
-            b2=self._addr_b2,
-            b3=self._addr_b3,
-            addressed=True,
-        )
-        pl, _ = await self._send_frames([frame])
-        if pl:
-            return parse_device_state(pl)
-        return None
+    # There is deliberately no state-read method here. Both candidate commands
+    # were tried on an H134 and neither yields usable state -- see
+    # `docs/domain/LINKIO-PROTOCOL.md` for the traces. In short:
+    #
+    #   * `DEVICE_DATA_GET` (66) is answered with `INVALID_SIZE`, even when sent
+    #     with the app's byte-exact body. The app only ever sends it to modules
+    #     whose role is not LEAF, and this lamp is a leaf.
+    #   * `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
+    #     accepted and does push a `DEVICE_DATA` reply -- but the record it
+    #     returns is frozen. Eight reads across on/off cycles came back
+    #     byte-identical, reporting the lamp off while it was lit.
+    #
+    # Wiring that reply to `on_state_change` is therefore worse than not reading
+    # at all: during the probe it drove the HA entity to "off" while the lamp was
+    # on. `parse_device_state` stays, because unsolicited EVENT pushes during
+    # pairing use the same layout.
 
     async def send_led(
         self, on: bool, brightness_pct: int | None = None, warm_ratio: float = 0.5
@@ -960,8 +779,8 @@ class FermobLight(LightEntity):
     """Representation of a Fermob BLE lamp (dimmable-white or tunable-white)."""
 
     # State is pushed: by our own commands, and by EVENT notifications while the
-    # BLE link is up. There is nothing to poll -- the lamp does not answer
-    # DEVICE_DATA_GET in GATEWAY mode (see FermobBLEConnection.get_state).
+    # BLE link is up. There is nothing to poll -- neither state-read command
+    # returns usable state on this lamp (see FermobBLEConnection.send_led).
     _attr_should_poll = False
 
     def __init__(
@@ -1009,7 +828,7 @@ class FermobLight(LightEntity):
         )
 
     # ------------------------------------------------------------------
-    # State sync from the lamp (unsolicited EVENT or DEVICE_DATA_GET)
+    # State sync from the lamp (unsolicited EVENT during pairing)
     # ------------------------------------------------------------------
 
     def on_lamp_state_change(self, is_on: bool, ch1: int, ch2: int) -> None:
