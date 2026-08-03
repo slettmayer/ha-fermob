@@ -10,6 +10,12 @@ Frame layout (20 bytes, written to LINKIO_TXRX_CHARACTERISTIC):
     [2..3]   short address (b2/b3) for mesh frames, else 0
     [4..19]  encrypted( [crc] + payload padded to 15 bytes )
 
+`msg_type` and `frame_type` are independent: the message type says whether the
+lamp must acknowledge, the frame type says how the frame is addressed. An
+acknowledged, SHORT-addressed command is therefore MSG_CMD with frame type 2
+(header 0x32 under PRIVATE encryption), not message type 2 -- message type 2
+is CMD_ACK, which is what the *lamp* sends back.
+
 Encryption is an AES-ECB keystream: the 16-byte nonce is encrypted with the
 public or private key and XORed over the 16-byte body.
 
@@ -45,11 +51,19 @@ ENCRYPT_NONE = 0
 ENCRYPT_PUBLIC = 1
 ENCRYPT_PRIVATE = 2
 
-# Frame message types
-MSG_FIRE = 0  # CMD_WITH_NO_ACK — lmp_short_frame (ft=2)
-MSG_CMD = 1  # CMD_WITH_ACK    — local_short_frame (ft=0)
-MSG_MESH_CMD = 2  # CMD_WITH_ACK    — lmp_short_frame  (ft=2, SHORT addr)
-MSG_EVENT = 4  # unsolicited notification from the lamp
+# Frame message types (JS lmp_module_msg_type). This is the *message* type
+# only -- the frame type in the low bits of the header is chosen by the
+# addressing mode, not by this value, so the two are passed separately to
+# `build_short`.
+MSG_FIRE = 0  # CMD_WITH_NO_ACK — a command we do not expect a reply to
+MSG_CMD = 1  # CMD_WITH_ACK    — a command the lamp must acknowledge
+MSG_CMD_ACK = 2  # CMD_ACK         — the lamp's *reply*; we never send this
+MSG_STATUS = 3  # STATUS          — solicited state push
+MSG_EVENT = 4  # EVENT           — unsolicited state push
+
+# The app routes STATUS and EVENT through one shared branch, so both carry lamp
+# state and both must be dispatched to the entity.
+STATE_PUSH_TYPES = (MSG_STATUS, MSG_EVENT)
 
 # LMP command IDs (JS CODES)
 CMD_REGISTER = 16
@@ -66,7 +80,32 @@ CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
-LMP_EVENT_DEVICE_DATA = 146
+LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
+LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
+LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
+
+# Both markers carry an identical body, and the app parses them through one
+# shared branch -- as it does for the STATUS and EVENT message types that wrap
+# them. Accepting only 146/EVENT silently discarded solicited state.
+DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
+
+# LMP error codes (JS lmp_error_codes_e), used in the third byte of an ACK.
+LMP_ERRORS = {
+    0: "SUCCESS",
+    1: "NOT_SUPPORTED",
+    2: "INVALID_COMMAND",
+    3: "INVALID_PARAMETER",
+    4: "INVALID_DEVICE",
+    5: "UNREGISTERED",
+    6: "CLEAR_MSG_UNAUTHORIZED",
+    7: "CRYPT_MSG",
+    8: "TIMEOUT",
+    9: "CONNECT_ERROR",
+    10: "MEMORY_FAIL",
+    11: "MEMORY_FULL",
+    18: "INVALID_SIZE",
+    20: "ITEM_NOT_FOUND",
+}
 
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"
@@ -151,9 +190,16 @@ def build_short(
     nonce: bytes,
     b2: int = 0,
     b3: int = 0,
+    addressed: bool = False,
 ) -> bytes:
-    """Build a single 20-byte frame."""
-    ft = 2 if msg_type in (MSG_FIRE, MSG_MESH_CMD) else 0
+    """Build a single 20-byte frame.
+
+    `addressed` selects the frame type independently of `msg_type`, mirroring
+    the app: a SHORT-addressed frame is `lmp_short_frame` (2), an unaddressed
+    one is `local_short_frame` (0). The frame type is *not* a function of the
+    message type -- CMD_WITH_ACK appears with both.
+    """
+    ft = 2 if addressed else 0
     hdr = ((msg_type & 7) << 5) | ((enc & 3) << 3) | ft
     p = pad15(payload)
     enc_data = crypt(bytes([crc(bytes(p)), *p]), enc, pub, priv, nonce)
@@ -245,6 +291,25 @@ def module_type_to_light_type(module_type: int | None) -> str | None:
     if module_type is None:
         return None
     return _MODULE_TYPE_FAMILIES.get(module_type)
+
+
+def ack_error(payload: bytes) -> int | None:
+    """Return the LMP error code if `payload` is a *failed* acknowledgement.
+
+    Returns None when the payload is a successful ACK or is not an ACK at all
+    (a MODULE_INFO_GET reply, say, is a TLV list with no ACK entry). The app
+    checks this byte and abandons the response when it is non-zero; we used to
+    treat any correctly-sequenced reply as success, so a rejected command was
+    indistinguishable from a completed one.
+    """
+    if len(payload) < 3 or payload[1] != LMP_STATUS_ACK:
+        return None
+    return payload[2] or None
+
+
+def error_name(code: int) -> str:
+    """Human-readable name for an LMP error code, for log messages."""
+    return LMP_ERRORS.get(code, f"UNKNOWN({code})")
 
 
 def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:

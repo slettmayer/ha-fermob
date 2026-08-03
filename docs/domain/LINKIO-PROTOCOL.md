@@ -39,15 +39,37 @@ Every frame is exactly 20 bytes:
 
 ### Message types
 
-| Name | Value | Frame type | Meaning |
+| Name | Value | Direction | Meaning |
 |---|---|---|---|
-| `MSG_FIRE` | 0 | 2 | Command with **no ACK** — fire and forget (`lmp_short_frame`) |
-| `MSG_CMD` | 1 | 0 | Command with ACK (`local_short_frame`) |
-| `MSG_MESH_CMD` | 2 | 2 | Command with ACK, addressed via the short address |
-| `MSG_EVENT` | 4 | — | Inbound only: unsolicited notification from the lamp |
+| `MSG_FIRE` | 0 | out | Command with **no ACK** — fire and forget |
+| `MSG_CMD` | 1 | out | Command the lamp must acknowledge |
+| `MSG_CMD_ACK` | 2 | in | The lamp's acknowledgement of one of our commands |
+| `MSG_STATUS` | 3 | in | Lamp state, pushed in reply to a query |
+| `MSG_EVENT` | 4 | in | Lamp state, pushed unsolicited |
+
+**The message type does not determine the frame type.** They are independent: the message type says whether
+the lamp must acknowledge, the frame type says how the frame is addressed — SHORT gives `lmp_short_frame`
+(2), LOCAL gives `local_short_frame` (0). `MSG_CMD` legitimately appears with both, so `build_short` takes an
+explicit `addressed` flag.
+
+This is worth stating plainly because getting it wrong is a silent failure. Until 0.5.1 this module defined
+`MSG_MESH_CMD = 2` for "command with ACK, addressed via the short address" — but 2 is `MSG_CMD_ACK`, the
+lamp's *reply* type. Sending it told the lamp our request was an acknowledgement, so it never answered. An
+acknowledged, SHORT-addressed command is `MSG_CMD` with frame type 2, i.e. header **`0x32`** under
+`ENCRYPT_PRIVATE` — not `0x52`.
 
 An ACK is an inbound frame with message type `2` whose `[1]` equals the sequence number we sent. Anything
 else is ignored. `_send_frames()` waits 3 s.
+
+**A matching ACK is not necessarily a success.** Byte `[2]` of an ACK TLV is an `LMP_ERRORS` code; non-zero
+means the command was rejected. `ack_error()` checks it and `_send_frames()` reports failure, because
+otherwise a NAK body gets parsed as if it were real data — which in the handshake meant storing an error
+payload as the lamp's private key.
+
+Both `MSG_STATUS` and `MSG_EVENT` carry lamp state, and both `LMP_EVENT_DEVICE_DATA` (146) and
+`LMP_STATUS_DEVICE_DATA` (147) mark it, with identical bodies. Accept all four combinations
+(`STATE_PUSH_TYPES`, `DEVICE_DATA_MARKERS`) — listening only for the unsolicited pair discards every
+solicited reply.
 
 ### Encryption
 
@@ -78,7 +100,16 @@ We use `cryptography` for this, not pycryptodome. See [TECH-STACK.md](../tech/TE
 | `CMD_MODULE_INFO_GET` | 48 | TLV list; we read the short address and API version |
 | `CMD_DEVICE_INFO_GET` | 50 | Optional info, response ignored |
 | `CMD_DEVICE_DATA_SET` | 65 (`0x41`) | **Set the light** |
-| `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — **not answered in gateway mode**, see below |
+| `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — never answered so far, but see the header note above |
+
+The app's full command enum runs to 60-odd entries; the ones above are what this integration sends. The
+complete table is in the APK analysis. Two worth knowing about because they are the only route to data we
+cannot otherwise get:
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag.** Payload `[3, 44, addr_lo, addr_hi]`; `255, 255` broadcasts to every module. The reply carries `LMP_PARAM_BATTERY_LEVEL` (192 / `0xC0`) — one byte, `percent = b & 0x7F`, `charging = b & 0x80`. The app polls it every 20 s and lists the H134 as battery-powered. Not implemented here yet: it is an acknowledged mesh command, so it depends on the `0x32` header fix, and the reply's address-echo bytes are still unverified on hardware |
+| `LMP_COMMAND_MODULE_BATTERY_STATUS_GET` | 45 | Defined in the app but never called; unknown whether the firmware implements it |
 
 ### MODULE_INFO_GET
 
@@ -89,21 +120,27 @@ byte plus the value. `protocol.iter_tlv` walks it and `protocol.parse_module_inf
 The table below is the **complete** TLV set of a real MOOON! H134, captured 2026-08-02. It is pinned verbatim as
 `H134_MODULE_INFO` in `tests/test_protocol.py` — the only hardware-derived expectation in that suite.
 
+The names come from the app's own `parseModuleInfoData`, so they are the manufacturer's, not ours. Four rows
+that were "unidentified" when this table was captured are named as of the APK analysis (2026-08-03).
+
 | Type | Value on the H134 | What it is |
 |---|---|---|
-| `0x80` | `00` | status/ack; always zero here |
-| `0xaf` | MAC, `07`, `000000`, `9401`, `04` | composite block: address, manufacturer_id **7**, module_type, unknown |
+| `0x80` | `00` | `LMP_STATUS_ACK` — status; always zero here |
+| `0xaf` | MAC, `07`, `000000`, `9401`, `04` | `LMP_PARAM_MODULE_REFERENCE` — composite: address, manufacturer_id **7**, module_type. The app defines it but never parses it, so the internal layout is ours to guess; don't rely on it |
 | `0xb4` | `9401` | **`LMP_PARAM_MODULE_TYPE`** — little-endian uint16, `404` |
-| `0xb5` | `00 02 03 15` | unidentified; plausibly a version |
-| `0xb6` | `01 00 00` | unidentified |
-| `0xb8` | `02` | `LMP_PARAM_API_VERSION` |
-| `0xc1` | `00` | unidentified single byte |
-| `0xb9` | `00` | unidentified single byte |
-| `0xb0` | MAC | full address, little-endian |
+| `0xb5` | `00 02 03 15` | `LMP_PARAM_MODULE_SW_VERSION`. The app reads it **reordered** as `[v3, v4, v5, v2]`, i.e. `02 03 15 00` here — so the leading `00` is the last component, not the first |
+| `0xb6` | `01 00 00` | `LMP_PARAM_MODULE_HW_VERSION` — read in order as `[v2, v3, v4]` |
+| `0xb8` | `02` | `LMP_PARAM_MODULE_API_VERSION` |
+| `0xc1` | `00` | `LMP_PARAM_ROLE` — `0` is not `LEAF` (6), which is what the app requires before polling a module |
+| `0xb9` | `00` | `LMP_PARAM_DEV_LIST_CHANGEABLE` |
+| `0xb0` | MAC | `LMP_PARAM_MAC_ADDRESS` — full address, little-endian |
 | `0xb1` | `757e` | **`LMP_PARAM_SHORT_ADDRESS`** |
-| `0xb2` | `Fermob` | manufacturer name, NUL-padded to 16 |
-| `0xb3` | `MOOON - H134` | **`LMP_PARAM_MODEL`** — NUL-padded to 16 |
-| `0xb7` | `Moon7E75` | the lamp's own device name |
+| `0xb2` | `Fermob` | `LMP_PARAM_MANUFACTURER_NAME`, NUL-padded to 16 |
+| `0xb3` | `MOOON - H134` | **`LMP_PARAM_MODEL_NAME`** — NUL-padded to 16 |
+| `0xb7` | `Moon7E75` | `LMP_PARAM_MODULE_NAME` — the lamp's own device name |
+
+Both `0xb5` and `0xb6` are already in a response we make on every reconnect, so surfacing firmware and
+hardware version in the HA device registry costs no extra round-trip. Not done yet.
 
 `module_type` (`0xb4`) and the model string (`0xb3`) are what make lamp-family detection exact — see
 [OVERVIEW.md](OVERVIEW.md#lamp-family-detection). The API version is parsed and returned but still not branched
@@ -196,23 +233,37 @@ skew as a specified behaviour.
 
 ## Inbound state
 
-`protocol.parse_device_state` handles both `DEVICE_DATA_GET` responses and `EVENT_DEVICE_DATA`
-notifications (identified by `payload[1] == 146`):
+`protocol.parse_device_state` handles both solicited and unsolicited state — `DEVICE_DATA_GET` responses and
+device-data pushes, identified by `payload[1]` being either marker in `DEVICE_DATA_MARKERS` (146 or 147):
 
 ```
+payload[1]        146 = LMP_EVENT_DEVICE_DATA, 147 = LMP_STATUS_DEVICE_DATA (identical bodies)
+payload[2]        dev_index — routes to a sub-device; always 0 for a single lamp
+payload[3..6]     update timestamp, little-endian uint32 (see below)
 payload[7]        status — must be 0, else we reject the frame
 payload[8] & 0x0F is_on  (the high nibble carries led_mode, so mask it)
+payload[8] >> 4   led_mode — not read yet; tells us whether a timer or effect is running
 payload[9]        level (dimmable white) / cold_white (tunable white)
 payload[10]       warm_white (tunable white); defaults to 0 if the payload is only 10 bytes
+payload[11..14]   nothing. Not filler from the lamp — this is our own pad15 output
 ```
 
 The caller interprets the two channel bytes according to its configured family — `protocol.py` does not know
 which lamp it is talking to.
 
+**Bytes 11–14 are confirmed empty.** Every device parser in the app — dimmable white, tunable white, RGBW,
+temperature and the generic fallback — stops at byte 10. Nothing is hiding past `warm_white`.
+
+**The timestamp at 3–6 is a stale-frame guard, and we deliberately do not use it yet.** The app drops any
+state frame whose timestamp is older than the last one it saw. We could copy that, but the clock it compares
+against is set by `LMP_COMMAND_DATETIME_SET` (26) — which we never send. Against an unset or free-running
+lamp clock, a guard like that risks silently freezing state updates forever, which is far worse than the
+stale frame it would prevent. Revisit once we have observed what the H134 actually puts in those bytes.
+
 ## Dead ends — do not re-litigate these
 
-- **`DEVICE_DATA_GET` is not answered once the lamp is in gateway mode.** `FermobBLEConnection.get_state()` builds the frame correctly and is deliberately never called: every invocation would just burn the 3 s ACK timeout before each command. It is kept because it documents the command and other lamp families may answer it.
+- ~~**`DEVICE_DATA_GET` is not answered once the lamp is in gateway mode.**~~ **Retracted 2026-08-03.** The frame was *not* built correctly: it went out with message type 2 (`CMD_ACK`), so the lamp read our query as an acknowledgement. Blaming gateway mode was a misdiagnosis. `get_state()` now sends header `0x32` as the app does, and we additionally used to discard the `MSG_STATUS`/marker-147 form its reply would most likely take. Whether the H134 answers the corrected frame is **untested** — `get_state()` is still not called by the entity. Retest before treating this as a dead end again.
 - **The lamp emits no EVENT after a plain BLE reconnect.** Only the post-`REGISTER_END` EVENT during first pairing arrives unsolicited. So there is no way to resync state on reconnect, and a button press outside the connected window is simply lost.
 - **The post-`REGISTER_END` EVENT's state payload is useless to us.** Connections are only ever established *from* a command, so whatever state it reports is overwritten a few milliseconds later by the command that triggered the connection. The EVENT is still waited for — as a gateway-mode confirmation and settle gate — but its contents are only logged.
 - **The model is not in the advertisement.** It rotates and is encrypted, so `module_type` (401 dimmable / 404 tunable) cannot be sniffed *before* pairing — a branch that attempted this was removed as dead code. It **is** readable after connecting, from `MODULE_INFO_GET`; that is a different question and it is now answered.
-- **There is no battery level in the GATT table, and none in `DEVICE_INFO_GET`.** Both were checked on hardware — see the GATT table in [TECH-STACK.md](../tech/TECH-STACK.md#bluetooth). A charge level does exist (the official app displays one), so it is carried somewhere we have not looked: the untested candidates are the `DEVICE_DATA` EVENT payload past byte 10, ACK bodies, and commands absent from our constant list.
+- **There is no battery level in the GATT table, and none in `DEVICE_INFO_GET`.** Both were checked on hardware — see the GATT table in [TECH-STACK.md](../tech/TECH-STACK.md#bluetooth). That part stands, and it was never the right place to look: **battery is a module-level command, `MODULES_BATTERY_LEVEL_GET` (44)**, documented under Commands above. Of the three candidates this entry used to list, "past byte 10" is now positively ruled out and "commands absent from our constant list" was the right one.

@@ -41,23 +41,25 @@ from .protocol import (
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
+    DEVICE_DATA_MARKERS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
-    LMP_EVENT_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
-    MSG_EVENT,
+    MSG_CMD_ACK,
     MSG_FIRE,
-    MSG_MESH_CMD,
+    STATE_PUSH_TYPES,
     ModuleInfo,
+    ack_error,
     build_led_payload,
     build_long,
     build_short,
     decode_fragment,
+    error_name,
     kelvin_to_warm_ratio,
     module_type_to_light_type,
     parse_device_state,
@@ -181,7 +183,7 @@ class FermobBLEConnection:
                 exc_info=True,
             )
             return
-        if len(pl) < 10 or pl[1] != LMP_EVENT_DEVICE_DATA:
+        if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
             return
         state = parse_device_state(pl)
         if state is None:
@@ -199,7 +201,7 @@ class FermobBLEConnection:
         h0 = frame[0]
         mt = (h0 >> 5) & 7
 
-        if mt == MSG_EVENT:
+        if mt in STATE_PUSH_TYPES:
             if self._ready and self.on_state_change is not None:
                 self._dispatch_event(frame, (h0 >> 3) & 3)
             else:
@@ -218,7 +220,7 @@ class FermobBLEConnection:
         return self._seq
 
     async def _send_frames(self, frames: list[bytes]) -> tuple[bytes | None, int]:
-        """Write BLE frames and wait for the matching ACK (mt=2, cmd==seq)."""
+        """Write BLE frames and wait for the matching CMD_ACK (mt=2, cmd==seq)."""
         my_seq = frames[0][1]
         for frame in frames:
             await self._client.write_gatt_char(CHAR_UUID, frame, response=False)
@@ -265,15 +267,15 @@ class FermobBLEConnection:
                 frame.hex(),
             )
 
-            # mt=4 arrived while we were waiting for an ACK: re-route appropriately
-            if mt == MSG_EVENT:
+            # A state push arrived while we were waiting for an ACK: re-route it
+            if mt in STATE_PUSH_TYPES:
                 if self._ready and self.on_state_change is not None:
                     self._dispatch_event(frame, resp_enc)
                 else:
                     self._ack_queue.put_nowait(frame)
                 continue
 
-            if mt != 2 or cmd != my_seq:
+            if mt != MSG_CMD_ACK or cmd != my_seq:
                 _LOGGER.debug(
                     "Fermob %s: ignored frame (mt=%d cmd=%02x expected=%02x)",
                     self._address,
@@ -300,6 +302,21 @@ class FermobBLEConnection:
         if not fragments:
             return None, first_enc
         pl = b"".join(fragments[i] for i in sorted(fragments))
+
+        # A rejected command still arrives as a correctly-sequenced CMD_ACK, so
+        # without this check a NAK reads as success and whatever the caller
+        # parses out of the body is garbage -- silently storing bad keys, in the
+        # handshake's case.
+        err = ack_error(pl)
+        if err is not None:
+            _LOGGER.warning(
+                "Fermob %s: command seq=%02x rejected: %s",
+                self._address,
+                my_seq,
+                error_name(err),
+            )
+            return None, first_enc
+
         return pl, first_enc
 
     async def _send(self, enc: int, payload: list[int]) -> tuple[bytes | None, int]:
@@ -335,7 +352,7 @@ class FermobBLEConnection:
             if len(frame) < 20:
                 continue
             h0 = frame[0]
-            if (h0 >> 5) & 7 != MSG_EVENT:
+            if (h0 >> 5) & 7 not in STATE_PUSH_TYPES:
                 continue  # discard stray ACKs
             try:
                 pl = decode_fragment(
@@ -349,7 +366,7 @@ class FermobBLEConnection:
                     exc_info=True,
                 )
                 continue
-            if len(pl) >= 10 and pl[1] == LMP_EVENT_DEVICE_DATA:
+            if len(pl) >= 10 and pl[1] in DEVICE_DATA_MARKERS:
                 state = parse_device_state(pl)
                 if state is not None:
                     _LOGGER.debug(
@@ -578,16 +595,19 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
 
     async def get_state(self) -> tuple[bool, int, int] | None:
-        """Query current lamp state via DEVICE_DATA_GET (MESH CMD, SHORT addr).
+        """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
 
-        Unused: the MOOON! does not ACK this command once it is in GATEWAY mode,
-        so calling it would add a 3 s ACK timeout to every command. Kept because
-        it documents the protocol and other lamp families may answer it.
+        Still unused by the entity, but the frame it sends was wrong until now:
+        it went out as message type 2, which is CMD_ACK -- the lamp read our
+        request as an acknowledgement and had no reason to answer. The app sends
+        CMD_WITH_ACK (1) with a SHORT address, i.e. header 0x32. Whether the
+        MOOON! answers the corrected frame is untested on hardware; the previous
+        docstring blamed GATEWAY mode for the silence, which was probably wrong.
         """
         payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
         sid = self._next_seq()
         frame = build_short(
-            MSG_MESH_CMD,
+            MSG_CMD,
             ENCRYPT_PRIVATE,
             payload,
             sid,
@@ -596,6 +616,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=self._addr_b2,
             b3=self._addr_b3,
+            addressed=True,
         )
         pl, _ = await self._send_frames([frame])
         if pl:
@@ -621,6 +642,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=self._addr_b2,
             b3=self._addr_b3,
+            addressed=True,
         )
         _LOGGER.debug(
             "Fermob %s →FIRE (%s) %s", self._address, self.light_type, pkt.hex()
@@ -640,6 +662,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=0xFF,
             b3=0xFF,
+            addressed=True,
         )
         _LOGGER.warning("Fermob %s: sending UNREGISTER broadcast", self._address)
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)

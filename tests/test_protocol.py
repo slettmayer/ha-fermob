@@ -29,7 +29,9 @@ sys.modules["fermob_protocol"] = protocol
 _SPEC.loader.exec_module(protocol)
 
 from fermob_protocol import (  # noqa: E402 — must follow the loader above
+    CMD_DEVICE_DATA_GET,
     CMD_DEVICE_DATA_SET,
+    DEVICE_DATA_MARKERS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
@@ -37,17 +39,26 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     LED_MODE_COLOR,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
+    LMP_EVENT_DEVICE_DATA,
+    LMP_PARAM_SHORT_ADDRESS,
+    LMP_STATUS_ACK,
+    LMP_STATUS_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
+    MSG_CMD_ACK,
+    MSG_EVENT,
     MSG_FIRE,
-    MSG_MESH_CMD,
+    MSG_STATUS,
+    STATE_PUSH_TYPES,
+    ack_error,
     build_led_payload,
     build_long,
     build_short,
     crc,
     crypt,
     decode_fragment,
+    error_name,
     kelvin_to_warm_ratio,
     pad15,
     parse_device_state,
@@ -219,6 +230,7 @@ def test_build_short_frame_shape():
         NONCE,
         b2=0xAB,
         b3=0xCD,
+        addressed=True,
     )
     assert len(frame) == 20
     assert frame[0] == (MSG_FIRE << 5) | (ENCRYPT_PRIVATE << 3) | 2  # ft=2
@@ -226,15 +238,55 @@ def test_build_short_frame_shape():
     assert frame[2:4] == b"\xab\xcd"
 
 
-def test_frame_type_depends_on_message_type():
-    def ft(msg_type):
+def test_frame_type_depends_on_addressing_not_message_type():
+    """The frame type comes from the addressing mode alone.
+
+    Both message types appear with both frame types in the app, so the frame
+    type cannot be inferred from the message type -- which is what this module
+    used to do.
+    """
+
+    def ft(msg_type, addressed):
         return (
-            build_short(msg_type, ENCRYPT_NONE, [1], 0, KEY_PUB, KEY_PRIV, NONCE)[0] & 7
+            build_short(
+                msg_type,
+                ENCRYPT_NONE,
+                [1],
+                0,
+                KEY_PUB,
+                KEY_PRIV,
+                NONCE,
+                addressed=addressed,
+            )[0]
+            & 7
         )
 
-    assert ft(MSG_FIRE) == 2  # lmp_short_frame
-    assert ft(MSG_MESH_CMD) == 2  # lmp_short_frame, short address
-    assert ft(MSG_CMD) == 0  # local_short_frame
+    for msg_type in (MSG_FIRE, MSG_CMD):
+        assert ft(msg_type, True) == 2  # lmp_short_frame
+        assert ft(msg_type, False) == 0  # local_short_frame
+
+
+def test_acknowledged_mesh_command_header_is_0x32():
+    """Regression: an ACK'd, SHORT-addressed command must not use message type 2.
+
+    Message type 2 is CMD_ACK -- the lamp's own reply. Sending it made the lamp
+    read our request as an acknowledgement, so it never answered. The app sends
+    CMD_WITH_ACK (1) with a SHORT address instead.
+    """
+    frame = build_short(
+        MSG_CMD,
+        ENCRYPT_PRIVATE,
+        [14, CMD_DEVICE_DATA_GET, 0],
+        1,
+        KEY_PUB,
+        KEY_PRIV,
+        NONCE,
+        b2=0x12,
+        b3=0x34,
+        addressed=True,
+    )
+    assert frame[0] == 0x32
+    assert (frame[0] >> 5) & 7 != MSG_CMD_ACK
 
 
 @pytest.mark.parametrize("enc", (ENCRYPT_NONE, ENCRYPT_PUBLIC, ENCRYPT_PRIVATE))
@@ -292,6 +344,52 @@ def test_parse_device_state_rejects_bad_payloads():
 def test_parse_device_state_tolerates_missing_second_channel():
     """A 10-byte DW response has no warm byte; ch2 must default to 0."""
     assert parse_device_state(_state_payload(True, 55, 0)[:10]) == (True, 55, 0)
+
+
+def test_ack_error_flags_only_failed_acks():
+    """A non-zero third byte of an ACK TLV means the command was rejected."""
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 0, 0])) is None  # SUCCESS
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 5, 0])) == 5  # UNREGISTERED
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 7])) == 7  # CRYPT_MSG
+
+
+def test_ack_error_ignores_non_ack_payloads():
+    """Only ACK TLVs carry an error byte; other replies must pass through.
+
+    A MODULE_INFO_GET reply is a TLV list whose third byte is payload data, not
+    a status -- misreading it as an error would reject every successful info
+    read.
+    """
+    module_info = bytes([3, LMP_PARAM_SHORT_ADDRESS, 0x12, 0x34])
+    assert ack_error(module_info) is None
+    assert ack_error(_state_payload(True, 33, 67)) is None
+    assert ack_error(b"") is None
+    assert ack_error(b"\x03\x80") is None  # truncated before the error byte
+
+
+def test_error_name_covers_codes_and_unknowns():
+    assert error_name(0) == "SUCCESS"
+    assert error_name(5) == "UNREGISTERED"
+    assert error_name(99) == "UNKNOWN(99)"
+
+
+def test_solicited_state_is_recognised_alongside_unsolicited():
+    """Both DEVICE_DATA markers and both state message types must be accepted.
+
+    The app parses LMP_EVENT_DEVICE_DATA (146) and LMP_STATUS_DEVICE_DATA (147)
+    in one branch, wrapped in either the EVENT or the STATUS message type.
+    Accepting only the unsolicited pair discarded every solicited state reply.
+    """
+    assert DEVICE_DATA_MARKERS == (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
+    assert DEVICE_DATA_MARKERS == (146, 147)
+    assert STATE_PUSH_TYPES == (MSG_STATUS, MSG_EVENT)
+    assert STATE_PUSH_TYPES == (3, 4)
+
+    # The body is marker-independent: only byte 1 differs between the two.
+    for marker in DEVICE_DATA_MARKERS:
+        pl = bytearray(_state_payload(True, 33, 67))
+        pl[1] = marker
+        assert parse_device_state(bytes(pl)) == (True, 33, 67)
 
 
 def test_parse_module_info_reads_short_address():
