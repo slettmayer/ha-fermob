@@ -539,7 +539,7 @@ class FermobBLEConnection:
         if device is None:
             raise RuntimeError(f"Fermob BLE device not found: {self._address}")
 
-        _LOGGER.warning("Fermob %s: connecting…", self._address)
+        _LOGGER.debug("Fermob %s: connecting…", self._address)
         self._client = await establish_connection(BleakClient, device, self._address)
 
         # Flush any stale frames
@@ -563,7 +563,7 @@ class FermobBLEConnection:
 
         self._ready = True
         self._connected = True
-        _LOGGER.warning("Fermob %s: ready", self._address)
+        _LOGGER.debug("Fermob %s: ready", self._address)
         await self.request_battery()
         self._schedule_idle_disconnect()
 
