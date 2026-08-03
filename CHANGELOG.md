@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.0
+
+The battery level now refreshes on its own, instead of only when something
+happens to talk to the lamp.
+
+- **A battery check-in runs every 6 hours**, and once shortly after Home
+  Assistant starts. Until now the level only updated when a light command
+  reached the lamp, so a lamp left switched off kept whatever reading it had
+  when it was last used — for as long as that lasted.
+- **It does not turn the lamp on, and cannot.** The check-in only asks for the
+  battery; it sends no light command at all, and simply connecting cannot change
+  what the lamp is doing. This is how the manufacturer's own app behaves too — it
+  polls the same command on a timer with every lamp dark, roughly every 40
+  seconds while its screen is open, so a check-in four times a day is a tiny
+  fraction of the traffic the official app puts on the lamp.
+- **A lamp that is out of range is not an error.** If the lamp cannot be reached
+  — off-season, out of range, taken indoors — the last known level simply stays
+  put and the entities keep working. The reading has always been "as of last
+  contact" and still is.
+- **An unpaired lamp is never contacted** by the check-in, so it can never set
+  off the pairing sequence (which makes the lamp flash) unattended.
+
+One thing is still unknown and worth knowing: whether the lamp *measures* the
+level when asked, or reports a value it only refreshes while its LEDs are
+running. If it is the latter, checking in on a lamp that has been dark for weeks
+will keep reporting the level it had when it was last lit. Nothing in the
+manufacturer's app answers this, so it needs observing over time on a real lamp.
+
 ## 0.6.1
 
 No change to how the lamp behaves. This settles, on hardware, whether Home
