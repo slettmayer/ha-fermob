@@ -79,9 +79,9 @@ def test_dw_payload_matches_upstream_literal():
 
 def test_tw_payload_layout():
     """Tunable white adds a channel: [7, .., cold, warm, ..] with a 7-byte body."""
-    # 4000 K at 100 % -> warm_ratio 2/3 -> warm 67, cold 33
+    # 4000 K at 100 % -> warm_ratio 1/2 -> warm 50, cold 50 (mired midpoint)
     payload = build_led_payload(LIGHT_TYPE_TW, True, 100, kelvin_to_warm_ratio(4000))
-    assert payload == [7, CMD_DEVICE_DATA_SET, 0x00, 0x11, 33, 67, 50, 0]
+    assert payload == [7, CMD_DEVICE_DATA_SET, 0x00, 0x11, 50, 50, 50, 0]
 
 
 def test_tw_extremes_are_single_channel():
@@ -133,7 +133,30 @@ def test_fade_is_little_endian():
 def test_kelvin_ratio_endpoints():
     assert kelvin_to_warm_ratio(MIN_KELVIN) == 1.0  # 3000 K = all warm
     assert kelvin_to_warm_ratio(MAX_KELVIN) == 0.0  # 6000 K = all cold
-    assert kelvin_to_warm_ratio(4500) == 0.5
+    # An even mix is 4000 K, not the arithmetic mean 4500 K -- two fixed-CCT
+    # channels blend linearly in mired. 4000 K is not exactly representable as
+    # a ratio, hence approx; see test_mix_is_linear_in_mired.
+    assert kelvin_to_warm_ratio(4000) == pytest.approx(0.5)
+    assert warm_ratio_to_kelvin(0.5) == 4000
+
+
+def test_mix_is_linear_in_mired():
+    """Guards against a revert to Kelvin-linear interpolation.
+
+    Every ratio below is a round fraction in mired and a distinctly different
+    Kelvin than Kelvin-linear interpolation would give (4500 K would map to
+    0.5 rather than 1/3), so this fails loudly if the mapping regresses.
+    """
+    for kelvin, warm_ratio in (
+        (3000, 1.0),
+        (3750, 0.6),
+        (4000, 0.5),
+        (4500, 1 / 3),
+        (5000, 0.2),
+        (6000, 0.0),
+    ):
+        assert kelvin_to_warm_ratio(kelvin) == pytest.approx(warm_ratio)
+        assert warm_ratio_to_kelvin(warm_ratio) == kelvin
 
 
 @pytest.mark.parametrize("kelvin", range(MIN_KELVIN, MAX_KELVIN + 1, 50))

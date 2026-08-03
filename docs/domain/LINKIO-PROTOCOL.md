@@ -151,9 +151,27 @@ cold_white = brightness% − warm_white
 warm_white + cold_white == brightness%
 ```
 
-`warm_ratio` maps linearly onto the 3000 K – 6000 K envelope: `1.0` is 3000 K (all warm), `0.0` is 6000 K
-(all cold). `protocol.kelvin_to_warm_ratio` and `warm_ratio_to_kelvin` are exact inverses across the whole
+`warm_ratio` spans the 3000 K – 6000 K envelope: `1.0` is 3000 K (all warm), `0.0` is 6000 K (all cold).
+`protocol.kelvin_to_warm_ratio` and `warm_ratio_to_kelvin` are exact inverses at every integer Kelvin in the
 envelope, and both clamp outside it.
+
+**The mapping is linear in mired, not in Kelvin** — mired being 10⁶/K. Two fixed-CCT emitters mixed at some
+ratio land at the ratio's position in *reciprocal* colour temperature, so an even mix of a 3000 K and a 6000 K
+channel is **4000 K**, not the arithmetic mean 4500 K:
+
+| Kelvin | 3000 | 3750 | 4000 | 4500 | 5000 | 6000 |
+|---|---|---|---|---|---|---|
+| `warm_ratio` | 1.0 | 0.6 | 0.5 | ⅓ | 0.2 | 0.0 |
+
+Up to and including 0.5.0 this interpolated Kelvin directly, which overstated the temperature everywhere
+strictly between the endpoints — worst at a 4727 K slider, where the lamp actually emitted about 4212 K, a
+515 K error. `test_mix_is_linear_in_mired` pins round mired fractions specifically so a revert to Kelvin-linear
+interpolation fails rather than merely looking slightly off.
+
+One caveat on the physics: mired-linearity assumes the two channels put out **equal luminous flux at equal
+drive percent**. Fermob publishes no per-channel flux figures, so if the warm and cold LEDs differ in
+efficacy the true midpoint shifts toward the brighter channel. Mired is the correct model absent that data,
+and it is a large improvement on Kelvin-linear either way, but it is not calibrated against a meter.
 
 A consequence worth knowing: at very low brightness the split quantises hard, and **which way it skews
 alternates**, because `warm` is computed with Python's `round()` — which is half-to-even, not half-up. At mid
@@ -161,12 +179,20 @@ colour temperature (`warm_ratio = 0.5`): `level = 1` gives `cold = 1, warm = 0` 
 `round(0.5) == 0`), while `level = 3` gives `cold = 1, warm = 2` (skews warm). That is inherent to expressing
 temperature as two integer percentages, not a bug in the conversion.
 
-Exact splits *are* pinned in a few places — `test_tw_payload_layout` fixes `cold = 33, warm = 67` at 100 % /
+Exact splits *are* pinned in a few places — `test_tw_payload_layout` fixes `cold = 50, warm = 50` at 100 % /
 4000 K, and `test_tw_extremes_are_single_channel` fixes both endpoints — so a gross rounding change (a switch
 to `floor`, or an off-by-one) fails CI immediately. What is **not** covered is the **tie-breaking rule**: none
-of the pinned cases lands on a `.5` boundary (66.667 and the 0/80 extremes are not ties), so swapping
-half-to-even for half-up would keep the suite green while changing behaviour at low brightness. Verify ties by
-hand if you touch this.
+of the pinned cases lands on a `.5` boundary (50.000…, and the 0/80 extremes, are not ties — see below), so
+swapping half-to-even for half-up would keep the suite green while changing behaviour at low brightness.
+Verify ties by hand if you touch this.
+
+A worked example of why the ties are so slippery, from the mired change itself: `kelvin_to_warm_ratio(4000)`
+returns `0.5000000000000001`, not `0.5`, because 4000 K is not exactly representable as a ratio of the two
+mired endpoints. That hair of float error is enough to *escape* the tie, and it flips the low-brightness skew
+relative to a literal `0.5` — at `level = 1`, `DEFAULT_KELVIN` gives `warm = 1, cold = 0` while an exact
+`warm_ratio = 0.5` gives `cold = 1, warm = 0`. Both are defensible at one percent of output; the point is that
+the tie-break here is decided by floating-point representation rather than by any rule, so do not treat either
+skew as a specified behaviour.
 
 ## Inbound state
 

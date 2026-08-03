@@ -95,6 +95,12 @@ _MODULE_TYPE_FAMILIES = {
 MIN_KELVIN = 3000
 MAX_KELVIN = 6000
 
+# Mixing two fixed-CCT channels is linear in *mired* (10^6 / K), not in Kelvin,
+# so the conversion runs through mired rather than interpolating Kelvin
+# directly. Half warm and half cold therefore lands at 4000 K, not 4500 K.
+MIRED_WARM = 1_000_000 / MIN_KELVIN  # 333.3 mired
+MIRED_COLD = 1_000_000 / MAX_KELVIN  # 166.7 mired
+
 
 # ---------------------------------------------------------------------------
 # Crypto / frame helpers
@@ -296,12 +302,21 @@ def build_led_payload(
 
 
 def kelvin_to_warm_ratio(kelvin: int) -> float:
-    """Map a colour temperature to the warm-channel share (0.0 .. 1.0)."""
+    """Map a colour temperature to the warm-channel share (0.0 .. 1.0).
+
+    Interpolates in mired, because that is how two fixed-CCT channels actually
+    blend -- see `MIRED_WARM`. Interpolating Kelvin instead (which this did up
+    to and including 0.5.0) overstated the temperature everywhere strictly
+    between the endpoints: worst at a 4727 K slider, where the lamp in fact
+    emitted about 4212 K, a 515 K error.
+    """
     kelvin = max(MIN_KELVIN, min(MAX_KELVIN, kelvin))
-    return (MAX_KELVIN - kelvin) / (MAX_KELVIN - MIN_KELVIN)
+    mired = 1_000_000 / kelvin
+    return (mired - MIRED_COLD) / (MIRED_WARM - MIRED_COLD)
 
 
 def warm_ratio_to_kelvin(warm_ratio: float) -> int:
     """Inverse of `kelvin_to_warm_ratio`."""
     warm_ratio = max(0.0, min(1.0, warm_ratio))
-    return round(MAX_KELVIN - warm_ratio * (MAX_KELVIN - MIN_KELVIN))
+    mired = MIRED_COLD + warm_ratio * (MIRED_WARM - MIRED_COLD)
+    return round(1_000_000 / mired)
