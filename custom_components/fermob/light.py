@@ -54,10 +54,12 @@ from .protocol import (
     MSG_FIRE,
     STATE_PUSH_TYPES,
     ModuleInfo,
+    ack_error,
     build_led_payload,
     build_long,
     build_short,
     decode_fragment,
+    error_name,
     kelvin_to_warm_ratio,
     module_type_to_light_type,
     parse_device_state,
@@ -300,6 +302,21 @@ class FermobBLEConnection:
         if not fragments:
             return None, first_enc
         pl = b"".join(fragments[i] for i in sorted(fragments))
+
+        # A rejected command still arrives as a correctly-sequenced CMD_ACK, so
+        # without this check a NAK reads as success and whatever the caller
+        # parses out of the body is garbage -- silently storing bad keys, in the
+        # handshake's case.
+        err = ack_error(pl)
+        if err is not None:
+            _LOGGER.warning(
+                "Fermob %s: command seq=%02x rejected: %s",
+                self._address,
+                my_seq,
+                error_name(err),
+            )
+            return None, first_enc
+
         return pl, first_enc
 
     async def _send(self, enc: int, payload: list[int]) -> tuple[bytes | None, int]:

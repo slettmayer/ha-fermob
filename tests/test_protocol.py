@@ -40,6 +40,8 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
     LMP_EVENT_DEVICE_DATA,
+    LMP_PARAM_SHORT_ADDRESS,
+    LMP_STATUS_ACK,
     LMP_STATUS_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
@@ -49,12 +51,14 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     MSG_FIRE,
     MSG_STATUS,
     STATE_PUSH_TYPES,
+    ack_error,
     build_led_payload,
     build_long,
     build_short,
     crc,
     crypt,
     decode_fragment,
+    error_name,
     kelvin_to_warm_ratio,
     pad15,
     parse_device_state,
@@ -340,6 +344,33 @@ def test_parse_device_state_rejects_bad_payloads():
 def test_parse_device_state_tolerates_missing_second_channel():
     """A 10-byte DW response has no warm byte; ch2 must default to 0."""
     assert parse_device_state(_state_payload(True, 55, 0)[:10]) == (True, 55, 0)
+
+
+def test_ack_error_flags_only_failed_acks():
+    """A non-zero third byte of an ACK TLV means the command was rejected."""
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 0, 0])) is None  # SUCCESS
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 5, 0])) == 5  # UNREGISTERED
+    assert ack_error(bytes([3, LMP_STATUS_ACK, 7])) == 7  # CRYPT_MSG
+
+
+def test_ack_error_ignores_non_ack_payloads():
+    """Only ACK TLVs carry an error byte; other replies must pass through.
+
+    A MODULE_INFO_GET reply is a TLV list whose third byte is payload data, not
+    a status -- misreading it as an error would reject every successful info
+    read.
+    """
+    module_info = bytes([3, LMP_PARAM_SHORT_ADDRESS, 0x12, 0x34])
+    assert ack_error(module_info) is None
+    assert ack_error(_state_payload(True, 33, 67)) is None
+    assert ack_error(b"") is None
+    assert ack_error(b"\x03\x80") is None  # truncated before the error byte
+
+
+def test_error_name_covers_codes_and_unknowns():
+    assert error_name(0) == "SUCCESS"
+    assert error_name(5) == "UNREGISTERED"
+    assert error_name(99) == "UNKNOWN(99)"
 
 
 def test_solicited_state_is_recognised_alongside_unsolicited():

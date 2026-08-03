@@ -80,6 +80,7 @@ CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
+LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
 LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
 LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
 
@@ -87,6 +88,24 @@ LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
 # shared branch -- as it does for the STATUS and EVENT message types that wrap
 # them. Accepting only 146/EVENT silently discarded solicited state.
 DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
+
+# LMP error codes (JS lmp_error_codes_e), used in the third byte of an ACK.
+LMP_ERRORS = {
+    0: "SUCCESS",
+    1: "NOT_SUPPORTED",
+    2: "INVALID_COMMAND",
+    3: "INVALID_PARAMETER",
+    4: "INVALID_DEVICE",
+    5: "UNREGISTERED",
+    6: "CLEAR_MSG_UNAUTHORIZED",
+    7: "CRYPT_MSG",
+    8: "TIMEOUT",
+    9: "CONNECT_ERROR",
+    10: "MEMORY_FAIL",
+    11: "MEMORY_FULL",
+    18: "INVALID_SIZE",
+    20: "ITEM_NOT_FOUND",
+}
 
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"
@@ -272,6 +291,25 @@ def module_type_to_light_type(module_type: int | None) -> str | None:
     if module_type is None:
         return None
     return _MODULE_TYPE_FAMILIES.get(module_type)
+
+
+def ack_error(payload: bytes) -> int | None:
+    """Return the LMP error code if `payload` is a *failed* acknowledgement.
+
+    Returns None when the payload is a successful ACK or is not an ACK at all
+    (a MODULE_INFO_GET reply, say, is a TLV list with no ACK entry). The app
+    checks this byte and abandons the response when it is non-zero; we used to
+    treat any correctly-sequenced reply as success, so a rejected command was
+    indistinguishable from a completed one.
+    """
+    if len(payload) < 3 or payload[1] != LMP_STATUS_ACK:
+        return None
+    return payload[2] or None
+
+
+def error_name(code: int) -> str:
+    """Human-readable name for an LMP error code, for log messages."""
+    return LMP_ERRORS.get(code, f"UNKNOWN({code})")
 
 
 def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
