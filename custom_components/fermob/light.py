@@ -39,6 +39,7 @@ from .protocol import (
     CMD_DEVICE_DATA_GET,
     CMD_DEVICE_INFO_GET,
     CMD_MODULE_INFO_GET,
+    CMD_MODULES_BATTERY_LEVEL_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
     DEVICE_DATA_MARKERS,
@@ -47,6 +48,7 @@ from .protocol import (
     ENCRYPT_PUBLIC,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
+    LMP_PARAM_BATTERY_LEVEL,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
@@ -58,8 +60,10 @@ from .protocol import (
     build_led_payload,
     build_long,
     build_short,
+    byte_table,
     decode_fragment,
     error_name,
+    iter_tlv,
     kelvin_to_warm_ratio,
     module_type_to_light_type,
     parse_device_state,
@@ -68,6 +72,11 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Battery probe (scratch branch only). Separate logger so the probe output
+# can be filtered out of the normal debug stream.
+_DIAG = logging.getLogger(f"{__name__}.battery_probe")
+_PROBE_ENABLED = True
 
 DEFAULT_BRIGHTNESS_PCT = 50
 DEFAULT_KELVIN = 4000
@@ -536,7 +545,108 @@ class FermobBLEConnection:
         self._ready = True
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
+        await self._probe_battery_command()
         self._schedule_idle_disconnect()
+
+    # ------------------------------------------------------------------
+    # Battery probe (scratch branch only — see docs/domain/BATTERY-PROBE.md)
+    #
+    # Answers three questions the APK analysis left open:
+    #   1. Does the lamp answer MODULES_BATTERY_LEVEL_GET (44) at all?
+    #   2. Where in the reply does LMP_PARAM_BATTERY_LEVEL (0xC0) sit? The
+    #      app never reads the two bytes before it, so our reading of them as
+    #      a short-address echo is inference.
+    #   3. Does DEVICE_DATA_GET (66) answer now that the header is 0x32? That
+    #      is a separate question the same connection can settle for free.
+    #
+    # Delete this block, the two protocol.py constants and byte_table() to get
+    # back to a shippable tree.
+    # ------------------------------------------------------------------
+
+    async def _probe_battery_command(self) -> None:
+        """Ask for the battery level three ways. Never raises."""
+        if not _PROBE_ENABLED:
+            return
+        try:
+            # 1. Per-module, addressed — what the app sends for one lamp.
+            await self._probe_one(
+                "BATTERY addressed",
+                [3, CMD_MODULES_BATTERY_LEVEL_GET, self._addr_b2, self._addr_b3],
+                addressed=True,
+            )
+            # 2. Broadcast — the app's "every module" form: 255,255 in the
+            #    payload with LOCAL addressing, so frame bytes 2/3 stay zero.
+            await self._probe_one(
+                "BATTERY broadcast",
+                [3, CMD_MODULES_BATTERY_LEVEL_GET, 0xFF, 0xFF],
+                addressed=False,
+            )
+            # 3. The state read-back, now that the header is right.
+            await self._probe_one(
+                "DEVICE_DATA_GET",
+                [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12,
+                addressed=True,
+            )
+        except Exception:  # a diagnostic must never break the light path
+            _DIAG.warning("Fermob %s: PROBE failed", self._address, exc_info=True)
+
+    async def _probe_one(
+        self, label: str, payload: list[int], *, addressed: bool
+    ) -> None:
+        """Send one probe frame and dump whatever comes back.
+
+        A silent lamp costs one 3 s ACK timeout per call, which is itself the
+        answer and is logged by `_send_frames`.
+        """
+        sid = self._next_seq()
+        frame = build_short(
+            MSG_CMD,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2 if addressed else 0,
+            b3=self._addr_b3 if addressed else 0,
+            addressed=addressed,
+        )
+        _DIAG.warning(
+            "Fermob %s: PROBE %s → hdr=%02x seq=%02x frame=%s",
+            self._address,
+            label,
+            frame[0],
+            sid,
+            frame.hex(),
+        )
+        pl, enc = await self._send_frames([frame])
+        if not pl:
+            _DIAG.warning("Fermob %s: PROBE %s ← no reply", self._address, label)
+            return
+        _DIAG.warning(
+            "Fermob %s: PROBE %s ← enc=%d hex=%s | %s",
+            self._address,
+            label,
+            enc,
+            pl.hex(),
+            byte_table(pl),
+        )
+        for t_type, value in iter_tlv(pl):
+            note = ""
+            if t_type == LMP_PARAM_BATTERY_LEVEL and value:
+                note = (
+                    f"  <<< BATTERY percent={value[0] & 0x7F} "
+                    f"charging={bool(value[0] & 0x80)}"
+                )
+            _DIAG.warning(
+                "Fermob %s: PROBE %s   TLV type=%d (0x%02x) value=%s%s",
+                self._address,
+                label,
+                t_type,
+                t_type,
+                value.hex(),
+                note,
+            )
 
     # ------------------------------------------------------------------
     # What the lamp says it is

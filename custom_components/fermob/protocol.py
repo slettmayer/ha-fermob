@@ -74,12 +74,14 @@ CMD_CRYPT_AUTHKEY_GEN = 22
 CMD_CRYPT_AUTHKEY_GET = 23
 CMD_CRYPT_AUTHKEY_SET = 24
 CMD_CRYPT_SET = 25
+CMD_MODULES_BATTERY_LEVEL_GET = 44  # 0x2C — probe only, see BATTERY-PROBE.md
 CMD_MODULE_INFO_GET = 48
 CMD_DEVICE_INFO_GET = 50
 CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
+LMP_PARAM_BATTERY_LEVEL = 192  # 0xC0 — bit7 charging, bits0-6 percent
 LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
 LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
 LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
@@ -291,6 +293,15 @@ def module_type_to_light_type(module_type: int | None) -> str | None:
     if module_type is None:
         return None
     return _MODULE_TYPE_FAMILIES.get(module_type)
+
+
+def byte_table(payload: bytes) -> str:
+    """Render a payload as `index=decimal` pairs (probe diagnostics only).
+
+    Two of these logged at different charge levels can be diffed by eye: a
+    state-of-charge byte is the one that drops while everything else holds.
+    """
+    return " ".join(f"{i:02d}={b:03d}" for i, b in enumerate(payload))
 
 
 def ack_error(payload: bytes) -> int | None:
