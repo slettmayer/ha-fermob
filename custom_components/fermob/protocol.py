@@ -79,6 +79,11 @@ CMD_MODULE_INFO_GET = 48
 CMD_DEVICE_INFO_GET = 50
 CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
+# 0x4A — the app's actual lamp-state read (requestLatestsModuleStatuses). The
+# H134 accepts it where it rejects DEVICE_DATA_GET, but the record it returns is
+# frozen, so nothing sends it. Kept as protocol documentation; the traces are in
+# docs/domain/LINKIO-PROTOCOL.md.
+CMD_DEVICES_DATA_LIST_GET = 74
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
 LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
@@ -91,6 +96,13 @@ LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
 DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
 
 # LMP error codes (JS lmp_error_codes_e), used in the third byte of an ACK.
+#
+# This is the app's table verbatim -- ids 0-11 and 20, nothing between. Do not
+# add invented names: an earlier `18: "INVALID_SIZE"` was not the manufacturer's
+# and it cost two wrong diagnoses, because the H134 answers DEVICE_DATA_GET with
+# 18 and the made-up name read as the firmware complaining about the payload
+# size. Unknown codes surface as `UNKNOWN(n)` via `error_name`, which is the
+# honest rendering.
 LMP_ERRORS = {
     0: "SUCCESS",
     1: "NOT_SUPPORTED",
@@ -104,7 +116,6 @@ LMP_ERRORS = {
     9: "CONNECT_ERROR",
     10: "MEMORY_FAIL",
     11: "MEMORY_FULL",
-    18: "INVALID_SIZE",
     20: "ITEM_NOT_FOUND",
 }
 

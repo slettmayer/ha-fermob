@@ -37,7 +37,6 @@ from .protocol import (
     CMD_CRYPT_AUTHKEY_GET,
     CMD_CRYPT_NONCE_GENERATE,
     CMD_CRYPT_SET,
-    CMD_DEVICE_DATA_GET,
     CMD_DEVICE_INFO_GET,
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
@@ -366,8 +365,8 @@ class FermobBLEConnection:
         """Wait for the lamp's post-REGISTER_END state EVENT (mt=4).
 
         After REGISTER(1) the lamp emits its current state as an EVENT ~200-300 ms
-        later. Capturing it confirms the lamp entered GATEWAY mode and gives us the
-        real state without a separate DEVICE_DATA_GET round-trip.
+        later. Capturing it confirms the lamp entered GATEWAY mode, and it is the
+        only state the lamp ever volunteers -- no query returns usable state.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         while True:
@@ -555,8 +554,8 @@ class FermobBLEConnection:
         else:
             # Reconnect: the lamp retains GATEWAY+PRIVATE state across BLE
             # disconnects, so no crypto handshake is needed. It also emits no
-            # spontaneous EVENT here, and DEVICE_DATA_GET is not ACKed in this
-            # state, so there is no state to read back.
+            # spontaneous EVENT here, and neither state-read command returns
+            # anything usable, so there is no state to read back.
             _LOGGER.debug(
                 "Fermob %s: reconnected (lamp keeps GATEWAY state)", self._address
             )
@@ -656,42 +655,22 @@ class FermobBLEConnection:
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
 
-    async def get_state(self) -> tuple[bool, int, int] | None:
-        """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
-
-        Still unused by the entity, and it does not work on an H134.
-
-        The frame used to go out as message type 2, which is CMD_ACK -- the lamp
-        read our request as an acknowledgement and had no reason to answer. With
-        that fixed to CMD_WITH_ACK + SHORT address (header 0x32), the lamp does
-        answer, so the old docstring blaming GATEWAY mode for the silence was
-        wrong. What it answers with is `INVALID_SIZE` (error 18).
-
-        The body below is the app's own, byte for byte -- its
-        `requestModuleLightState` sends exactly `[14, 66, 0]` + twelve `0xFF`.
-        So the rejection is *not* about the size the error names, and reshaping
-        the body is not the fix. Why the lamp rejects a command the app sends
-        verbatim is followed up separately; see
-        `docs/domain/LINKIO-PROTOCOL.md`.
-        """
-        payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
-        sid = self._next_seq()
-        frame = build_short(
-            MSG_CMD,
-            ENCRYPT_PRIVATE,
-            payload,
-            sid,
-            self._pub,
-            self._priv,
-            self._nonce,
-            b2=self._addr_b2,
-            b3=self._addr_b3,
-            addressed=True,
-        )
-        pl, _ = await self._send_frames([frame])
-        if pl:
-            return parse_device_state(pl)
-        return None
+    # There is deliberately no state-read method here. Both candidate commands
+    # were tried on an H134 and neither yields usable state -- see
+    # `docs/domain/LINKIO-PROTOCOL.md` for the traces. In short:
+    #
+    #   * `DEVICE_DATA_GET` (66) is refused with error 18, even when sent with
+    #     the app's byte-exact body. Why is unexplained; the module-role and
+    #     payload-length theories are both ruled out in the doc.
+    #   * `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
+    #     accepted and does push a `DEVICE_DATA` reply -- but the record it
+    #     returns is frozen. Eight reads across on/off cycles came back
+    #     byte-identical, reporting the lamp off while it was lit.
+    #
+    # Wiring that reply to `on_state_change` is therefore worse than not reading
+    # at all: during the probe it drove the HA entity to "off" while the lamp was
+    # on. `parse_device_state` stays, because unsolicited EVENT pushes during
+    # pairing use the same layout.
 
     async def send_led(
         self, on: bool, brightness_pct: int | None = None, warm_ratio: float = 0.5
@@ -800,8 +779,8 @@ class FermobLight(LightEntity):
     """Representation of a Fermob BLE lamp (dimmable-white or tunable-white)."""
 
     # State is pushed: by our own commands, and by EVENT notifications while the
-    # BLE link is up. There is nothing to poll -- the lamp does not answer
-    # DEVICE_DATA_GET in GATEWAY mode (see FermobBLEConnection.get_state).
+    # BLE link is up. There is nothing to poll -- neither state-read command
+    # returns usable state on this lamp (see FermobBLEConnection.send_led).
     _attr_should_poll = False
 
     def __init__(
@@ -849,7 +828,7 @@ class FermobLight(LightEntity):
         )
 
     # ------------------------------------------------------------------
-    # State sync from the lamp (unsolicited EVENT or DEVICE_DATA_GET)
+    # State sync from the lamp (unsolicited EVENT during pairing)
     # ------------------------------------------------------------------
 
     def on_lamp_state_change(self, is_on: bool, ch1: int, ch2: int) -> None:
