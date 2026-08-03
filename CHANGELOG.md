@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.1
+
+Fixes the colour-temperature scale on tunable-white lamps. The slider was
+reporting a temperature the lamp was not emitting.
+
+- **Colour temperature now interpolates in mired rather than in Kelvin.**
+  Mixing two fixed-CCT channels is linear in mired (10⁶/K), so an even mix of
+  the lamp's 3000 K and 6000 K channels is 4000 K — not the arithmetic mean of
+  4500 K that the old mapping assumed. The previous scale overstated the
+  temperature everywhere strictly between the endpoints, worst at a 4727 K
+  slider where the lamp actually emitted about 4212 K, a 515 K error. The
+  endpoints were always correct, so the effect was a slider that felt cooler
+  than it read rather than a wrong colour at either extreme.
+- **Ask for the temperature you want.** Requesting 4000 K now gives an even
+  channel split; previously 4000 K asked for two-thirds warm and produced
+  about 3600 K. If you have automations or scenes with a Fermob colour
+  temperature tuned by eye against the old scale, they will shift warmer and
+  are worth re-checking.
+- `test_mix_is_linear_in_mired` pins round mired fractions so a revert to
+  Kelvin-linear interpolation fails CI rather than merely looking slightly off.
+  `docs/domain/LINKIO-PROTOCOL.md` records the model, the worked float
+  tie-breaking example, and the one physical assumption behind it: mired
+  linearity holds only if both channels emit equal luminous flux at equal drive
+  percent, which Fermob does not publish. This is not calibrated against a
+  meter.
+
 ## 0.5.0
 
 **First release verified on hardware by this repository's own maintainer**, a

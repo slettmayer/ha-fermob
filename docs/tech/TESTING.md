@@ -48,7 +48,7 @@ The rest, by area:
 | Area | Coverage |
 |---|---|
 | Tunable-white mixing | `warm + cold == level`, both within 0–100, across **every** level 0–100 at seven colour temperatures |
-| Colour temperature | Endpoints (3000 K = all warm, 6000 K = all cold, 4500 K = even), exact round-trips every 50 K across the envelope, clamping outside it |
+| Colour temperature | Endpoints (3000 K = all warm, 6000 K = all cold, **4000 K = even** — the mix is mired-linear, not Kelvin-linear), round mired fractions pinned so a Kelvin-linear regression fails, exact round-trips every 50 K across the envelope, clamping outside it |
 | Payload shape | Both family bodies, the shared `0x11`/`0x10` on-byte, level clamping, little-endian fade |
 | Crypto | `ENCRYPT_NONE` passthrough, symmetry (encrypt twice = original) in both keyed modes, public and private keys producing different output |
 | Framing | 20-byte length, header bit packing, frame type per message type, short-address bytes, XOR CRC, `pad15` terminator-then-filler including the exactly-15 case, long-frame fragment indices and counts, decode round-trips in all three modes |
