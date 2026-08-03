@@ -20,8 +20,13 @@ The short answer is no, and 0.6.0 said so, but for the wrong reason twice over.
   we send it.
 - The reasoning, the frames and the traces are recorded in
   `docs/domain/LINKIO-PROTOCOL.md` so this is not investigated a fourth time,
-  along with the one case still worth testing: whether pressing the lamp's own
-  button updates the record.
+  along with the two cases still worth testing: whether pressing the lamp's own
+  button updates the record, and whether setting the lamp's clock unfreezes it.
+- **A made-up error name is gone.** The error the lamp returns for that query,
+  `18`, does not appear in the manufacturer's table at all — it was labelled
+  `INVALID_SIZE` here, which is not their name, and reading it as the firmware
+  complaining about payload size sent two separate investigations the wrong way.
+  Unrecognised codes now log honestly as `UNKNOWN(18)`.
 
 Also corrects the 0.6.0 documentation of the battery command, which was still
 described as unimplemented after it shipped.

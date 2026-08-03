@@ -659,9 +659,9 @@ class FermobBLEConnection:
     # were tried on an H134 and neither yields usable state -- see
     # `docs/domain/LINKIO-PROTOCOL.md` for the traces. In short:
     #
-    #   * `DEVICE_DATA_GET` (66) is answered with `INVALID_SIZE`, even when sent
-    #     with the app's byte-exact body. The app only ever sends it to modules
-    #     whose role is not LEAF, and this lamp is a leaf.
+    #   * `DEVICE_DATA_GET` (66) is refused with error 18, even when sent with
+    #     the app's byte-exact body. Why is unexplained; the module-role and
+    #     payload-length theories are both ruled out in the doc.
     #   * `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
     #     accepted and does push a `DEVICE_DATA` reply -- but the record it
     #     returns is frozen. Eight reads across on/off cycles came back
