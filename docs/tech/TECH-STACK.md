@@ -46,19 +46,27 @@ active: true`), since a passive proxy can see advertisements but cannot open a c
 up before our platform loads, and a `bluetooth:` matcher on the advertisement service UUID for passive
 discovery.
 
-**Observed GATT table** of a MOOON! H134 (2026-08-02, enumerated over a proxy) — worth knowing because it rules
-things out:
+**Observed GATT table** of a MOOON! H134 — the complete enumeration over a proxy, identical across five
+connections (2026-08-02 and 2026-08-03). Worth knowing mainly because of what it rules out:
 
-| Service | Contents |
-|---|---|
-| `0x1800` GAP | Preferred Connection Parameters, Central Address Resolution |
-| `0x1801` GATT | Service Changed |
-| `41c15000-6def-11e5-bcde-0002a5d5c51b` | the `00005002-…` write/notify characteristic we use |
-| `8e400001-f315-4f60-9fb8-838830daea50` | Nordic *Experimental Buttonless DFU* |
+| Service | Characteristic | Props |
+|---|---|---|
+| `0x1800` GAP | `0x2A00` Device Name | read, **write** |
+| | `0x2A01` Appearance | read |
+| | `0x2A04` Peripheral Preferred Connection Parameters | read |
+| | `0x2AA6` Central Address Resolution | read |
+| `0x1801` GATT | `0x2A05` Service Changed | indicate |
+| `41c15000-6def-11e5-bcde-0002a5d5c51b` | `00005002-…` — the one we write and subscribe to | write-without-response, write, notify |
+| `8e400001-f315-4f60-9fb8-838830daea50` | `8e400001-…` Nordic *Experimental Buttonless DFU* | write, notify |
 
-There is **no Battery Service (`0x180F`) and no Device Information Service (`0x180A`)**. Do not reach for
-`0x2A19` for a charge level; it does not exist on this lamp. The DFU service means the lamp is an nRF part with
-over-the-air firmware update reachable over BLE — leave it alone.
+That is **all seven characteristics**. There is **no Battery Service (`0x180F`) and no Device Information
+Service (`0x180A`)**. Do not reach for `0x2A19` for a charge level; it does not exist on this lamp. The DFU
+service means the lamp is an nRF part whose firmware can be replaced over BLE — leave it alone.
+
+> **Read hardware diagnostics from the Supervisor core journal, not `system_log`.** HA's `system_log` keeps at
+> most **five messages per source line** and is cleared by a restart. An earlier version of this table was
+> silently missing two characteristics for exactly that reason — the log looked complete. `ha_get_logs(source=
+> "system_service", slug="core")`, or `journalctl` on the host, has the untruncated lines and survives restarts.
 
 ## Test dependencies
 
