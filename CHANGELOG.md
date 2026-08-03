@@ -22,11 +22,18 @@ happens to talk to the lamp.
 - **An unpaired lamp is never contacted** by the check-in, so it can never set
   off the pairing sequence (which makes the lamp flash) unattended.
 
-One thing is still unknown and worth knowing: whether the lamp *measures* the
-level when asked, or reports a value it only refreshes while its LEDs are
-running. If it is the latter, checking in on a lamp that has been dark for weeks
-will keep reporting the level it had when it was last lit. Nothing in the
-manufacturer's app answers this, so it needs observing over time on a real lamp.
+- **The percentage reads high while the lamp is charging.** It jumps as soon as
+  the charger goes on — 24 % straight to 33 % when this was tested — which is
+  quicker than a battery can actually take charge, so the lamp is very likely
+  reading voltage rather than counting capacity. Treat the level as optimistic
+  whenever the charging sensor is on, and take the real figure once the lamp has
+  been off the charger for a while.
+
+A lamp left off does keep reporting a falling level, so the check-in is not
+looking at a stale number — that was measured over an afternoon with the lamp
+dark. Whether it stays truthful over *weeks* of darkness is still unknown, and
+the reading is unlikely to be evenly spaced across the whole range given the
+above, so treat the middle of the scale as more meaningful than either end.
 
 ## 0.6.1
 

@@ -27,9 +27,15 @@ async def async_setup_entry(
 class FermobChargingSensor(FermobBatteryEntityBase, BinarySensorEntity):
     """Whether the lamp is on its charger.
 
-    Bit 7 of the battery byte. Confirmed clear on a discharging lamp; that it
-    sets while charging follows from the app's decode but has not been seen
-    flip on hardware.
+    Bit 7 of the battery byte, confirmed on an H134 on 2026-08-03: clear while
+    discharging, and observed setting the moment the lamp went on its charger.
+
+    Note for anyone reading the level alongside this: the reported percentage
+    jumps up as soon as charging starts (24 % to 33 % in the confirming test).
+    That is faster than real capacity can accumulate, so the lamp is very likely
+    deriving charge from terminal voltage, which a charger raises immediately.
+    The level is optimistic whenever this sensor is on; the trustworthy figure is
+    a resting one taken after the charger comes off.
     """
 
     _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
