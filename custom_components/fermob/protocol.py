@@ -61,6 +61,10 @@ MSG_CMD_ACK = 2  # CMD_ACK         — the lamp's *reply*; we never send this
 MSG_STATUS = 3  # STATUS          — solicited state push
 MSG_EVENT = 4  # EVENT           — unsolicited state push
 
+# The app routes STATUS and EVENT through one shared branch, so both carry lamp
+# state and both must be dispatched to the entity.
+STATE_PUSH_TYPES = (MSG_STATUS, MSG_EVENT)
+
 # LMP command IDs (JS CODES)
 CMD_REGISTER = 16
 CMD_UNREGISTER = 17
@@ -76,7 +80,13 @@ CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
-LMP_EVENT_DEVICE_DATA = 146
+LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
+LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
+
+# Both markers carry an identical body, and the app parses them through one
+# shared branch -- as it does for the STATUS and EVENT message types that wrap
+# them. Accepting only 146/EVENT silently discarded solicited state.
+DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
 
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"

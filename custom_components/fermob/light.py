@@ -41,18 +41,18 @@ from .protocol import (
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
+    DEVICE_DATA_MARKERS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
-    LMP_EVENT_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
     MSG_CMD_ACK,
-    MSG_EVENT,
     MSG_FIRE,
+    STATE_PUSH_TYPES,
     ModuleInfo,
     build_led_payload,
     build_long,
@@ -181,7 +181,7 @@ class FermobBLEConnection:
                 exc_info=True,
             )
             return
-        if len(pl) < 10 or pl[1] != LMP_EVENT_DEVICE_DATA:
+        if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
             return
         state = parse_device_state(pl)
         if state is None:
@@ -199,7 +199,7 @@ class FermobBLEConnection:
         h0 = frame[0]
         mt = (h0 >> 5) & 7
 
-        if mt == MSG_EVENT:
+        if mt in STATE_PUSH_TYPES:
             if self._ready and self.on_state_change is not None:
                 self._dispatch_event(frame, (h0 >> 3) & 3)
             else:
@@ -265,8 +265,8 @@ class FermobBLEConnection:
                 frame.hex(),
             )
 
-            # mt=4 arrived while we were waiting for an ACK: re-route appropriately
-            if mt == MSG_EVENT:
+            # A state push arrived while we were waiting for an ACK: re-route it
+            if mt in STATE_PUSH_TYPES:
                 if self._ready and self.on_state_change is not None:
                     self._dispatch_event(frame, resp_enc)
                 else:
@@ -335,7 +335,7 @@ class FermobBLEConnection:
             if len(frame) < 20:
                 continue
             h0 = frame[0]
-            if (h0 >> 5) & 7 != MSG_EVENT:
+            if (h0 >> 5) & 7 not in STATE_PUSH_TYPES:
                 continue  # discard stray ACKs
             try:
                 pl = decode_fragment(
@@ -349,7 +349,7 @@ class FermobBLEConnection:
                     exc_info=True,
                 )
                 continue
-            if len(pl) >= 10 and pl[1] == LMP_EVENT_DEVICE_DATA:
+            if len(pl) >= 10 and pl[1] in DEVICE_DATA_MARKERS:
                 state = parse_device_state(pl)
                 if state is not None:
                     _LOGGER.debug(

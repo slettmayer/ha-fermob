@@ -31,6 +31,7 @@ _SPEC.loader.exec_module(protocol)
 from fermob_protocol import (  # noqa: E402 — must follow the loader above
     CMD_DEVICE_DATA_GET,
     CMD_DEVICE_DATA_SET,
+    DEVICE_DATA_MARKERS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
@@ -38,11 +39,16 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     LED_MODE_COLOR,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
+    LMP_EVENT_DEVICE_DATA,
+    LMP_STATUS_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
     MSG_CMD_ACK,
+    MSG_EVENT,
     MSG_FIRE,
+    MSG_STATUS,
+    STATE_PUSH_TYPES,
     build_led_payload,
     build_long,
     build_short,
@@ -334,6 +340,25 @@ def test_parse_device_state_rejects_bad_payloads():
 def test_parse_device_state_tolerates_missing_second_channel():
     """A 10-byte DW response has no warm byte; ch2 must default to 0."""
     assert parse_device_state(_state_payload(True, 55, 0)[:10]) == (True, 55, 0)
+
+
+def test_solicited_state_is_recognised_alongside_unsolicited():
+    """Both DEVICE_DATA markers and both state message types must be accepted.
+
+    The app parses LMP_EVENT_DEVICE_DATA (146) and LMP_STATUS_DEVICE_DATA (147)
+    in one branch, wrapped in either the EVENT or the STATUS message type.
+    Accepting only the unsolicited pair discarded every solicited state reply.
+    """
+    assert DEVICE_DATA_MARKERS == (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
+    assert DEVICE_DATA_MARKERS == (146, 147)
+    assert STATE_PUSH_TYPES == (MSG_STATUS, MSG_EVENT)
+    assert STATE_PUSH_TYPES == (3, 4)
+
+    # The body is marker-independent: only byte 1 differs between the two.
+    for marker in DEVICE_DATA_MARKERS:
+        pl = bytearray(_state_payload(True, 33, 67))
+        pl[1] = marker
+        assert parse_device_state(bytes(pl)) == (True, 33, 67)
 
 
 def test_parse_module_info_reads_short_address():
