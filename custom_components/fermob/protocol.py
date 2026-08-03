@@ -79,6 +79,7 @@ CMD_MODULE_INFO_GET = 48
 CMD_DEVICE_INFO_GET = 50
 CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
+CMD_DEVICES_DATA_LIST_GET = 74  # 0x4A — the app's actual lamp-state read
 
 # Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
 LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
