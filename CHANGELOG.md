@@ -47,9 +47,9 @@ immediately and visibly, where it previously carried on and produced a broken
 configuration entry.
 
 Reading the lamp's *light* state back is still not possible. With the message
-type corrected the lamp does now answer that query — by rejecting it as the
-wrong size — so the request has been reshaped, but it remains unverified and
-unused.
+type corrected the lamp does now answer that query instead of ignoring it — but
+what it answers is a rejection. The request is unchanged and still unused; the
+rejection is followed up separately.
 
 ## 0.5.1
 

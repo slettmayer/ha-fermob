@@ -659,24 +659,22 @@ class FermobBLEConnection:
     async def get_state(self) -> tuple[bool, int, int] | None:
         """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
 
-        Still unused by the entity, but two separate things about it were wrong.
+        Still unused by the entity, and it does not work on an H134.
 
-        The frame went out as message type 2, which is CMD_ACK -- the lamp read
-        our request as an acknowledgement and had no reason to answer. With that
-        fixed to CMD_WITH_ACK + SHORT address (header 0x32), the H134 does
-        answer: with `INVALID_SIZE` (error 18). So the *payload* was wrong too,
-        and the old docstring blaming GATEWAY mode for the silence was wrong
-        twice over.
+        The frame used to go out as message type 2, which is CMD_ACK -- the lamp
+        read our request as an acknowledgement and had no reason to answer. With
+        that fixed to CMD_WITH_ACK + SHORT address (header 0x32), the lamp does
+        answer, so the old docstring blaming GATEWAY mode for the silence was
+        wrong. What it answers with is `INVALID_SIZE` (error 18).
 
-        The body is now `[2, 66, dev_index]`, matching the shape of every other
-        command we send (the length byte counts the command plus its parameters,
-        as `[3, 44, addr_lo, addr_hi]` does for the battery request). The old
-        `[14, ...]` padded the body out to 15 bytes and declared that length.
-
-        **Untested**: whether this size is the one the lamp wants is unverified
-        -- all that is confirmed is that the previous one was rejected.
+        The body below is the app's own, byte for byte -- its
+        `requestModuleLightState` sends exactly `[14, 66, 0]` + twelve `0xFF`.
+        So the rejection is *not* about the size the error names, and reshaping
+        the body is not the fix. Why the lamp rejects a command the app sends
+        verbatim is followed up separately; see
+        `docs/domain/LINKIO-PROTOCOL.md`.
         """
-        payload = [2, CMD_DEVICE_DATA_GET, 0]
+        payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
         sid = self._next_seq()
         frame = build_short(
             MSG_CMD,
