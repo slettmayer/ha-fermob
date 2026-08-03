@@ -28,7 +28,7 @@ from custom_components.fermob.light import (
     DEFAULT_KELVIN,
     FermobBLEConnection,
     FermobLight,
-    _resolve_light_type,
+    resolve_light_type,
 )
 from custom_components.fermob.protocol import (
     LIGHT_TYPE_DW,
@@ -44,7 +44,7 @@ ADDRESS = "D6:86:76:E8:7E:75"
 
 
 def _entry(**data) -> SimpleNamespace:
-    """A stand-in for ConfigEntry: `_resolve_light_type` only reads two dicts."""
+    """A stand-in for ConfigEntry: `resolve_light_type` only reads two dicts."""
     options = data.pop("options", {})
     return SimpleNamespace(data={CONF_ADDRESS: ADDRESS, **data}, options=options)
 
@@ -63,12 +63,12 @@ def test_explicit_option_beats_everything():
     entry = _entry(
         name="Hoopik", module_type=MODULE_TYPE_TW, options={"light_type": LIGHT_TYPE_DW}
     )
-    assert _resolve_light_type(entry) == LIGHT_TYPE_DW
+    assert resolve_light_type(entry) == LIGHT_TYPE_DW
 
 
 def test_entry_data_override_also_wins():
     entry = _entry(light_type=LIGHT_TYPE_DW, module_type=MODULE_TYPE_TW)
-    assert _resolve_light_type(entry) == LIGHT_TYPE_DW
+    assert resolve_light_type(entry) == LIGHT_TYPE_DW
 
 
 def test_reported_module_type_beats_the_name_heuristic():
@@ -78,31 +78,31 @@ def test_reported_module_type_beats_the_name_heuristic():
     reported module_type says tunable, and that must win.
     """
     entry = _entry(name="hoopik-lookalike", module_type=MODULE_TYPE_TW)
-    assert _resolve_light_type(entry) == LIGHT_TYPE_TW
+    assert resolve_light_type(entry) == LIGHT_TYPE_TW
 
 
 def test_reported_module_type_can_also_select_dimmable_white():
     entry = _entry(name="Balcony Mooon", module_type=MODULE_TYPE_DW)
-    assert _resolve_light_type(entry) == LIGHT_TYPE_DW
+    assert resolve_light_type(entry) == LIGHT_TYPE_DW
 
 
 @pytest.mark.parametrize("bogus", [None, 0, 402, 37889, "404"])
 def test_unrecognised_module_type_falls_through_to_the_name(bogus):
     """An unusable module_type must not shadow the heuristic."""
-    assert _resolve_light_type(_entry(name="Hoopik L1200", module_type=bogus)) == (
+    assert resolve_light_type(_entry(name="Hoopik L1200", module_type=bogus)) == (
         LIGHT_TYPE_DW
     )
-    assert _resolve_light_type(_entry(name="Moon7E75", module_type=bogus)) == (
+    assert resolve_light_type(_entry(name="Moon7E75", module_type=bogus)) == (
         LIGHT_TYPE_TW
     )
 
 
 def test_first_run_with_no_module_type_uses_the_name():
     """Before the first connection there is nothing but the name."""
-    assert _resolve_light_type(_entry(name="Hoopik")) == LIGHT_TYPE_DW
-    assert _resolve_light_type(_entry(name="Moon7E75")) == LIGHT_TYPE_TW
+    assert resolve_light_type(_entry(name="Hoopik")) == LIGHT_TYPE_DW
+    assert resolve_light_type(_entry(name="Moon7E75")) == LIGHT_TYPE_TW
     # No name at all: default to tunable white, which covers every model but one.
-    assert _resolve_light_type(_entry()) == LIGHT_TYPE_TW
+    assert resolve_light_type(_entry()) == LIGHT_TYPE_TW
 
 
 # ---------------------------------------------------------------------------

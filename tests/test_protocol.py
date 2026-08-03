@@ -52,6 +52,7 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     MSG_STATUS,
     STATE_PUSH_TYPES,
     ack_error,
+    build_battery_request,
     build_led_payload,
     build_long,
     build_short,
@@ -61,6 +62,7 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     error_name,
     kelvin_to_warm_ratio,
     pad15,
+    parse_battery,
     parse_device_state,
     parse_module_info,
     warm_ratio_to_kelvin,
@@ -344,6 +346,49 @@ def test_parse_device_state_rejects_bad_payloads():
 def test_parse_device_state_tolerates_missing_second_channel():
     """A 10-byte DW response has no warm byte; ch2 must default to 0."""
     assert parse_device_state(_state_payload(True, 55, 0)[:10]) == (True, 55, 0)
+
+
+def test_battery_request_body():
+    """[3, 44, addr_lo, addr_hi]; 0xFF,0xFF is the app's broadcast form."""
+    assert build_battery_request(0x75, 0x7E) == [3, 44, 0x75, 0x7E]
+    assert build_battery_request(0xFF, 0xFF) == [3, 44, 0xFF, 0xFF]
+
+
+def test_parse_battery_matches_the_h134_capture():
+    """Pinned to a real payload: `02c01b00...` observed on an H134.
+
+    The lamp reported 27 %, discharging. Bit 7 is the charging flag and the low
+    seven bits are the percentage, so 0x1b decodes as (27, False).
+    """
+    captured = bytes.fromhex("02c01b00ffffffffffffffffffffff")
+    assert parse_battery(captured) == (27, False)
+    assert parse_battery(captured).percent == 27
+    assert parse_battery(captured).charging is False
+
+
+@pytest.mark.parametrize("percent", range(0, 101))
+def test_parse_battery_splits_flag_from_percentage(percent):
+    for charging in (False, True):
+        raw = percent | (0x80 if charging else 0x00)
+        assert parse_battery(bytes([2, 0xC0, raw])) == (percent, charging)
+
+
+def test_parse_battery_ignores_other_payloads():
+    """Only a 0xC0 payload is a battery reading.
+
+    Device-data pushes share the same message types, so a marker check is the
+    only thing separating them.
+    """
+    assert parse_battery(_state_payload(True, 33, 67)) is None
+    assert parse_battery(bytes([2, LMP_STATUS_ACK, 0])) is None
+    assert parse_battery(b"") is None
+    assert parse_battery(bytes([2, 0xC0])) is None  # truncated before the value
+
+
+def test_parse_battery_reports_zero_as_zero():
+    """0 is returned as a real value; "never reported" is the caller's None."""
+    assert parse_battery(bytes([2, 0xC0, 0x00])) == (0, False)
+    assert parse_battery(bytes([2, 0xC0, 0x80])) == (0, True)
 
 
 def test_ack_error_flags_only_failed_acks():

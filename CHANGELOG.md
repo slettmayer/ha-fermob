@@ -1,15 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
-<!-- Rename this heading to the release number when bumping manifest.json.
-     The release workflow extracts notes by matching `## <manifest version>`
-     literally, so an "Unreleased" heading left in place yields empty notes. -->
+Battery-powered lamps now report their state of charge.
 
-Protocol fixes found by decoding the official Fermob Lighting app. Nothing here
-changes how the lamp behaves day to day — on/off, brightness and colour
-temperature use a frame that was already correct. What these fix is everything
-that expected an *answer* from the lamp.
+- **New: battery level and charging sensors.** A battery percentage and a
+  charging on/off sensor appear as diagnostic entities on the lamp device. Both
+  are read from the lamp itself — there is no GATT battery service, so this uses
+  the same command the official app polls.
+- The level refreshes **whenever a command reaches the lamp**, which for an
+  adaptive-lighting-driven lamp means every adjustment. The lamp never speaks
+  unprompted, so while it is switched off and nothing is talking to it, the
+  reading holds its last known value rather than going blank — treat it as "as
+  of last contact" rather than live.
+- Until the lamp has reported a level at least once, both entities read as
+  unavailable rather than 0 %, so a quiet lamp is never mistaken for a flat one.
+
+Lamps that are not battery-powered (the Hoopik L1200 string light) simply never
+report a level, and the entities stay unavailable.
+
+The rest of this release is protocol fixes found by decoding the official Fermob
+Lighting app. They are what made the battery reading possible: the request is an
+acknowledged command and the answer is a pushed status, and both of those paths
+were broken. Nothing here changes how the lamp behaves day to day — on/off,
+brightness and colour temperature use a frame that was already correct.
 
 - **Acknowledged commands used the wrong message type.** The constant for "command
   with acknowledgement" carried the value 2, which is the type the *lamp* uses
@@ -32,8 +46,10 @@ Note for anyone re-pairing: a handshake step the lamp rejects now fails
 immediately and visibly, where it previously carried on and produced a broken
 configuration entry.
 
-Reading lamp state back is *not* enabled by this release. The corrected query is
-still untested on hardware, so it remains unused.
+Reading the lamp's *light* state back is still not possible. With the message
+type corrected the lamp does now answer that query instead of ignoring it — but
+what it answers is a rejection. The request is unchanged and still unused; the
+rejection is followed up separately.
 
 ## 0.5.1
 
