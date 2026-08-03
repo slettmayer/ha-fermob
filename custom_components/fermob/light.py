@@ -210,6 +210,12 @@ class FermobBLEConnection:
         h0 = frame[0]
         mt = (h0 >> 5) & 7
 
+        # PROBE: log every inbound frame before any routing decision. v1 could
+        # not tell whether a battery push arrived, because a 0xC0 payload is
+        # dropped by _dispatch_event's marker check with no log line at all.
+        if _PROBE_ENABLED:
+            self._probe_log_inbound(frame, h0, mt)
+
         if mt in STATE_PUSH_TYPES:
             if self._ready and self.on_state_change is not None:
                 self._dispatch_event(frame, (h0 >> 3) & 3)
@@ -563,6 +569,37 @@ class FermobBLEConnection:
     # back to a shippable tree.
     # ------------------------------------------------------------------
 
+    def _probe_log_inbound(self, frame: bytes, h0: int, mt: int) -> None:
+        """Log every inbound frame, decoded if possible. Never raises."""
+        try:
+            pl = decode_fragment(
+                frame, (h0 >> 3) & 3, self._pub, self._priv, self._nonce
+            )
+            marker = pl[1] if len(pl) > 1 else None
+            note = ""
+            if marker == LMP_PARAM_BATTERY_LEVEL and len(pl) > 2:
+                note = (
+                    f"  <<< BATTERY percent={pl[2] & 0x7F} "
+                    f"charging={bool(pl[2] & 0x80)}"
+                )
+            _DIAG.warning(
+                "Fermob %s: PROBE inbound mt=%d ft=%d marker=%s hex=%s | %s%s",
+                self._address,
+                mt,
+                h0 & 7,
+                marker,
+                pl.hex(),
+                byte_table(pl),
+                note,
+            )
+        except Exception:
+            _DIAG.warning(
+                "Fermob %s: PROBE inbound mt=%d undecodable raw=%s",
+                self._address,
+                mt,
+                frame.hex(),
+            )
+
     async def _probe_battery_command(self) -> None:
         """Ask for the battery level three ways. Never raises."""
         if not _PROBE_ENABLED:
@@ -581,11 +618,28 @@ class FermobBLEConnection:
                 [3, CMD_MODULES_BATTERY_LEVEL_GET, 0xFF, 0xFF],
                 addressed=False,
             )
-            # 3. The state read-back, now that the header is right.
+            # 3. The state read-back. v1 got no reply even with header 0x32, so
+            #    this confirms whether that is stable rather than a one-off.
             await self._probe_one(
                 "DEVICE_DATA_GET",
                 [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12,
                 addressed=True,
+            )
+            # v1 learned the ACK to command 44 carries no value -- it is a bare
+            # [len=2, 0x80, 0x00] success. The app reads battery from a separate
+            # push, so the value (if it comes) arrives after this returns.
+            #
+            # No sleep here on purpose: this runs inside ensure_connected under
+            # the command lock, so waiting would delay the user's actual lamp
+            # command by exactly that long. The listen window is free instead --
+            # the idle disconnect keeps the link open for
+            # _IDLE_DISCONNECT_DELAY seconds after the last command, and
+            # _probe_log_inbound logs anything that arrives in that time.
+            _DIAG.warning(
+                "Fermob %s: PROBE requests sent; inbound frames logged for the "
+                "next %.0fs (idle-disconnect window)",
+                self._address,
+                _IDLE_DISCONNECT_DELAY,
             )
         except Exception:  # a diagnostic must never break the light path
             _DIAG.warning("Fermob %s: PROBE failed", self._address, exc_info=True)
