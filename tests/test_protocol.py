@@ -29,6 +29,7 @@ sys.modules["fermob_protocol"] = protocol
 _SPEC.loader.exec_module(protocol)
 
 from fermob_protocol import (  # noqa: E402 — must follow the loader above
+    CMD_DEVICE_DATA_GET,
     CMD_DEVICE_DATA_SET,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
@@ -40,8 +41,8 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
+    MSG_CMD_ACK,
     MSG_FIRE,
-    MSG_MESH_CMD,
     build_led_payload,
     build_long,
     build_short,
@@ -219,6 +220,7 @@ def test_build_short_frame_shape():
         NONCE,
         b2=0xAB,
         b3=0xCD,
+        addressed=True,
     )
     assert len(frame) == 20
     assert frame[0] == (MSG_FIRE << 5) | (ENCRYPT_PRIVATE << 3) | 2  # ft=2
@@ -226,15 +228,55 @@ def test_build_short_frame_shape():
     assert frame[2:4] == b"\xab\xcd"
 
 
-def test_frame_type_depends_on_message_type():
-    def ft(msg_type):
+def test_frame_type_depends_on_addressing_not_message_type():
+    """The frame type comes from the addressing mode alone.
+
+    Both message types appear with both frame types in the app, so the frame
+    type cannot be inferred from the message type -- which is what this module
+    used to do.
+    """
+
+    def ft(msg_type, addressed):
         return (
-            build_short(msg_type, ENCRYPT_NONE, [1], 0, KEY_PUB, KEY_PRIV, NONCE)[0] & 7
+            build_short(
+                msg_type,
+                ENCRYPT_NONE,
+                [1],
+                0,
+                KEY_PUB,
+                KEY_PRIV,
+                NONCE,
+                addressed=addressed,
+            )[0]
+            & 7
         )
 
-    assert ft(MSG_FIRE) == 2  # lmp_short_frame
-    assert ft(MSG_MESH_CMD) == 2  # lmp_short_frame, short address
-    assert ft(MSG_CMD) == 0  # local_short_frame
+    for msg_type in (MSG_FIRE, MSG_CMD):
+        assert ft(msg_type, True) == 2  # lmp_short_frame
+        assert ft(msg_type, False) == 0  # local_short_frame
+
+
+def test_acknowledged_mesh_command_header_is_0x32():
+    """Regression: an ACK'd, SHORT-addressed command must not use message type 2.
+
+    Message type 2 is CMD_ACK -- the lamp's own reply. Sending it made the lamp
+    read our request as an acknowledgement, so it never answered. The app sends
+    CMD_WITH_ACK (1) with a SHORT address instead.
+    """
+    frame = build_short(
+        MSG_CMD,
+        ENCRYPT_PRIVATE,
+        [14, CMD_DEVICE_DATA_GET, 0],
+        1,
+        KEY_PUB,
+        KEY_PRIV,
+        NONCE,
+        b2=0x12,
+        b3=0x34,
+        addressed=True,
+    )
+    assert frame[0] == 0x32
+    assert (frame[0] >> 5) & 7 != MSG_CMD_ACK
 
 
 @pytest.mark.parametrize("enc", (ENCRYPT_NONE, ENCRYPT_PUBLIC, ENCRYPT_PRIVATE))

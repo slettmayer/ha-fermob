@@ -50,9 +50,9 @@ from .protocol import (
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
+    MSG_CMD_ACK,
     MSG_EVENT,
     MSG_FIRE,
-    MSG_MESH_CMD,
     ModuleInfo,
     build_led_payload,
     build_long,
@@ -218,7 +218,7 @@ class FermobBLEConnection:
         return self._seq
 
     async def _send_frames(self, frames: list[bytes]) -> tuple[bytes | None, int]:
-        """Write BLE frames and wait for the matching ACK (mt=2, cmd==seq)."""
+        """Write BLE frames and wait for the matching CMD_ACK (mt=2, cmd==seq)."""
         my_seq = frames[0][1]
         for frame in frames:
             await self._client.write_gatt_char(CHAR_UUID, frame, response=False)
@@ -273,7 +273,7 @@ class FermobBLEConnection:
                     self._ack_queue.put_nowait(frame)
                 continue
 
-            if mt != 2 or cmd != my_seq:
+            if mt != MSG_CMD_ACK or cmd != my_seq:
                 _LOGGER.debug(
                     "Fermob %s: ignored frame (mt=%d cmd=%02x expected=%02x)",
                     self._address,
@@ -578,16 +578,19 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
 
     async def get_state(self) -> tuple[bool, int, int] | None:
-        """Query current lamp state via DEVICE_DATA_GET (MESH CMD, SHORT addr).
+        """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
 
-        Unused: the MOOON! does not ACK this command once it is in GATEWAY mode,
-        so calling it would add a 3 s ACK timeout to every command. Kept because
-        it documents the protocol and other lamp families may answer it.
+        Still unused by the entity, but the frame it sends was wrong until now:
+        it went out as message type 2, which is CMD_ACK -- the lamp read our
+        request as an acknowledgement and had no reason to answer. The app sends
+        CMD_WITH_ACK (1) with a SHORT address, i.e. header 0x32. Whether the
+        MOOON! answers the corrected frame is untested on hardware; the previous
+        docstring blamed GATEWAY mode for the silence, which was probably wrong.
         """
         payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
         sid = self._next_seq()
         frame = build_short(
-            MSG_MESH_CMD,
+            MSG_CMD,
             ENCRYPT_PRIVATE,
             payload,
             sid,
@@ -596,6 +599,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=self._addr_b2,
             b3=self._addr_b3,
+            addressed=True,
         )
         pl, _ = await self._send_frames([frame])
         if pl:
@@ -621,6 +625,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=self._addr_b2,
             b3=self._addr_b3,
+            addressed=True,
         )
         _LOGGER.debug(
             "Fermob %s →FIRE (%s) %s", self._address, self.light_type, pkt.hex()
@@ -640,6 +645,7 @@ class FermobBLEConnection:
             self._nonce,
             b2=0xFF,
             b3=0xFF,
+            addressed=True,
         )
         _LOGGER.warning("Fermob %s: sending UNREGISTER broadcast", self._address)
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)

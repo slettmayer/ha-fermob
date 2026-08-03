@@ -10,6 +10,12 @@ Frame layout (20 bytes, written to LINKIO_TXRX_CHARACTERISTIC):
     [2..3]   short address (b2/b3) for mesh frames, else 0
     [4..19]  encrypted( [crc] + payload padded to 15 bytes )
 
+`msg_type` and `frame_type` are independent: the message type says whether the
+lamp must acknowledge, the frame type says how the frame is addressed. An
+acknowledged, SHORT-addressed command is therefore MSG_CMD with frame type 2
+(header 0x32 under PRIVATE encryption), not message type 2 -- message type 2
+is CMD_ACK, which is what the *lamp* sends back.
+
 Encryption is an AES-ECB keystream: the 16-byte nonce is encrypted with the
 public or private key and XORed over the 16-byte body.
 
@@ -45,11 +51,15 @@ ENCRYPT_NONE = 0
 ENCRYPT_PUBLIC = 1
 ENCRYPT_PRIVATE = 2
 
-# Frame message types
-MSG_FIRE = 0  # CMD_WITH_NO_ACK — lmp_short_frame (ft=2)
-MSG_CMD = 1  # CMD_WITH_ACK    — local_short_frame (ft=0)
-MSG_MESH_CMD = 2  # CMD_WITH_ACK    — lmp_short_frame  (ft=2, SHORT addr)
-MSG_EVENT = 4  # unsolicited notification from the lamp
+# Frame message types (JS lmp_module_msg_type). This is the *message* type
+# only -- the frame type in the low bits of the header is chosen by the
+# addressing mode, not by this value, so the two are passed separately to
+# `build_short`.
+MSG_FIRE = 0  # CMD_WITH_NO_ACK — a command we do not expect a reply to
+MSG_CMD = 1  # CMD_WITH_ACK    — a command the lamp must acknowledge
+MSG_CMD_ACK = 2  # CMD_ACK         — the lamp's *reply*; we never send this
+MSG_STATUS = 3  # STATUS          — solicited state push
+MSG_EVENT = 4  # EVENT           — unsolicited state push
 
 # LMP command IDs (JS CODES)
 CMD_REGISTER = 16
@@ -151,9 +161,16 @@ def build_short(
     nonce: bytes,
     b2: int = 0,
     b3: int = 0,
+    addressed: bool = False,
 ) -> bytes:
-    """Build a single 20-byte frame."""
-    ft = 2 if msg_type in (MSG_FIRE, MSG_MESH_CMD) else 0
+    """Build a single 20-byte frame.
+
+    `addressed` selects the frame type independently of `msg_type`, mirroring
+    the app: a SHORT-addressed frame is `lmp_short_frame` (2), an unaddressed
+    one is `local_short_frame` (0). The frame type is *not* a function of the
+    message type -- CMD_WITH_ACK appears with both.
+    """
+    ft = 2 if addressed else 0
     hdr = ((msg_type & 7) << 5) | ((enc & 3) << 3) | ft
     p = pad15(payload)
     enc_data = crypt(bytes([crc(bytes(p)), *p]), enc, pub, priv, nonce)
