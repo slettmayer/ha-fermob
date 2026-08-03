@@ -30,6 +30,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
 
+from . import DOMAIN
 from .protocol import (
     CHAR_UUID,
     CMD_CRYPT_AUTHKEY_GEN,
@@ -53,8 +54,10 @@ from .protocol import (
     MSG_CMD_ACK,
     MSG_FIRE,
     STATE_PUSH_TYPES,
+    Battery,
     ModuleInfo,
     ack_error,
+    build_battery_request,
     build_led_payload,
     build_long,
     build_short,
@@ -62,6 +65,7 @@ from .protocol import (
     error_name,
     kelvin_to_warm_ratio,
     module_type_to_light_type,
+    parse_battery,
     parse_device_state,
     parse_module_info,
     warm_ratio_to_kelvin,
@@ -127,9 +131,14 @@ class FermobBLEConnection:
         self._idle_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
 
+        # Last battery reading, None until the lamp reports one. A reported 0 is
+        # a real 0; "never reported" must stay distinguishable from "empty".
+        self.battery: Battery | None = None
+
         # Queues / callbacks
         self._ack_queue: asyncio.Queue = asyncio.Queue()
         self.on_state_change: Any = None  # (is_on, ch1, ch2) -> None
+        self.on_battery: Any = None  # (Battery) -> None
 
     # ------------------------------------------------------------------
     # Key persistence
@@ -172,7 +181,7 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
 
     def _dispatch_event(self, frame: bytes, resp_enc: int) -> None:
-        """Decode an EVENT frame and push the lamp state to the entity."""
+        """Decode a state push and hand it to whichever entity wants it."""
         try:
             pl = decode_fragment(frame, resp_enc, self._pub, self._priv, self._nonce)
         except Exception:  # malformed or undecodable frame
@@ -183,6 +192,23 @@ class FermobBLEConnection:
                 exc_info=True,
             )
             return
+
+        # Battery arrives as its own short push, not as part of DEVICE_DATA, so
+        # it has to be handled before the device-data marker check below --
+        # which would otherwise drop it as "not a state frame".
+        battery = parse_battery(pl)
+        if battery is not None:
+            self.battery = battery
+            _LOGGER.debug(
+                "Fermob %s: battery %d%% charging=%s",
+                self._address,
+                battery.percent,
+                battery.charging,
+            )
+            if self.on_battery is not None:
+                self.on_battery(battery)
+            return
+
         if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
             return
         state = parse_device_state(pl)
@@ -192,7 +218,8 @@ class FermobBLEConnection:
         _LOGGER.debug(
             "Fermob %s: EVENT is_on=%s ch1=%d ch2=%d", self._address, is_on, ch1, ch2
         )
-        self.on_state_change(is_on, ch1, ch2)
+        if self.on_state_change is not None:
+            self.on_state_change(is_on, ch1, ch2)
 
     def _notif_handler(self, sender, data: bytearray) -> None:
         frame = bytes(data)
@@ -202,7 +229,9 @@ class FermobBLEConnection:
         mt = (h0 >> 5) & 7
 
         if mt in STATE_PUSH_TYPES:
-            if self._ready and self.on_state_change is not None:
+            # Not gated on on_state_change: a battery push is a state push too,
+            # and it must still be dispatched when only the sensor cares.
+            if self._ready:
                 self._dispatch_event(frame, (h0 >> 3) & 3)
             else:
                 # During handshake: stash so _wait_for_event() can see it
@@ -269,7 +298,7 @@ class FermobBLEConnection:
 
             # A state push arrived while we were waiting for an ACK: re-route it
             if mt in STATE_PUSH_TYPES:
-                if self._ready and self.on_state_change is not None:
+                if self._ready:
                     self._dispatch_event(frame, resp_enc)
                 else:
                     self._ack_queue.put_nowait(frame)
@@ -536,6 +565,7 @@ class FermobBLEConnection:
         self._ready = True
         self._connected = True
         _LOGGER.warning("Fermob %s: ready", self._address)
+        await self.request_battery()
         self._schedule_idle_disconnect()
 
     # ------------------------------------------------------------------
@@ -594,17 +624,59 @@ class FermobBLEConnection:
     # Lamp commands
     # ------------------------------------------------------------------
 
+    async def request_battery(self) -> None:
+        """Ask the lamp for its state of charge.
+
+        The ACK carries nothing but a success code -- the value follows as a
+        separate STATUS push, which `_dispatch_event` picks up. So this returns
+        as soon as the request is acknowledged and does *not* wait for the
+        reading; in practice the push arrives in the same millisecond.
+
+        Never raises: a lamp that will not answer must not break the connect
+        path, it must just leave the sensor unknown.
+        """
+        payload = build_battery_request(self._addr_b2, self._addr_b3)
+        sid = self._next_seq()
+        frame = build_short(
+            MSG_CMD,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2,
+            b3=self._addr_b3,
+            addressed=True,
+        )
+        try:
+            await self._send_frames([frame])
+        except Exception:
+            _LOGGER.debug(
+                "Fermob %s: battery request failed", self._address, exc_info=True
+            )
+
     async def get_state(self) -> tuple[bool, int, int] | None:
         """Query current lamp state via DEVICE_DATA_GET (CMD_WITH_ACK, SHORT addr).
 
-        Still unused by the entity, but the frame it sends was wrong until now:
-        it went out as message type 2, which is CMD_ACK -- the lamp read our
-        request as an acknowledgement and had no reason to answer. The app sends
-        CMD_WITH_ACK (1) with a SHORT address, i.e. header 0x32. Whether the
-        MOOON! answers the corrected frame is untested on hardware; the previous
-        docstring blamed GATEWAY mode for the silence, which was probably wrong.
+        Still unused by the entity, but two separate things about it were wrong.
+
+        The frame went out as message type 2, which is CMD_ACK -- the lamp read
+        our request as an acknowledgement and had no reason to answer. With that
+        fixed to CMD_WITH_ACK + SHORT address (header 0x32), the H134 does
+        answer: with `INVALID_SIZE` (error 18). So the *payload* was wrong too,
+        and the old docstring blaming GATEWAY mode for the silence was wrong
+        twice over.
+
+        The body is now `[2, 66, dev_index]`, matching the shape of every other
+        command we send (the length byte counts the command plus its parameters,
+        as `[3, 44, addr_lo, addr_hi]` does for the battery request). The old
+        `[14, ...]` padded the body out to 15 bytes and declared that length.
+
+        **Untested**: whether this size is the one the lamp wants is unverified
+        -- all that is confirmed is that the previous one was rejected.
         """
-        payload = [14, CMD_DEVICE_DATA_GET, 0] + [0xFF] * 12
+        payload = [2, CMD_DEVICE_DATA_GET, 0]
         sid = self._next_seq()
         frame = build_short(
             MSG_CMD,
@@ -674,7 +746,7 @@ class FermobBLEConnection:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_light_type(entry: ConfigEntry) -> str:
+def resolve_light_type(entry: ConfigEntry) -> str:
     """Decide DW vs TW for this lamp.
 
     The app's device-class table (manufacturer_id 7) keys this off module_type
@@ -714,33 +786,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    address = entry.data[CONF_ADDRESS]
-    light_type = _resolve_light_type(entry)
-    store = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
-    conn = FermobBLEConnection(hass, address, store, light_type=light_type)
-    entity = FermobLight(hass, entry, conn, light_type)
+    # The connection is owned by __init__.py, not by this platform: the sensor
+    # platforms share it, and they are set up concurrently with this one, so
+    # creating it here would be a race.
+    conn = hass.data[DOMAIN][entry.entry_id]
+    entity = FermobLight(hass, entry, conn, conn.light_type)
     conn.on_state_change = entity.on_lamp_state_change
-
-    def _remember_module_info(module_type: int | None, model: str | None) -> None:
-        """Persist what the lamp reported into the config entry.
-
-        Runs while the connection lock is held, so it must not await a reload:
-        async_update_entry only *schedules* the update listener, and the reload
-        that listener triggers then waits on the lock we are inside. Writing
-        entry.data is also what makes this self-limiting -- once stored,
-        _resolve_light_type agrees with the lamp and nothing changes again.
-        """
-        updates = {
-            k: v
-            for k, v in (("module_type", module_type), ("model", model))
-            if v is not None and entry.data.get(k) != v
-        }
-        if not updates:
-            return
-        hass.config_entries.async_update_entry(entry, data={**entry.data, **updates})
-
-    conn.on_module_info = _remember_module_info
-    entry.async_on_unload(conn.async_shutdown)
     async_add_entities([entity])
 
     platform = entity_platform.async_get_current_platform()

@@ -74,6 +74,7 @@ CMD_CRYPT_AUTHKEY_GEN = 22
 CMD_CRYPT_AUTHKEY_GET = 23
 CMD_CRYPT_AUTHKEY_SET = 24
 CMD_CRYPT_SET = 25
+CMD_MODULES_BATTERY_LEVEL_GET = 44  # 0x2C — battery level of one/all modules
 CMD_MODULE_INFO_GET = 48
 CMD_DEVICE_INFO_GET = 50
 CMD_DEVICE_DATA_SET = 65
@@ -107,6 +108,7 @@ LMP_ERRORS = {
     20: "ITEM_NOT_FOUND",
 }
 
+LMP_PARAM_BATTERY_LEVEL = 192  # 0xc0 — bit7 = charging, bits0-6 = percent
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"
 LMP_PARAM_MODULE_TYPE = 180  # 0xb4 — little-endian uint16
@@ -310,6 +312,40 @@ def ack_error(payload: bytes) -> int | None:
 def error_name(code: int) -> str:
     """Human-readable name for an LMP error code, for log messages."""
     return LMP_ERRORS.get(code, f"UNKNOWN({code})")
+
+
+class Battery(NamedTuple):
+    """State of charge as the lamp reports it."""
+
+    percent: int
+    charging: bool
+
+
+def build_battery_request(addr_b2: int, addr_b3: int) -> list[int]:
+    """Body of MODULES_BATTERY_LEVEL_GET for one module.
+
+    Pass `0xFF, 0xFF` for the app's broadcast form (every module at once);
+    both are accepted by the H134. Send it as MSG_CMD with `addressed=True`.
+    """
+    return [3, CMD_MODULES_BATTERY_LEVEL_GET, addr_b2, addr_b3]
+
+
+def parse_battery(payload: bytes) -> Battery | None:
+    """Read a battery push, or None if this payload is not one.
+
+    The value does **not** come back in the acknowledgement -- that is a bare
+    `[2, 0x80, 0x00]` success. It arrives separately as a STATUS frame whose
+    payload is `[2, 0xC0, byte]`, confirmed on an H134 (`02c01b00...` = 27 %,
+    not charging).
+
+    A reported 0 is returned as-is. The caller decides what it means: the app
+    treats "no value yet" as -1 and renders `--%`, so 0 should not be shown as
+    an empty battery until the lamp has actually reported one.
+    """
+    if len(payload) < 3 or payload[1] != LMP_PARAM_BATTERY_LEVEL:
+        return None
+    raw = payload[2]
+    return Battery(percent=raw & 0x7F, charging=bool(raw & 0x80))
 
 
 def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
