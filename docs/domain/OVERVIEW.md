@@ -37,7 +37,49 @@ One `light` entity per lamp:
 - **`fermob.unpair`** — an entity service equivalent to "Forget" in the app. See [PAIRING.md](PAIRING.md#unpairing).
 - **Lamp type** — an options-flow selector (Auto / Tunable white / Dimmable white). "Auto" now resolves from the `module_type` the lamp reports, so the selector is an override for when that is wrong or unavailable, not the primary mechanism.
 
-There are no sensors, no switches, and no diagnostics.
+Plus two diagnostic entities per lamp, both fed by the same battery push and both **unavailable until the lamp
+has reported a level at least once**, so a lamp that has never answered is never mistaken for a flat one:
+
+- **`sensor.<lamp>_battery`** — state of charge as the lamp reports it (`SensorDeviceClass.BATTERY`, %).
+- **`binary_sensor.<lamp>_charging`** — on while the lamp sits on its charger (`BinarySensorDeviceClass.BATTERY_CHARGING`).
+
+They exist on every lamp; a model with no battery simply never reports one and they stay unavailable. The
+reading is best understood as *"as of last contact"* rather than live — a scheduled check-in every 6 hours keeps
+it recent without turning the lamp on, and the last known value is held rather than blanked when the lamp is out
+of range. Note that the percentage **reads high while charging** (it jumped 24 % → 33 % the moment the charger
+went on, faster than a cell can take charge), so the lamp is very likely reporting voltage rather than counting
+capacity.
+
+There are no switches and no other platforms.
+
+## What the official app can configure — and what it cannot
+
+Worth knowing before chasing a missing feature: **the Fermob Lighting app has no lamp-configuration surface at
+all.** Established by reading the decompiled app — Fermob Lighting 3.0.2, versionCode 1209, a Cordova/Ionic
+hybrid whose entire logic is the JavaScript in `assets/www/build/main.js` — on 2026-08-04. Derived from the
+app's JS, not verified against firmware.
+
+Its **Settings** page (`page-settings`) holds exactly one control, a language selector; the only other item, a
+notifications toggle, is commented out in the source. Everything the app can change about a lamp is:
+
+| What | Command |
+|---|---|
+| Rename the lamp | `MODULE_NAME_SET` (49) |
+| Brightness and colour temperature — an "ambience" | `DEVICE_DATA_SET` (65) |
+| Timer, scheduling | `RULE_*` (97–111) |
+| Group membership, LUDO switch assignment | `GROUP_*` (81–88) |
+| Set the lamp's clock | `DATETIME_SET` (26) |
+| Firmware update, delete / unpair | DFU, `UNREGISTER` (17) |
+
+There is **no output limit, no power profile, no battery-behaviour setting and no persistent power-on default.**
+The app's command enum does define `CONFIG_SET` (5), `MODULE_PROPERTY_SET` (53), `DEVICE_PROPERTY_SET` (67) and
+`HOST_PARAM_SET` (71) — the plausible homes for something like that — but **it never calls a single one of
+them**, so there is no payload to imitate and no evidence the firmware implements them.
+
+The practical consequence: anything the lamp does that you might want to switch off — notably its
+[output limiting on battery](LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these) — is firmware behaviour
+with no exposed setting, in the app or here. Reaching feature parity with the app is therefore **not** a route
+to changing it.
 
 ## Lamp-family detection
 

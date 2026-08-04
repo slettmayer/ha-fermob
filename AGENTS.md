@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (794 tests, no Home Assistant needed)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (957 tests, no Home Assistant needed)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -32,14 +32,15 @@
 
 ## Architecture Overview
 
-Four modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
+Seven modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
 keystream crypto, payload construction, inbound parsing — with **no `homeassistant` imports**, so it is unit
 testable on its own. `light.py` holds `FermobBLEConnection` (BLE link, pairing handshake, key persistence,
 frame send/ACK matching, idle disconnect) and `FermobLight` (the HA entity). `config_flow.py` handles
-Bluetooth discovery, manual add, and the lamp-type options flow. `__init__.py` forwards the platform and
-reloads the entry when options change. There is no coordinator and no polling: state is pushed by our own
-commands and by EVENT notifications while the link is up. See
-[ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
+Bluetooth discovery, manual add, and the lamp-type options flow. `entity.py`, `sensor.py` and
+`binary_sensor.py` add the two diagnostic battery entities on top of the same connection, with no BLE logic of
+their own. `__init__.py` forwards the platforms and reloads the entry when options change. There is no
+coordinator and no light polling: state is pushed by our own commands and by EVENT notifications while the link
+is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
 
 ## Tech Stack
 
@@ -73,6 +74,7 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Nothing is verified against the official Fermob app.** The protocol was reverse-engineered from its JS by others; our tests pin *our* layout and intent only. See [UPSTREAM.md](docs/tech/UPSTREAM.md).
 - **Lamp-family detection is a name heuristic** (`"hoop"` in the name → dimmable white, everything else → tunable white). It is wrong for a renamed Hoopik; the options flow is the escape hatch. The model cannot be read from the advertisement — it is rotating and encrypted.
 - **State drifts silently after the 30 s idle disconnect.** The lamp emits no EVENT on reconnect and stops answering `DEVICE_DATA_GET` in gateway mode, so a physical button press outside the connected window is unrecoverable. `FermobBLEConnection.get_state()` exists but is intentionally unused — see its docstring before wiring it in.
+- **The lamp limits its own light output on battery** — roughly half off the charger, worse at a low state of charge. Firmware behaviour with **no setting anywhere**: the official app has no lamp-configuration surface at all and never sends the config commands its own enum defines. Do not go looking for a command to send, and do not treat a "capped brightness" report as a mapping bug. See [OVERVIEW.md](docs/domain/OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot).
 - **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA holds the link, and re-pairing from the app invalidates our stored keys. See [PAIRING.md](docs/domain/PAIRING.md).
 - **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them
   from `protocol.py`, so the two must be kept in sync by hand. See

@@ -142,6 +142,29 @@ data:
   brightness_pct: 75
 ```
 
+> **The lamp is dimmer on battery than on its charger, and there is no setting for it.** Take an H134 off its
+> stand and the output drops to roughly half, even at 100 % and a healthy state of charge; at a low charge the
+> top of the slider stops doing anything at all and the whole usable range squeezes into the bottom fifth. That
+> is the lamp's own power management, not this integration — see
+> [Brightness on battery](#brightness-on-battery) below.
+
+### Brightness on battery
+
+Nothing can turn the limiting off. Not this integration, and **not the official Fermob app either** — its
+entire Settings page is a language selector, and the only things it can change about a lamp are its name, its
+brightness and colour temperature, timers and schedules, group and switch assignment, its clock, and firmware
+updates. The Linkio protocol does define configuration commands (`CONFIG_SET`, `MODULE_PROPERTY_SET`,
+`DEVICE_PROPERTY_SET`, `HOST_PARAM_SET`) but the app never sends any of them, so there is no known way to ask
+the lamp for more output and no reason to think the firmware would answer.
+
+The app does not document the behaviour anywhere either. Its FAQ covers battery runtime — *"Mooon! can be left
+on for up to 6 hours at 100 %, and up to 12 hours at 50 % brightness"* — and confirms the lamps have a ByPass
+so they can run while charging, but never mentions output being reduced off the charger.
+
+If this matters for your setup, Fermob support (`support.lighting@fermob.com`) is the only route. Established by
+reading the decompiled Fermob Lighting app (3.0.2, build 1209) on 2026-08-04; details and evidence in
+[docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot).
+
 ### Colour temperature (tunable-white lamps)
 
 MOOON! lamps expose a colour-temperature slider (3000 K warm … 6000 K cold):
@@ -228,6 +251,8 @@ If the lamp has stale keys from a previous client and won't pair:
 | Physical button not reflected in HA | Expected — the lamp does not report presses and its state cannot be read back. The next HA command puts the lamp into a known state |
 | Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
 | Battery percentage looks too high | Expected while charging — see [Entities](#entities). Read it once the lamp has been off the charger a while |
+| Lamp dims when lifted off the charger | Expected — the lamp limits its own output on battery. No setting exists, in HA or in the Fermob app — see [Brightness on battery](#brightness-on-battery) |
+| Top of the brightness slider does nothing | Same cause, worse at a low state of charge. Charge the lamp before suspecting a bug |
 | Integration not loading | Check logs for `custom_components.fermob` errors |
 
 ## Debug logging

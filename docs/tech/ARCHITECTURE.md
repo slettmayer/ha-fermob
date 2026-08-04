@@ -4,14 +4,21 @@
 
 ## Modules
 
-Four files in `custom_components/fermob/`:
+Seven files in `custom_components/fermob/`:
 
 | Module | Owns | Imports `homeassistant`? |
 |---|---|---|
 | `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, TLV walking, all protocol constants | **No — keep it that way** |
 | `light.py` | `FermobBLEConnection` (BLE link, handshake, key/module-info persistence, ACK matching, idle disconnect) and `FermobLight` (the entity) | Yes |
 | `config_flow.py` | Bluetooth discovery, manual add, the lamp-type options flow | Yes |
+| `entity.py` | `FermobBatteryEntityBase` — device info and the chained `on_battery` subscription shared by both diagnostic entities | Yes |
+| `sensor.py` | `FermobBatterySensor` — state of charge | Yes |
+| `binary_sensor.py` | `FermobChargingSensor` — charging flag | Yes |
 | `__init__.py` | Platform forwarding, unload, the options-update listener | Yes |
+
+The three battery files carry no BLE logic: they read `FermobBLEConnection.battery` and subscribe to its
+callback. The subscription is **chained rather than assigned**, because the sensor and the binary sensor share
+one connection and overwriting `on_battery` would silently disconnect the other.
 
 ### Why `protocol.py` has no HA imports
 

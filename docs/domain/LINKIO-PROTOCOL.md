@@ -296,7 +296,20 @@ stale frame it would prevent. Revisit once we have observed what the H134 actual
 - **The post-`REGISTER_END` EVENT's state payload is useless to us.** Connections are only ever established *from* a command, so whatever state it reports is overwritten a few milliseconds later by the command that triggered the connection. The EVENT is still waited for — as a gateway-mode confirmation and settle gate — but its contents are only logged.
 - **The model is not in the advertisement.** It rotates and is encrypted, so `module_type` (401 dimmable / 404 tunable) cannot be sniffed *before* pairing — a branch that attempted this was removed as dead code. It **is** readable after connecting, from `MODULE_INFO_GET`; that is a different question and it is now answered.
 - **There is no battery level in the GATT table, and none in `DEVICE_INFO_GET`.** Both were checked on hardware — see the GATT table in [TECH-STACK.md](../tech/TECH-STACK.md#bluetooth). That part stands, and it was never the right place to look: **battery is a module-level command, `MODULES_BATTERY_LEVEL_GET` (44)**, documented under Commands above. Of the three candidates this entry used to list, "past byte 10" is now positively ruled out and "commands absent from our constant list" was the right one.
-- **"Brightness does nothing between 100 % and 20 %" is a flat battery, not a mapping bug.** Reported on an H134 at ~24 % charge: the top of the slider felt inert, with the whole perceptible range crammed into roughly 20 % down to 1 %. Re-tested at 33 % and on the charger, 3000 K and 6000 K both showed a clear 20 %-vs-100 % difference. The likely mechanism is the lamp current-limiting its LED driver as the cell sags, so every high setting clamps to whatever the battery can actually deliver. Check the state of charge before suspecting the code.
+- **Brightness that feels capped or inert at the top of the slider is the lamp's own power management on battery, not a mapping bug.** Two separate observations, one mechanism. First, "brightness does nothing between 100 % and 20 %" — reported on an H134 at ~24 % charge: the top of the slider felt inert, with the whole perceptible range crammed into roughly 20 % down to 1 %. Re-tested at 33 % and on the charger, 3000 K and 6000 K both showed a clear 20 %-vs-100 % difference. The likely mechanism is the lamp current-limiting its LED driver as the cell sags, so every high setting clamps to whatever the battery can actually deliver. Check the state of charge before suspecting the code.
+
+  Second, **output is capped by simply being off the charger, at a healthy state of charge.** Observed on an H134:
+  switched on at 100 % while sitting on its stand, then lifted off it — output drops to roughly half and stays
+  there. Same mechanism as above, no cell sag required. **There is nothing to send about it.** The official app
+  has no setting for it and does not document it: its FAQ covers runtime ("Mooon! up to 6 hours at 100 %, 12
+  hours at 50 %") and the ByPass that lets the lamp run while charging, but says nothing about reduced output
+  on battery — and the app has no lamp-configuration surface at all, see
+  [OVERVIEW.md](OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot). The app is charger-blind
+  by construction, too: `charging` appears only where it parses the battery byte and where it draws a
+  lightning-bolt icon, `isH134()` only picks a CSS image container, and its light maths —
+  `cold = ⌊brightness/100 × (100 − heat)⌋`, `warm = ⌊brightness/100 × heat⌋` — carries no cap and no charger
+  term, exactly like ours. So parity with the app buys nothing here. Derived from the decompiled app
+  (2026-08-04); the firmware mechanism itself is inferred, not observed.
 
   Nothing in the brightness path is temperature-asymmetric, which is the other reason to look at the battery first: `warm = level × warm_ratio`, `cold = level − warm`, so the **total drive is 100 units at full brightness for every colour temperature**. A corollary worth knowing before designing a test — comparing 4000 K against 6000 K at full brightness proves nothing, because our model sends the same total in both cases. That comparison was tried and it cannot discriminate anything.
 

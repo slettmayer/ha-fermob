@@ -40,7 +40,7 @@ all of it.
 | Removed the `module_type` detection branch | It could never fire — nothing writes `entry.data["module_type"]`, and the advertisement cannot reveal the model |
 | Logged the swallowed exceptions | `except Exception: pass` around all frame decoding |
 | Corrected the README | It claimed three times that state re-syncs on reconnect, which the code contradicts |
-| Extracted `protocol.py`; added 794 tests + CI | PR #2 claimed byte-for-byte verification but shipped nothing that re-checks it |
+| Extracted `protocol.py`; added the test suite + CI | PR #2 claimed byte-for-byte verification but shipped nothing that re-checks it |
 | Packaging | Unsorted manifest keys, an invalid `hacs.json` `description` key that failed the whole schema, a missing `issue_tracker` — all found by CI the moment it existed |
 
 ## Confidence in the protocol claims
