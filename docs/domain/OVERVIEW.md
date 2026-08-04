@@ -39,6 +39,35 @@ One `light` entity per lamp:
 
 There are no sensors, no switches, and no diagnostics.
 
+## What the official app can configure — and what it cannot
+
+Worth knowing before chasing a missing feature: **the Fermob Lighting app has no lamp-configuration surface at
+all.** Established by reading the decompiled app — Fermob Lighting 3.0.2, versionCode 1209, a Cordova/Ionic
+hybrid whose entire logic is the JavaScript in `assets/www/build/main.js` — on 2026-08-04. Derived from the
+app's JS, not verified against firmware.
+
+Its **Settings** page (`page-settings`) holds exactly one control, a language selector; the only other item, a
+notifications toggle, is commented out in the source. Everything the app can change about a lamp is:
+
+| What | Command |
+|---|---|
+| Rename the lamp | `MODULE_NAME_SET` (49) |
+| Brightness and colour temperature — an "ambience" | `DEVICE_DATA_SET` (65) |
+| Timer, scheduling | `RULE_*` (97–111) |
+| Group membership, LUDO switch assignment | `GROUP_*` (81–88) |
+| Set the lamp's clock | `DATETIME_SET` (26) |
+| Firmware update, delete / unpair | DFU, `UNREGISTER` (17) |
+
+There is **no output limit, no power profile, no battery-behaviour setting and no persistent power-on default.**
+The app's command enum does define `CONFIG_SET` (5), `MODULE_PROPERTY_SET` (53), `DEVICE_PROPERTY_SET` (67) and
+`HOST_PARAM_SET` (71) — the plausible homes for something like that — but **it never calls a single one of
+them**, so there is no payload to imitate and no evidence the firmware implements them.
+
+The practical consequence: anything the lamp does that you might want to switch off — notably its
+[output limiting on battery](LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these) — is firmware behaviour
+with no exposed setting, in the app or here. Reaching feature parity with the app is therefore **not** a route
+to changing it.
+
 ## Lamp-family detection
 
 The family determines the byte layout of every light command, so getting it wrong means the lamp ignores
