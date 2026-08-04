@@ -1,6 +1,6 @@
 # Fermob — Home Assistant Integration
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://github.com/hacs/default)
 
 Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) directly from Home Assistant, without a hub or cloud dependency.
 
@@ -20,15 +20,43 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 - **Local BLE control** — no internet, no Fermob cloud account required
 - **Auto-discovery** — HA detects nearby Fermob lamps automatically
 - **Brightness control** — full dimming support via the HA light slider
-- **Colour temperature** — warm↔cold white for tunable-white lamps (MOOON!), 3000–6000 K
-- **Physical button sync** — HA state updates when the lamp's button is pressed, while the BLE connection is active
+- **Colour temperature** — warm↔cold white for tunable-white lamps (MOOON!), 3000–6000 K, interpolated in mired so the requested Kelvin is the Kelvin you get
+- **Battery level and charging state** — for battery-powered lamps, read from the lamp itself; there is no GATT battery service to read
+- **Automatic battery check-in** — refreshes the level every 6 hours without turning the lamp on, so a lamp left switched off does not keep a stale reading
+- **Lamp family read from the lamp** — `MODULE_INFO_GET` reports what the lamp actually is, rather than guessing from its name, with a manual override if it is ever wrong
 - **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
 - **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources
+
+## Entities
+
+One device per lamp, with these entities:
+
+| Entity | Type | Category | Notes |
+|---|---|---|---|
+| `light.<lamp>` | Light | — | On/off and brightness. Colour temperature too on tunable-white lamps |
+| `sensor.<lamp>_battery` | Sensor (`battery`, %) | Diagnostic | State of charge as the lamp reports it |
+| `binary_sensor.<lamp>_charging` | Binary sensor (`battery_charging`) | Diagnostic | On while the lamp is on its charger |
+
+The two battery entities read **unavailable** until the lamp has reported a level
+at least once, so a lamp that has never answered is never mistaken for a flat
+one. They exist on every lamp; a model with no battery simply never reports one
+and they stay unavailable.
+
+Because the lamp only speaks when spoken to, the level is best read as **"as of
+last contact"** rather than live. The check-in keeps that recent, and it holds
+the last known value rather than blanking when the lamp is out of range.
+
+> **The percentage reads high while charging.** It jumps as soon as the charger
+> goes on — 24 % straight to 33 % in testing — which is faster than a battery can
+> actually take charge, so the lamp is very likely reading voltage rather than
+> counting capacity. Take the trustworthy figure once it has been off the charger
+> for a while.
 
 ## Supported devices
 
 | Model | Type | Hardware-tested by |
 |---|---|---|
+| MOOON! H134 | Tunable white | This repository's maintainer — pairing, on/off, brightness, colour temperature, battery level and charging |
 | Hoopik GL1200 | Dimmable white | Upstream's author |
 | MOOON! (Moon2AD2) | Tunable white | The contributor of the tunable-white support |
 | Other MOOON! / table lamps | Tunable white | ⚠️ nobody — same `module_type`, so expected to work |
@@ -43,9 +71,12 @@ handshake and command header, differing only in the light payload:
 - **Tunable white** — every MOOON! / table lamp (brightness **and** colour
   temperature via two warm/cold channels).
 
-The integration auto-detects the family by name (only the Hoopik is treated
-as dimmable-white; everything else as tunable-white). If it ever guesses
-wrong, override it under **Configure → Lamp type**.
+The integration asks the lamp which it is: `MODULE_INFO_GET` reports a
+`module_type` (401 dimmable / 404 tunable) and a model string, both of which are
+stored, so a renamed lamp is not misidentified. The name heuristic — only the
+Hoopik is treated as dimmable-white — remains the first-run guess and the
+fallback for an unrecognised `module_type`. A manual override under
+**Configure → Lamp type** beats both.
 
 Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 `41C13060-6DEF-11E5-BCDE-0002A5D5C51B`) may work but have not all been tested.
@@ -62,10 +93,11 @@ Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 
 ### Via HACS (recommended)
 
-1. Open HACS → **Integrations** → ⋮ menu → **Custom repositories**
-2. Add `https://github.com/slettmayer/ha-fermob` with category **Integration**
-3. Click **Download** on the Fermob integration
-4. Restart Home Assistant
+This integration is in the HACS default store, so no custom repository is needed.
+
+1. Open HACS → search for **Fermob**
+2. Click **Download**
+3. Restart Home Assistant
 
 ### Manual
 
@@ -134,16 +166,31 @@ the integration converts to/from Kelvin automatically.
 
 ### Physical button
 
-When the lamp's physical button is pressed **while the BLE connection is active**, HA detects the state change and updates the entity automatically.
+**HA does not learn about button presses.** The lamp's state in HA is the state HA
+last commanded; it keeps showing that until the next command sets the lamp — and
+the entity — to a known state again. If a command fails, the entity goes
+*unavailable* rather than continuing to claim a stale state.
 
-The BLE connection is active for 30 seconds after the last HA command.
+The integration does apply any state the lamp pushes to it, so a press *while the
+BLE link is up* (30 seconds after the last command) may be picked up — but the
+lamp is not known to push anything in that situation, and it has not been
+observed doing so. Do not rely on it.
 
-**A button press after that window is not seen by HA.** The lamp emits no state
-notification when a link is re-established, and it stops answering
-`DEVICE_DATA_GET` once it is in gateway mode, so there is nothing to read back on
-reconnect. HA keeps showing the state it last commanded until the next HA command
-sets the lamp (and the entity) to a known state again. If a command fails, the
-entity goes *unavailable* rather than continuing to claim a stale state.
+Reading the state back on reconnect does not work either, and both candidate
+commands have been tried on hardware:
+
+- `DEVICE_DATA_GET` (66) is refused with error `18`. Not a payload problem — the
+  body sent is byte-for-byte the official app's. **Why the firmware refuses it is
+  unexplained**; earlier claims blaming gateway mode, payload size and module
+  role have each been disproved.
+- `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
+  accepted and does reply — but with a record that never changes. It reported the
+  lamp off while it was lit, and returned byte-identical data across three on/off
+  cycles.
+
+Applying that reply would be worse than not reading at all, so nothing sends it.
+The full traces are in
+[docs/domain/LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md).
 
 ### Unpair service
 
@@ -178,7 +225,9 @@ If the lamp has stale keys from a previous client and won't pair:
 | *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
-| Physical button not reflected in HA | Expected if the BLE connection was idle — the press cannot be recovered. The next HA command puts the lamp back into a known state |
+| Physical button not reflected in HA | Expected — the lamp does not report presses and its state cannot be read back. The next HA command puts the lamp into a known state |
+| Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
+| Battery percentage looks too high | Expected while charging — see [Entities](#entities). Read it once the lamp has been off the charger a while |
 | Integration not loading | Check logs for `custom_components.fermob` errors |
 
 ## Debug logging
@@ -205,7 +254,7 @@ logger:
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q            # 794 tests, no Home Assistant needed
+python -m pytest tests/ -q            # 957 tests, seconds to run
 ruff check . --fix && ruff format .   # lint + format
 ```
 
