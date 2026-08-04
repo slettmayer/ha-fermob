@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (794 tests, no Home Assistant needed)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (957 tests, no Home Assistant needed)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -32,14 +32,15 @@
 
 ## Architecture Overview
 
-Four modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
+Seven modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
 keystream crypto, payload construction, inbound parsing — with **no `homeassistant` imports**, so it is unit
 testable on its own. `light.py` holds `FermobBLEConnection` (BLE link, pairing handshake, key persistence,
 frame send/ACK matching, idle disconnect) and `FermobLight` (the HA entity). `config_flow.py` handles
-Bluetooth discovery, manual add, and the lamp-type options flow. `__init__.py` forwards the platform and
-reloads the entry when options change. There is no coordinator and no polling: state is pushed by our own
-commands and by EVENT notifications while the link is up. See
-[ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
+Bluetooth discovery, manual add, and the lamp-type options flow. `entity.py`, `sensor.py` and
+`binary_sensor.py` add the two diagnostic battery entities on top of the same connection, with no BLE logic of
+their own. `__init__.py` forwards the platforms and reloads the entry when options change. There is no
+coordinator and no light polling: state is pushed by our own commands and by EVENT notifications while the link
+is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
 
 ## Tech Stack
 

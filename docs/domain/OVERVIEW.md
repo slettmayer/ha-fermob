@@ -37,7 +37,20 @@ One `light` entity per lamp:
 - **`fermob.unpair`** — an entity service equivalent to "Forget" in the app. See [PAIRING.md](PAIRING.md#unpairing).
 - **Lamp type** — an options-flow selector (Auto / Tunable white / Dimmable white). "Auto" now resolves from the `module_type` the lamp reports, so the selector is an override for when that is wrong or unavailable, not the primary mechanism.
 
-There are no sensors, no switches, and no diagnostics.
+Plus two diagnostic entities per lamp, both fed by the same battery push and both **unavailable until the lamp
+has reported a level at least once**, so a lamp that has never answered is never mistaken for a flat one:
+
+- **`sensor.<lamp>_battery`** — state of charge as the lamp reports it (`SensorDeviceClass.BATTERY`, %).
+- **`binary_sensor.<lamp>_charging`** — on while the lamp sits on its charger (`BinarySensorDeviceClass.BATTERY_CHARGING`).
+
+They exist on every lamp; a model with no battery simply never reports one and they stay unavailable. The
+reading is best understood as *"as of last contact"* rather than live — a scheduled check-in every 6 hours keeps
+it recent without turning the lamp on, and the last known value is held rather than blanked when the lamp is out
+of range. Note that the percentage **reads high while charging** (it jumped 24 % → 33 % the moment the charger
+went on, faster than a cell can take charge), so the lamp is very likely reporting voltage rather than counting
+capacity.
+
+There are no switches and no other platforms.
 
 ## What the official app can configure — and what it cannot
 
