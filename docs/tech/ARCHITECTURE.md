@@ -121,6 +121,7 @@ battery request. What happens next depends only on whether that request was answ
 | Pass outcome | Next |
 |---|---|
 | Battery answered (first try **or the retry**) | done |
+| Refused with `CRYPT_MSG` / `UNREGISTERED` | keys are wrong — **re-pair at once, no probe** |
 | Both unanswered, freshly paired (`not have_keys`) | **disconnect and raise** — no probe, no third pass |
 | Both unanswered, `allow_pairing=False` | **disconnect and raise** |
 | Both unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
@@ -136,9 +137,12 @@ Three guards keep that from over-firing:
 - **The battery request is retried once** before anything expensive or destructive happens. One dropped ACK on a
   marginal link is not evidence of anything, and the cost of treating it as evidence is a pairing frame or a
   light that goes unavailable while working.
-- **`request_battery()` reports the ACK, not the payload.** `_send_frames` returns `(payload, enc, answered)`; a
-  NAK has `payload=None` but `answered=True`, and a lamp that *refuses* the command has still proved it is
-  listening. Conflating the two would take a working lamp unavailable for declining one diagnostic read.
+- **The battery request has three outcomes, not two** (`BatteryVerdict`). `_send_frames` returns an `Ack`
+  carrying `answered` and `error`. A NAK normally proves the lamp is listening — conflating that with silence
+  would take a working lamp unavailable for declining one diagnostic read. But `CRYPT_MSG` / `UNREGISTERED` are
+  the lamp saying it *cannot decrypt us*, which is the opposite, and is how a factory reset is detected without
+  ever sending a pairing frame. Hardware taught this one; see
+  [PAIRING.md](../domain/PAIRING.md#when-the-lamp-says-our-keys-are-wrong).
 - **`allow_pairing=False` forbids the handshake**, and `async_check_in` passes it. See below.
 
 Three things here are load-bearing, and none is a redundant round trip:

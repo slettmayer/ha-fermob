@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1029 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1033 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -105,6 +105,11 @@ channels whose sum is the total output, which is how colour temperature is expre
   reconnects after an unexpected drop, so lengthening its interval directly lengthens how long the entity can
   show confidently stale state. See [STATE-MODEL.md](docs/domain/STATE-MODEL.md) and
   [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md).
+- **The battery ACK has three meanings, and `CRYPT_MSG` is the counter-intuitive one.** A refusal normally
+  proves the lamp is listening — except `CRYPT_MSG` (7) and `UNREGISTERED` (5), which are the lamp saying it
+  cannot decrypt us. Confirmed on hardware: a factory-reset lamp answers `CRYPT_MSG` rather than going silent,
+  and a release that read every refusal as "listening" could not detect a reset at all. Branch on
+  `BatteryVerdict`, never on a bare bool.
 - **Almost nothing we send is acknowledged, so a dead session is invisible.** `send_led`, `DATETIME_SET` and
   `UNREGISTER` are all writes-without-response and cannot fail; `is_connected` stays true on a link the lamp
   has stopped honouring. The **battery ACK is the only acknowledgement there is**, which is why

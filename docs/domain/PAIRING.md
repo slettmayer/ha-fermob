@@ -63,7 +63,19 @@ It ends, as every connect does, with a battery request — and that request is a
 works at all, because its ACK is the only one the lamp ever sends
 ([STATE-MODEL.md](STATE-MODEL.md#it-is-also-the-liveness-probe)). A reconnect that gets an answer is done.
 
-### When the lamp does not answer: is this still our lamp?
+### When the lamp says our keys are wrong
+
+The lamp usually tells us directly, and this is the fast path. A reset lamp answers an addressed `PRIVATE`
+frame with **`CRYPT_MSG`** (error 7) — "I cannot decrypt you" — and `UNREGISTERED` (5) says the same thing.
+Either one ends the guessing: the keys are dropped from memory and the handshake runs on a second pass. **No
+`REGISTER(0)` probe is sent**, because the lamp has already stated the conclusion the probe would infer, and
+more reliably.
+
+Observed on an H134 on 2026-08-06, which is how it was found: a release that read every refusal as "the lamp is
+listening" could not see a factory reset at all, and the light went on reporting success into a lamp that could
+not read a word of what it was sent.
+
+### When the lamp says nothing at all: is this still our lamp?
 
 `ensure_connected()` runs at most **two passes**, and only an unanswered battery request starts the second.
 `_lamp_still_paired()` re-sends step 1's unencrypted `REGISTER(0)` and reads **the encryption mode the lamp

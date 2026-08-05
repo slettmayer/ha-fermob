@@ -32,8 +32,10 @@ re-pair, no settings to revisit.
   a lamp that could no longer read them — connected, available, and deaf, with
   no way out but deleting `.storage/fermob_*` by hand. A lamp that stops
   answering is now asked whether it still knows us, and re-paired if it says no.
-  Only then: a lamp that is answering is never asked, and one that is merely out
-  of range is never mistaken for a reset one.
+  Usually it does not have to be asked at all: a reset lamp *says so*, and Home
+  Assistant now understands the answer. A lamp that is answering normally is
+  never asked, and one that is merely out of range is never mistaken for a reset
+  one.
 
 - **A lamp that cannot be woken is reported as unavailable instead of pretending.**
   A connection that comes up but gets no answer from the lamp is now a failed

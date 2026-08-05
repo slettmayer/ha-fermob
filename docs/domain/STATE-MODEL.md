@@ -101,9 +101,13 @@ re-establish the session.
 
 Two things make that signal trustworthy enough to act on:
 
-- **A refusal counts as an answer.** The lamp NAKs some commands outright (`DEVICE_DATA_GET` is refused with
-  error 18), and a NAK is proof it is listening. `request_battery()` therefore reports the *acknowledgement*,
-  not the payload — both a NAK and a timeout come back with no body.
+- **A refusal usually counts as an answer.** The lamp NAKs some commands outright (`DEVICE_DATA_GET` is
+  refused with error 18), and such a NAK is proof it is listening. `request_battery()` therefore reports the
+  *acknowledgement*, not the payload — both a NAK and a timeout come back with no body.
+- **Except `CRYPT_MSG` and `UNREGISTERED`, which mean the opposite.** Those two are the lamp saying it cannot
+  decrypt us, so a session that gets one is not alive at all: our keys are wrong. Verified on hardware
+  (2026-08-06) — a factory-reset H134 answers `CRYPT_MSG` rather than going silent, and for one release counting
+  that as "listening" made the reset undetectable. The three-way split lives in `BatteryVerdict`.
 - **One miss is not a diagnosis.** The request is retried once before anything acts on the failure.
 
 This is what replaces the 30 s idle disconnect. Before 0.8.0 that timer dropped the link after every command,

@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import Any
+from enum import StrEnum
+from typing import Any, NamedTuple
 
 from bleak import BleakClient
 from bleak_retry_connector import establish_connection
@@ -44,6 +45,7 @@ from .protocol import (
     CMD_MODULE_INFO_GET,
     CMD_REGISTER,
     CMD_UNREGISTER,
+    CRYPTO_REJECTION_ERRORS,
     DEVICE_DATA_MARKERS,
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
@@ -99,6 +101,33 @@ _STORAGE_VERSION = 1
 # no disconnects. The connection slot on the BLE proxy is the real cost, which
 # is what the on-demand option in the config flow is for.
 _IDLE_DISCONNECT_DELAY: float | None = None
+
+
+class Ack(NamedTuple):
+    """What came back from one command.
+
+    `payload` is None both when the lamp said nothing and when it refused, so
+    callers that care about liveness must branch on `answered`, and callers that
+    care about *why* it refused must branch on `error`.
+    """
+
+    payload: bytes | None
+    enc: int
+    answered: bool
+    error: int | None
+
+
+class BatteryVerdict(StrEnum):
+    """What one battery request established about the session.
+
+    Three outcomes, not two, and the third is the one hardware taught us.
+    A NAK normally proves the lamp is listening -- but a `CRYPT_MSG` NAK proves
+    the opposite, because it is the lamp saying it cannot decrypt us.
+    """
+
+    ANSWERED = "answered"  # a live session
+    SILENT = "silent"  # no reply -- could be anything
+    KEYS_REJECTED = "keys_rejected"  # the lamp does not hold our keys
 
 
 class LampNotAnswering(RuntimeError):
@@ -441,7 +470,7 @@ class FermobBLEConnection:
         deferred: list[bytes],
         first_enc: int,
         LONG_START: set[int],
-    ) -> tuple[bytes | None, int, bool]:
+    ) -> Ack:
         """The ACK-matching loop of `_send_frames`. Split out so its caller can
         re-queue deferred pushes in a `finally`."""
         seq_total: int | None = None
@@ -451,14 +480,14 @@ class FermobBLEConnection:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                return None, 0, False
+                return Ack(None, 0, False, None)
             try:
                 frame = await asyncio.wait_for(self._ack_queue.get(), timeout=rem)
             except TimeoutError:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                return None, 0, False
+                return Ack(None, 0, False, None)
 
             if len(frame) < 20:
                 continue
@@ -512,7 +541,7 @@ class FermobBLEConnection:
                 break
 
         if not fragments:
-            return None, first_enc, False
+            return Ack(None, first_enc, False, None)
         pl = b"".join(fragments[i] for i in sorted(fragments))
 
         # A rejected command still arrives as a correctly-sequenced CMD_ACK, so
@@ -527,9 +556,9 @@ class FermobBLEConnection:
                 my_seq,
                 error_name(err),
             )
-            return None, first_enc, True
+            return Ack(None, first_enc, True, err)
 
-        return pl, first_enc, True
+        return Ack(pl, first_enc, True, None)
 
     async def _send(self, enc: int, payload: list[int]) -> tuple[bytes | None, int]:
         """`_send_frames` without the liveness flag, for callers that want a body."""
@@ -542,8 +571,8 @@ class FermobBLEConnection:
             ]
         else:
             frames = build_long(enc, payload, sid, self._pub, self._priv, self._nonce)
-        pl, enc_out, _answered = await self._send_frames(frames)
-        return pl, enc_out
+        ack = await self._send_frames(frames)
+        return ack.payload, ack.enc
 
     async def _wait_for_event(
         self, timeout: float = 0.5
@@ -806,7 +835,7 @@ class FermobBLEConnection:
             self._nonce,
         )
         try:
-            _pl, probe_enc, answered = await self._send_frames([frame])
+            ack = await self._send_frames([frame])
         except Exception:
             # Any transport failure here says nothing about pairing.
             _LOGGER.debug(
@@ -815,10 +844,10 @@ class FermobBLEConnection:
                 exc_info=True,
             )
             return True
-        if not answered:
+        if not ack.answered:
             _LOGGER.debug("Fermob %s: pairing probe unanswered", self._address)
             return True
-        return probe_enc == ENCRYPT_PRIVATE
+        return ack.enc == ENCRYPT_PRIVATE
 
     async def discard_keys(self) -> None:
         """Forget the stored pairing, in memory and on disk.
@@ -924,10 +953,38 @@ class FermobBLEConnection:
             self._connected = True
             _LOGGER.debug("Fermob %s: ready", self._address)
             await self.set_module_time()
-            answered = await self.request_battery()
+            verdict = await self._request_battery_verdict()
 
-            if answered:
+            if verdict is BatteryVerdict.ANSWERED:
                 break
+
+            if verdict is BatteryVerdict.KEYS_REJECTED:
+                # The lamp said so itself, so there is nothing to infer and no
+                # probe to send: `REGISTER(0)` could only reach the same
+                # conclusion less certainly, and it is a pairing frame. This is
+                # the factory-reset case arriving faster, and with better
+                # evidence, than the probe path below ever gave it.
+                if not have_keys:
+                    await self.disconnect()
+                    raise LampNotAnswering(
+                        f"Fermob {self._address}: paired, and the lamp then "
+                        "rejected the keys it had just been given"
+                    )
+                if not allow_pairing:
+                    await self.disconnect()
+                    raise LampNotAnswering(
+                        f"Fermob {self._address}: lamp no longer holds our keys "
+                        "-- turn the light on in Home Assistant to re-pair it"
+                    )
+                _LOGGER.warning(
+                    "Fermob %s: lamp is no longer paired with us (factory "
+                    "reset?) -- re-pairing",
+                    self._address,
+                )
+                self._forget_keys_in_memory()
+                have_keys = False
+                await self.disconnect()
+                continue
 
             # One dropped ACK is a marginal link, not a diagnosis. Everything
             # below this point is expensive or destructive -- a pairing frame,
@@ -1184,7 +1241,15 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
 
     async def request_battery(self) -> bool:
-        """Ask the lamp for its state of charge. Returns whether it answered.
+        """Ask the lamp for its charge. True only if the session is usable.
+
+        The simple form of `_request_battery_verdict`, for callers that only
+        need "can I talk to this lamp" -- the check-in and `unpair`.
+        """
+        return await self._request_battery_verdict() is BatteryVerdict.ANSWERED
+
+    async def _request_battery_verdict(self) -> BatteryVerdict:
+        """Ask the lamp for its state of charge, and classify what came back.
 
         The ACK carries nothing but a success code -- the value follows as a
         separate STATUS push, which `_dispatch_event` picks up. So this returns
@@ -1193,8 +1258,15 @@ class FermobBLEConnection:
 
         That acknowledgement is the only one this integration ever receives on a
         live link -- every other frame we send is fire-and-forget -- which makes
-        it the only evidence available that the lamp is still listening at all.
-        Callers use the return value for exactly that; see `async_check_in`.
+        it the only evidence available about the session at all.
+
+        Three outcomes, and the third was learned the hard way. A refusal
+        normally proves the lamp is listening... unless the refusal is
+        `CRYPT_MSG`, which is the lamp saying it cannot decrypt us. A lamp
+        factory-reset behind our back answers exactly that, rather than going
+        silent (observed on an H134, 2026-08-06) -- so reading "any answer" as a
+        healthy session made the reset undetectable, and the light went on
+        reporting success into a lamp that could not read a word.
 
         Never raises: a lamp that will not answer must not break the connect
         path, it must just leave the sensor unknown.
@@ -1214,15 +1286,23 @@ class FermobBLEConnection:
             addressed=True,
         )
         try:
-            _pl, _enc, answered = await self._send_frames([frame])
+            ack = await self._send_frames([frame])
         except Exception:
             _LOGGER.debug(
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
-            return False
-        # `answered`, not `pl is not None`: a lamp that refuses this one command
-        # has still demonstrated it is listening, which is all the caller asks.
-        return answered
+            return BatteryVerdict.SILENT
+        if not ack.answered:
+            return BatteryVerdict.SILENT
+        if ack.error in CRYPTO_REJECTION_ERRORS:
+            _LOGGER.warning(
+                "Fermob %s: lamp rejected our keys (%s)",
+                self._address,
+                error_name(ack.error),
+            )
+            return BatteryVerdict.KEYS_REJECTED
+        # Any other refusal is still proof it is listening.
+        return BatteryVerdict.ANSWERED
 
     async def set_module_time(self) -> None:
         """Start (or re-sync) the lamp's own clock — JS `setModuleTime`.

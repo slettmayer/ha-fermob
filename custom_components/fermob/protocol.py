@@ -132,6 +132,20 @@ LMP_ERRORS = {
     20: "ITEM_NOT_FOUND",
 }
 
+LMP_ERROR_UNREGISTERED = 5
+LMP_ERROR_CRYPT_MSG = 7
+
+# The two refusals that mean "I do not hold your keys" rather than "I decline
+# this command". Observed on hardware 2026-08-06: a lamp factory-reset behind
+# Home Assistant's back answers an addressed PRIVATE frame with CRYPT_MSG (7)
+# instead of going silent, so a caller that treats any answer as a working
+# session is talking to a lamp that cannot read a word of it.
+#
+# This is *stronger* evidence than the REGISTER(0) probe: the lamp is stating
+# the crypto relationship is broken, rather than us inferring it from which
+# mode it replies in.
+CRYPTO_REJECTION_ERRORS = frozenset({LMP_ERROR_UNREGISTERED, LMP_ERROR_CRYPT_MSG})
+
 LMP_PARAM_BATTERY_LEVEL = 192  # 0xc0 — bit7 = charging, bits0-6 = percent
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"

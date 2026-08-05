@@ -35,6 +35,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 import custom_components.fermob as fermob
 from custom_components.fermob import _key_store
 from custom_components.fermob.light import (
+    Ack,
+    BatteryVerdict,
     FermobBLEConnection,
     FermobLight,
     LampNotAnswering,
@@ -44,6 +46,8 @@ from custom_components.fermob.protocol import (
     ENCRYPT_PRIVATE,
     ENCRYPT_PUBLIC,
     LIGHT_TYPE_TW,
+    LMP_ERROR_CRYPT_MSG,
+    LMP_ERROR_UNREGISTERED,
 )
 
 ADDRESS = "D6:86:76:E8:7E:75"
@@ -78,7 +82,9 @@ def _conn(hass: HomeAssistant, keys: dict | None = None) -> FermobBLEConnection:
     conn._pairing_handshake = AsyncMock()
     conn._fetch_module_info_once = AsyncMock()
     conn.set_module_time = AsyncMock()
-    conn.request_battery = AsyncMock(return_value=True)
+    # The connect path reads the three-state verdict; `request_battery` is the
+    # real thing on top of it, so mocking this one keeps both consistent.
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
     return conn
 
 
@@ -90,7 +96,7 @@ def _deaf(hass: HomeAssistant) -> FermobBLEConnection:
     holds our keys.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(return_value=False)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.SILENT)
     return conn
 
 
@@ -101,7 +107,13 @@ def _deaf_until_repaired(hass: HomeAssistant) -> FermobBLEConnection:
     handshake, and then a lamp that talks again.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(side_effect=[False, False, True])
+    conn._request_battery_verdict = AsyncMock(
+        side_effect=[
+            BatteryVerdict.SILENT,
+            BatteryVerdict.SILENT,
+            BatteryVerdict.ANSWERED,
+        ]
+    )
     return conn
 
 
@@ -131,7 +143,9 @@ async def test_pairing_ends_on_a_fresh_link(hass: HomeAssistant):
 async def test_a_plain_reconnect_opens_one_link(hass: HomeAssistant):
     """The extra connect belongs to pairing only -- it is not a per-connect cost."""
     conn = _conn(hass, keys=_KEYS)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_PRIVATE, True))
+    conn._send_frames = AsyncMock(
+        return_value=Ack(b"\x01", ENCRYPT_PRIVATE, True, None)
+    )
 
     await conn.ensure_connected()
 
@@ -150,7 +164,6 @@ async def test_a_healthy_reconnect_sends_no_pairing_frame(hass: HomeAssistant):
     """
     conn = _conn(hass, keys=_KEYS)
     conn._send_frames = AsyncMock()
-    conn.request_battery = AsyncMock(return_value=True)
 
     await conn.ensure_connected()
 
@@ -170,7 +183,7 @@ async def test_a_factory_reset_lamp_is_repaired(hass: HomeAssistant):
     was deleting `.storage/fermob_*` by hand.
     """
     conn = _deaf_until_repaired(hass)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE, True))
+    conn._send_frames = AsyncMock(return_value=Ack(b"\x01", ENCRYPT_NONE, True, None))
 
     await conn.ensure_connected()
 
@@ -193,7 +206,7 @@ async def test_the_repair_does_not_delete_the_stored_keys_first(
     `_load_keys()`. That is the unrecoverable state.
     """
     conn = _deaf_until_repaired(hass)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE, True))
+    conn._send_frames = AsyncMock(return_value=Ack(b"\x01", ENCRYPT_NONE, True, None))
 
     await conn.ensure_connected()
 
@@ -209,20 +222,101 @@ async def test_one_dropped_ack_is_not_a_diagnosis(hass: HomeAssistant):
     a re-pair, otherwise a failed connect that takes the light unavailable.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(side_effect=[False, True])
+    conn._request_battery_verdict = AsyncMock(
+        side_effect=[BatteryVerdict.SILENT, BatteryVerdict.ANSWERED]
+    )
     conn._send_frames = AsyncMock()
 
     await conn.ensure_connected()
 
-    assert conn.request_battery.await_count == 2
+    assert conn._request_battery_verdict.await_count == 2
     conn._send_frames.assert_not_called()  # never reached the probe
+    assert conn._connected is True
+
+
+async def test_a_crypt_msg_refusal_re_pairs_without_a_probe(hass: HomeAssistant):
+    """The case hardware found, and the reason this branch was wrong.
+
+    A lamp factory-reset behind Home Assistant's back does not go silent: on an
+    H134 (2026-08-06) it answered an addressed PRIVATE frame with `CRYPT_MSG`,
+    i.e. "I cannot decrypt you". Counting that as an answer -- which is right
+    for every *other* refusal -- made the reset undetectable, and the light went
+    on reporting success into a lamp that could not read a word.
+
+    It is also better evidence than the REGISTER(0) probe, so the probe is not
+    sent at all here: the lamp has stated the conclusion the probe would infer.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    del conn._request_battery_verdict  # use the real verdict path
+    conn._send_frames = AsyncMock(
+        side_effect=[
+            Ack(None, ENCRYPT_PRIVATE, True, LMP_ERROR_CRYPT_MSG),  # reset lamp
+            Ack(b"\x00", ENCRYPT_PRIVATE, True, None),  # after re-pairing
+        ]
+    )
+
+    await conn.ensure_connected()
+
+    conn._pairing_handshake.assert_awaited_once()
+    # No REGISTER(0): only the battery requests went out, one per pass.
+    assert conn._send_frames.await_count == 2
+    conn._store.async_remove.assert_not_called()  # in memory only
+
+
+async def test_an_unregistered_refusal_re_pairs_too(hass: HomeAssistant):
+    """UNREGISTERED says the same thing in different words."""
+    conn = _conn(hass, keys=_KEYS)
+    del conn._request_battery_verdict
+    conn._send_frames = AsyncMock(
+        side_effect=[
+            Ack(None, ENCRYPT_PRIVATE, True, LMP_ERROR_UNREGISTERED),
+            Ack(b"\x00", ENCRYPT_PRIVATE, True, None),
+        ]
+    )
+
+    await conn.ensure_connected()
+
+    conn._pairing_handshake.assert_awaited_once()
+
+
+async def test_the_check_in_never_re_pairs_on_a_key_rejection(
+    hass: HomeAssistant,
+):
+    """Same rule as everywhere else: pairing needs a user, not a timer."""
+    conn = _conn(hass, keys=_KEYS)
+    del conn._request_battery_verdict
+    conn._send_frames = AsyncMock(
+        return_value=Ack(None, ENCRYPT_PRIVATE, True, LMP_ERROR_CRYPT_MSG)
+    )
+
+    with pytest.raises(LampNotAnswering, match="turn the light on"):
+        await conn.ensure_connected(allow_pairing=False)
+
+    conn._pairing_handshake.assert_not_called()
+
+
+async def test_other_refusals_still_count_as_a_live_session(hass: HomeAssistant):
+    """A lamp declining one diagnostic read is not a lamp that lost our keys.
+
+    Only the crypto rejections mean the keys are wrong; everything else is
+    proof it is listening, which is what the liveness check asks.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    del conn._request_battery_verdict
+    conn._send_frames = AsyncMock(
+        return_value=Ack(None, ENCRYPT_PRIVATE, True, 3)  # INVALID_PARAMETER
+    )
+
+    await conn.ensure_connected()
+
+    conn._pairing_handshake.assert_not_called()
     assert conn._connected is True
 
 
 async def test_a_half_paired_lamp_is_also_repaired(hass: HomeAssistant):
     """PUBLIC is not PRIVATE: our stored private key is no use there either."""
     conn = _deaf_until_repaired(hass)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_PUBLIC, True))
+    conn._send_frames = AsyncMock(return_value=Ack(b"\x01", ENCRYPT_PUBLIC, True, None))
 
     await conn.ensure_connected()
 
@@ -232,7 +326,7 @@ async def test_a_half_paired_lamp_is_also_repaired(hass: HomeAssistant):
 async def test_the_repair_pass_never_loops(hass: HomeAssistant):
     """A lamp that is deaf for some other reason must not pair over and over."""
     conn = _deaf(hass)  # never answers, even after re-pairing
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE, True))
+    conn._send_frames = AsyncMock(return_value=Ack(b"\x01", ENCRYPT_NONE, True, None))
 
     with pytest.raises(LampNotAnswering):
         await conn.ensure_connected()
@@ -245,7 +339,9 @@ async def test_the_repair_pass_never_loops(hass: HomeAssistant):
 async def test_a_lamp_still_in_private_is_left_alone(hass: HomeAssistant):
     """It is deaf, but it is still ours -- re-pairing would not fix that."""
     conn = _deaf(hass)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_PRIVATE, True))
+    conn._send_frames = AsyncMock(
+        return_value=Ack(b"\x01", ENCRYPT_PRIVATE, True, None)
+    )
 
     with pytest.raises(RuntimeError):
         await conn.ensure_connected()
@@ -283,7 +379,7 @@ async def test_a_refused_probe_is_read_as_reset_not_as_silence(
     """
     conn = _deaf_until_repaired(hass)
     # Refused: no payload, but answered, and answered in NONE.
-    conn._send_frames = AsyncMock(return_value=(None, ENCRYPT_NONE, True))
+    conn._send_frames = AsyncMock(return_value=Ack(None, ENCRYPT_NONE, True, None))
 
     await conn.ensure_connected()
 
@@ -313,7 +409,9 @@ async def test_a_deaf_lamp_that_is_still_ours_fails_the_connect(hass: HomeAssist
     tell the difference -- so `ensure_connected` has to be the one that does.
     """
     conn = _deaf(hass)
-    conn._send_frames = AsyncMock(return_value=(b"\x01", ENCRYPT_PRIVATE, True))
+    conn._send_frames = AsyncMock(
+        return_value=Ack(b"\x01", ENCRYPT_PRIVATE, True, None)
+    )
 
     with pytest.raises(RuntimeError, match="not answering"):
         await conn.ensure_connected()
@@ -333,7 +431,7 @@ async def test_a_fresh_pairing_is_not_trusted_without_an_answer(
     report the reproduced post-pairing failure as success.
     """
     conn = _conn(hass)  # no keys
-    conn.request_battery = AsyncMock(return_value=False)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.SILENT)
 
     with pytest.raises(LampNotAnswering, match="paired, but"):
         await conn.ensure_connected()
@@ -352,7 +450,7 @@ async def test_the_post_pairing_failure_does_not_read_as_pairing_failed(
     path and works if the link does.
     """
     conn = _conn(hass)
-    conn.request_battery = AsyncMock(return_value=False)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.SILENT)
 
     with pytest.raises(LampNotAnswering) as err:
         await conn.ensure_connected()
@@ -567,16 +665,18 @@ async def test_a_failed_recovery_is_not_an_error(hass: HomeAssistant):
 
 async def test_request_battery_reports_an_acknowledgement(hass: HomeAssistant):
     conn = _conn(hass, keys=_KEYS)
-    del conn.request_battery  # use the real one
-    conn._send_frames = AsyncMock(return_value=(b"\x00\x00\x00", ENCRYPT_PRIVATE, True))
+    del conn._request_battery_verdict  # use the real one
+    conn._send_frames = AsyncMock(
+        return_value=Ack(b"\x00\x00\x00", ENCRYPT_PRIVATE, True, None)
+    )
 
     assert await conn.request_battery() is True
 
 
 async def test_request_battery_reports_a_timeout(hass: HomeAssistant):
     conn = _conn(hass, keys=_KEYS)
-    del conn.request_battery
-    conn._send_frames = AsyncMock(return_value=(None, 0, False))
+    del conn._request_battery_verdict
+    conn._send_frames = AsyncMock(return_value=Ack(None, 0, False, None))
 
     assert await conn.request_battery() is False
 
@@ -593,8 +693,8 @@ async def test_a_refused_battery_request_still_counts_as_an_answer(
     pairing frame, for declining one diagnostic read.
     """
     conn = _conn(hass, keys=_KEYS)
-    del conn.request_battery
-    conn._send_frames = AsyncMock(return_value=(None, ENCRYPT_PRIVATE, True))
+    del conn._request_battery_verdict
+    conn._send_frames = AsyncMock(return_value=Ack(None, ENCRYPT_PRIVATE, True, 3))
 
     assert await conn.request_battery() is True
 
@@ -643,10 +743,10 @@ async def test_a_push_during_an_ack_wait_does_not_spin(hass: HomeAssistant):
     with patch(
         "custom_components.fermob.light.decode_fragment", return_value=bytes(15)
     ):
-        pl, _enc, answered = await conn._send_frames([ack])
+        result = await conn._send_frames([ack])
 
-    assert answered is True
-    assert pl is not None
+    assert result.answered is True
+    assert result.payload is not None
     # Set aside, not dropped: it goes back for the notification handler's turn.
     assert conn._ack_queue.qsize() == 1
 
@@ -681,7 +781,7 @@ async def test_deferred_pushes_survive_an_undecodable_ack(hass: HomeAssistant):
 
 async def test_request_battery_still_never_raises(hass: HomeAssistant):
     conn = _conn(hass, keys=_KEYS)
-    del conn.request_battery
+    del conn._request_battery_verdict
     conn._send_frames = AsyncMock(side_effect=RuntimeError("link dropped"))
 
     assert await conn.request_battery() is False
