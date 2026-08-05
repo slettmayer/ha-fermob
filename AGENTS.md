@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (975 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other two use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (987 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other three use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -67,6 +67,11 @@ is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/A
   no availability state to maintain.
 - Lamp families are the strings `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`; anything family-dependent branches on those,
   not on model names.
+- **Push subscriptions are lists with removal, never assignable callback slots.** Subscribe via
+  `conn.add_battery_listener()` / `add_state_listener()` and hand the returned unsubscribe callable to
+  `Entity.async_on_remove`. A single assignable slot forces the second subscriber to chain onto the first and
+  offers no way to unchain, which orphaned both battery entities silently for hours — see
+  [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md#push-subscriptions-must-be-lists-with-removal-never-assignable-slots).
 - Ruff-enforced: 4 spaces, double quotes, line length 88, rule set `E,W,F,I,UP,B,SIM,C4,RUF`. See
   [CONVENTIONS.md](docs/tech/CONVENTIONS.md).
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.1
+
+- **Fixed: the battery level and charging sensor could silently stop updating.**
+  Both would keep showing whatever they last read — for hours, with no error
+  anywhere — while the light itself carried on working normally. Restarting Home
+  Assistant or reloading the integration cleared it, which is why it was easy to
+  miss. If the battery figure has ever struck you as oddly unchanging, this was
+  probably why.
+
+  The cause was in how the two sensors listened for the lamp's battery reports.
+  They shared a single slot for it, and in some start-up orders both could end
+  up listening to something that was no longer attached to the lamp. Each now
+  holds its own subscription, released when the entity goes away, so neither can
+  be disconnected by the other or left behind.
+
 ## 0.8.0
 
 Home Assistant now notices when someone switches the lamp on at its own button.

@@ -389,7 +389,7 @@ logger:
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q            # 975 tests, seconds to run
+python -m pytest tests/ -q            # 987 tests, seconds to run
 ruff check . --fix && ruff format .   # lint + format
 ```
 

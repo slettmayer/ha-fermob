@@ -1,9 +1,9 @@
 """Shared base for the lamp's non-light entities.
 
 The battery sensors are push-only: the lamp reports a level in reply to a
-request we send on connect, and there is nothing to poll in between. Both
-entities therefore subscribe to the same connection callback and write their
-state when it fires.
+request we send on connect, and unprompted whenever its charger changes, with
+nothing to poll in between. Both entities subscribe to the connection's battery
+pushes and write their state when one arrives.
 """
 
 from __future__ import annotations
@@ -34,20 +34,20 @@ class FermobBatteryEntityBase(Entity):
         )
 
     async def async_added_to_hass(self) -> None:
-        """Chain onto the connection's battery callback.
+        """Subscribe to the lamp's battery pushes.
 
-        Chained rather than assigned: the sensor and the binary sensor share one
-        connection, so overwriting `on_battery` would silently disconnect
-        whichever registered first.
+        Registered through async_on_remove, so the subscription is released when
+        the entity is. That is what makes it safe for the sensor and the binary
+        sensor to both want every push: either can be added or removed without
+        disturbing the other.
+
+        This used to chain onto a single assignable `on_battery` slot, with no
+        unsubscribe anywhere. Any moment where the connection object and the
+        entities went out of step orphaned both entities silently -- they kept
+        serving their last value indefinitely while the light carried on
+        working. Observed on 2026-08-05.
         """
-        previous = self._conn.on_battery
-
-        def _forward(battery: Battery) -> None:
-            if previous is not None:
-                previous(battery)
-            self._handle_battery(battery)
-
-        self._conn.on_battery = _forward
+        self.async_on_remove(self._conn.add_battery_listener(self._handle_battery))
 
     def _handle_battery(self, battery: Battery) -> None:
         self.async_write_ha_state()
