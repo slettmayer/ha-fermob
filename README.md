@@ -22,10 +22,11 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 - **Brightness control** — full dimming support via the HA light slider
 - **Colour temperature** — warm↔cold white for tunable-white lamps (MOOON!), 3000–6000 K, interpolated in mired so the requested Kelvin is the Kelvin you get
 - **Battery level and charging state** — for battery-powered lamps, read from the lamp itself; there is no GATT battery service to read
-- **Automatic battery check-in** — refreshes the level every 6 hours without turning the lamp on, so a lamp left switched off does not keep a stale reading
+- **Physical button presses show up in HA** — the lamp reports its own on/off, brightness and colour temperature the moment someone presses its button, so the light entity follows the lamp rather than only the last HA command
+- **Automatic check-in** — reconnects a dropped link and refreshes the battery on a timer, without turning the lamp on, so a lamp left switched off does not keep a stale reading
 - **Lamp family read from the lamp** — `MODULE_INFO_GET` reports what the lamp actually is, rather than guessing from its name, with a manual override if it is ever wrong
 - **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
-- **On-demand connection** — BLE connects automatically on first command, stays open for 30 s, then disconnects to save resources
+- **Choice of connection mode** — hold the BLE link open (the default, and what makes button presses visible), or release it between commands to free a connection slot on a busy Bluetooth proxy
 
 ## Entities
 
@@ -46,11 +47,13 @@ Because the lamp only speaks when spoken to, the level is best read as **"as of
 last contact"** rather than live. The check-in keeps that recent, and it holds
 the last known value rather than blanking when the lamp is out of range.
 
-> **The percentage reads high while charging.** It jumps as soon as the charger
-> goes on — 24 % straight to 33 % in testing — which is faster than a battery can
-> actually take charge, so the lamp is very likely reading voltage rather than
-> counting capacity. Take the trustworthy figure once it has been off the charger
-> for a while.
+> **The percentage moves faster than a battery can charge or drain.** It jumps as
+> soon as the charger goes on — 24 % straight to 33 % in one test, 86 % to 98 % in
+> another — and settles back over the following minutes once the charger comes
+> off. That is the shape of a voltage reading, not a capacity count. Take the
+> trustworthy figure once the lamp has been off the charger for a while; the
+> reading is stable and slow-moving in between (about 0.1 %/h measured over an
+> evening held connected).
 
 ## Supported devices
 
@@ -189,31 +192,47 @@ the integration converts to/from Kelvin automatically.
 
 ### Physical button
 
-**HA does not learn about button presses.** The lamp's state in HA is the state HA
-last commanded; it keeps showing that until the next command sets the lamp — and
-the entity — to a known state again. If a command fails, the entity goes
-*unavailable* rather than continuing to claim a stale state.
+**Press the lamp's button and HA follows**, in about a second — on/off, brightness
+and colour temperature. The lamp volunteers its new state as soon as it changes,
+and it does the same when it is put on or taken off its charger.
 
-The integration does apply any state the lamp pushes to it, so a press *while the
-BLE link is up* (30 seconds after the last command) may be picked up — but the
-lamp is not known to push anything in that situation, and it has not been
-observed doing so. Do not rely on it.
+This works because the BLE link is **held open**. The lamp pushes only while
+something is connected, and pushes nothing when a connection is re-established,
+so a link that has been dropped means a press that is never seen. That is why
+holding it is the default.
 
-Reading the state back on reconnect does not work either, and both candidate
-commands have been tried on hardware:
+If you switch **Configure → Connection** to *on demand*, presses stop being
+reported and the entity goes back to showing whatever HA last commanded. There is
+no middle setting, deliberately: a link held for a few minutes would give a light
+that is sometimes right with no way to tell when.
+
+There is no way to ask the lamp instead. Both candidate read commands were tried
+on hardware, and the manufacturer's own app sends neither:
 
 - `DEVICE_DATA_GET` (66) is refused with error `18`. Not a payload problem — the
   body sent is byte-for-byte the official app's. **Why the firmware refuses it is
   unexplained**; earlier claims blaming gateway mode, payload size and module
   role have each been disproved.
-- `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
-  accepted and does reply — but with a record that never changes. It reported the
-  lamp off while it was lit, and returned byte-identical data across three on/off
-  cycles.
+- `DEVICES_DATA_LIST_GET` (74) *is* accepted and does reply — but with a stored
+  record that never changes. It reported the lamp off while it was lit, and
+  returned byte-identical data across repeated on/off cycles.
 
-Applying that reply would be worse than not reading at all, so nothing sends it.
-The full traces are in
+A packet capture of the official app settled it: the app builds the second
+command and never sends it. It reads nothing, holds the link, and listens — which
+is what this integration now does. The full traces are in
 [docs/domain/LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md).
+
+### Check-in service
+
+`fermob.check_in` contacts the lamp now — reconnecting if the link has dropped
+and refreshing the battery — instead of waiting for the scheduled check-in. It
+never turns the lamp on or off, and a lamp that is out of range is left alone.
+
+```yaml
+service: fermob.check_in
+target:
+  entity_id: light.fermob_moon
+```
 
 ### Unpair service
 
@@ -248,9 +267,10 @@ If the lamp has stale keys from a previous client and won't pair:
 | *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
-| Physical button not reflected in HA | Expected — the lamp does not report presses and its state cannot be read back. The next HA command puts the lamp into a known state |
+| Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |
 | Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
-| Battery percentage looks too high | Expected while charging — see [Entities](#entities). Read it once the lamp has been off the charger a while |
+| Battery percentage looks too high | Expected on and just off the charger — see [Entities](#entities). Read it once the lamp has been off the charger a while |
+| Lamp holds a Bluetooth connection permanently | By design — it is what makes button presses visible. Switch **Configure → Connection** to *On demand* to free the slot, at the cost of press detection |
 | Lamp dims when lifted off the charger | Expected — the lamp limits its own output on battery. No setting exists, in HA or in the Fermob app — see [Brightness on battery](#brightness-on-battery) |
 | Top of the brightness slider does nothing | Same cause, worse at a low state of charge. Charge the lamp before suspecting a bug |
 | Integration not loading | Check logs for `custom_components.fermob` errors |
@@ -279,7 +299,7 @@ logger:
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q            # 957 tests, seconds to run
+python -m pytest tests/ -q            # 975 tests, seconds to run
 ruff check . --fix && ruff format .   # lint + format
 ```
 

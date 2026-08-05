@@ -44,11 +44,14 @@ has reported a level at least once**, so a lamp that has never answered is never
 - **`binary_sensor.<lamp>_charging`** — on while the lamp sits on its charger (`BinarySensorDeviceClass.BATTERY_CHARGING`).
 
 They exist on every lamp; a model with no battery simply never reports one and they stay unavailable. The
-reading is best understood as *"as of last contact"* rather than live — a scheduled check-in every 6 hours keeps
-it recent without turning the lamp on, and the last known value is held rather than blanked when the lamp is out
-of range. Note that the percentage **reads high while charging** (it jumped 24 % → 33 % the moment the charger
-went on, faster than a cell can take charge), so the lamp is very likely reporting voltage rather than counting
-capacity.
+reading is best understood as *"as of last contact"* rather than live — a scheduled check-in keeps it recent
+without turning the lamp on, the lamp pushes an update of its own accord whenever the charger goes on or off,
+and the last known value is held rather than blanked when the lamp is out of range.
+
+The percentage **moves faster than a cell can charge or drain** around a charger event — 24 % → 33 % in one
+test, 86 % → 98 % in another, settling back over the following minutes once the charger comes off — so the lamp
+is very likely reporting voltage rather than counting capacity. In between it is stable and slow: about
+0.1 %/h measured over 7.6 h with the lamp dark and the BLE link held open.
 
 There are no switches and no other platforms.
 
@@ -113,15 +116,24 @@ The integration is push-only — `iot_class: local_push`, `should_poll = False`.
 exactly two places:
 
 1. **Our own commands.** After a successful write we record what we commanded.
-2. **EVENT notifications**, but **only while the BLE link is up** — 30 s after the last command.
+2. **EVENT notifications**, which the lamp volunteers the moment anything about it changes — a button press, a
+   brightness or colour-temperature change made at the lamp, the charger going on or off. These arrive in about
+   a second, and they are the reason the light entity can be trusted to follow the lamp rather than only the
+   last command HA sent.
 
-A physical button press outside that window is **never seen**, and cannot be recovered later: the lamp sends
-no EVENT on reconnect and stops answering state queries in gateway mode. The next HA command puts the lamp
-back into a known state. If a command fails, the entity goes *unavailable* rather than continuing to assert a
-state that may be false.
+**The catch is that the lamp pushes only while something is connected to it, and pushes nothing when a
+connection is re-established.** So a link that was down during a button press has lost that press permanently;
+there is no query that recovers it (see the dead ends in
+[LINKIO-PROTOCOL.md](LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these), where both candidate read
+commands and the manufacturer's own app are accounted for). Holding the link open is therefore not an
+optimisation, it is the entire mechanism, and it is the default.
 
-This is a genuine limitation of the device, not a shortcut — see the dead ends in
-[LINKIO-PROTOCOL.md](LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these).
+The **connection mode** option trades it away: *on demand* releases the link 30 s after the last command,
+freeing a connection slot on the adapter or BLE proxy, and the entity falls back to showing whatever HA last
+commanded. There is deliberately no middle setting — a link held for a few minutes would produce a light that
+is sometimes right with no way to tell when.
+
+If a command fails, the entity goes *unavailable* rather than continuing to assert a state that may be false.
 
 ## Further reading
 
