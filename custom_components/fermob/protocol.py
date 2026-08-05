@@ -81,20 +81,31 @@ CMD_DEVICE_INFO_GET = 50
 CMD_DATETIME_SET = 26  # 0x1A — set the module's own clock (JS setModuleTime)
 CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
-# 0x4A — the app's actual lamp-state read (requestLatestsModuleStatuses). The
-# H134 accepts it where it rejects DEVICE_DATA_GET, but the record it returns is
-# frozen, so nothing sends it. Kept as protocol documentation; the traces are in
-# docs/domain/LINKIO-PROTOCOL.md.
+# 0x4A — the state read the app's `requestLatestsModuleStatuses` builds but, as
+# a 2026-08-04 packet capture showed, never actually sends. The H134 accepts it
+# where it rejects DEVICE_DATA_GET, yet answers with a stored record that never
+# changes, so nothing sends it here either. Kept as protocol documentation; the
+# traces are in docs/domain/LINKIO-PROTOCOL.md.
 CMD_DEVICES_DATA_LIST_GET = 74
 
-# Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
+# Payload marker of a DEVICE_DATA notification (payload[1])
 LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
-LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
-LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
+LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push — live, and trustworthy
+LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query — stale
 
-# Both markers carry an identical body, and the app parses them through one
-# shared branch -- as it does for the STATUS and EVENT message types that wrap
-# them. Accepting only 146/EVENT silently discarded solicited state.
+# The two markers carry an identical body, so the same parser reads both, but
+# they do NOT mean the same thing and only 146 may be applied to an entity:
+#
+#   146  the lamp volunteering a change as it happens. A vendor-app packet
+#        capture (2026-08-04) showed one for every physical button press, each
+#        correctly reporting on/off and both channels.
+#   147  the reply to DEVICES_DATA_LIST_GET (74), which is a *stored* record and
+#        on an H134 was frozen: it reported the lamp off while it was lit. The
+#        app never sends 74 at all.
+#
+# Nothing sends 74 any more, so 147 should never arrive; `_dispatch_event`
+# still refuses it explicitly rather than by omission, because "accept both,
+# they look the same" is the mistake this pair of constants exists to prevent.
 DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
 
 # LMP error codes (JS lmp_error_codes_e), used in the third byte of an ACK.

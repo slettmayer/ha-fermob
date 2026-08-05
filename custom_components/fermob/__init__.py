@@ -18,24 +18,26 @@ PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 _STORAGE_VERSION = 1
 
-# How often to reach the lamp purely to read its battery.
+# How often to reach the lamp to reconnect if needed and read its battery.
 #
-# The lamp never reports unprompted, so without this the level only refreshes
-# when a light command happens to reach it -- a lamp left off for a week keeps a
-# week-old reading. Six hours gives a same-day figure and four chances to catch
-# the lamp in range.
+# This started life as a six-hourly battery poll, which was the right number
+# while the link was dropped after 30 s idle and the connection was expected to
+# be down. Now that the link is held open the job has changed: nothing else
+# notices an unexpected disconnect, so this is the only thing that brings the
+# link back, and at six hours the entity could show confidently stale state for
+# most of a day after a BLE proxy rebooted. Thirty minutes bounds that.
 #
-# Unhurried by choice, not by caution: the vendor app polls this same command
-# roughly every 40 s whenever its screen is open, so four connects a day is some
-# three orders of magnitude less traffic than the manufacturer's own client.
-BATTERY_POLL_INTERVAL = timedelta(hours=6)
+# Cheap by the manufacturer's own standard: over a live link this is one battery
+# request, and the vendor app polls the same command roughly every 40 s whenever
+# its screen is open.
+CHECK_IN_INTERVAL = timedelta(minutes=30)
 
-# Also read once shortly after startup, for two reasons. The interval timer
+# Also check in once shortly after startup, for two reasons. The interval timer
 # restarts from zero on every reload, so on a box that is restarted often the
-# 6 h tick could otherwise never fire at all; and both battery entities read as
+# tick could otherwise be missed repeatedly; and both battery entities read as
 # unavailable until the lamp has reported once, which would otherwise last until
 # something turns the light on. The delay lets the Bluetooth stack come up first.
-BATTERY_POLL_STARTUP_DELAY = timedelta(minutes=2)
+CHECK_IN_STARTUP_DELAY = timedelta(minutes=2)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -74,18 +76,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = conn
 
-    async def _battery_check_in(_now: datetime) -> None:
-        """Scheduled battery read. Swallows its own failures by contract."""
-        await conn.async_poll_battery()
+    async def _check_in(_now: datetime) -> None:
+        """Scheduled reconnect + battery read. Swallows its failures by contract."""
+        await conn.async_check_in()
 
     # Both cancels are registered on the entry, so a reload or unload leaves no
     # timer firing against a connection that has already been shut down.
-    entry.async_on_unload(
-        async_track_time_interval(hass, _battery_check_in, BATTERY_POLL_INTERVAL)
-    )
-    entry.async_on_unload(
-        async_call_later(hass, BATTERY_POLL_STARTUP_DELAY, _battery_check_in)
-    )
+    entry.async_on_unload(async_track_time_interval(hass, _check_in, CHECK_IN_INTERVAL))
+    entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload the entry when the user changes the lamp-type option.
