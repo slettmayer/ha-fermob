@@ -29,6 +29,7 @@ from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from . import DOMAIN
 from .protocol import (
@@ -57,15 +58,17 @@ from .protocol import (
     ModuleInfo,
     ack_error,
     build_battery_request,
+    build_datetime_set_payload,
     build_led_payload,
     build_long,
     build_short,
     decode_fragment,
     error_name,
     kelvin_to_warm_ratio,
+    local_time_seconds,
     module_type_to_light_type,
     parse_battery,
-    parse_device_state,
+    parse_device_record,
     parse_module_info,
     warm_ratio_to_kelvin,
 )
@@ -210,15 +213,22 @@ class FermobBLEConnection:
 
         if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
             return
-        state = parse_device_state(pl)
-        if state is None:
+        record = parse_device_record(pl)
+        if record is None:
             return
-        is_on, ch1, ch2 = state
+        # `stamped` is logged, never branched on: it is the only outside
+        # evidence that DATETIME_SET reached the lamp, since a lamp whose clock
+        # never started stamps every record it writes with the same low number.
         _LOGGER.debug(
-            "Fermob %s: EVENT is_on=%s ch1=%d ch2=%d", self._address, is_on, ch1, ch2
+            "Fermob %s: EVENT is_on=%s ch1=%d ch2=%d stamped=%d",
+            self._address,
+            record.is_on,
+            record.ch1,
+            record.ch2,
+            record.timestamp,
         )
         if self.on_state_change is not None:
-            self.on_state_change(is_on, ch1, ch2)
+            self.on_state_change(record.is_on, record.ch1, record.ch2)
 
     def _notif_handler(self, sender, data: bytearray) -> None:
         frame = bytes(data)
@@ -395,12 +405,12 @@ class FermobBLEConnection:
                 )
                 continue
             if len(pl) >= 10 and pl[1] in DEVICE_DATA_MARKERS:
-                state = parse_device_state(pl)
-                if state is not None:
+                record = parse_device_record(pl)
+                if record is not None:
                     _LOGGER.debug(
-                        "Fermob %s: EVENT after REGISTER_END %s", self._address, state
+                        "Fermob %s: EVENT after REGISTER_END %s", self._address, record
                     )
-                    return state
+                    return record.is_on, record.ch1, record.ch2
 
     # ------------------------------------------------------------------
     # Initial pairing handshake (first-time only, mirrors JS startPairing)
@@ -463,6 +473,11 @@ class FermobBLEConnection:
 
         # Step 9: REGISTER_END → lamp enters GATEWAY mode
         await self._send(ENCRYPT_PRIVATE, [2, CMD_REGISTER, 1])
+
+        # Step 9b: start the lamp's clock, exactly where the app does it -- in
+        # the success handler of REGISTER_END. A lamp paired without this stamps
+        # every record it writes with a clock that never started.
+        await self.set_module_time()
 
         # Step 10: wait for the state EVENT the lamp emits on entering GATEWAY
         # mode. This is a confirmation + timing gate (it mirrors the app's 100 ms
@@ -564,6 +579,7 @@ class FermobBLEConnection:
         self._ready = True
         self._connected = True
         _LOGGER.debug("Fermob %s: ready", self._address)
+        await self.set_module_time()
         await self.request_battery()
         self._schedule_idle_disconnect()
 
@@ -656,6 +672,9 @@ class FermobBLEConnection:
             try:
                 await self.ensure_connected()
                 if connected:
+                    # ensure_connected already asked on a fresh connect; this is
+                    # the branch where it returned early.
+                    await self.set_module_time()
                     await self.request_battery()
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
@@ -700,6 +719,42 @@ class FermobBLEConnection:
         except Exception:
             _LOGGER.debug(
                 "Fermob %s: battery request failed", self._address, exc_info=True
+            )
+
+    async def set_module_time(self) -> None:
+        """Start (or re-sync) the lamp's own clock — JS `setModuleTime`.
+
+        The app sends this at the end of pairing and in the success handler of
+        each of its state reads, so its every read re-dates the lamp. This
+        integration never sent it at all, and an H134 paired by it stamps every
+        record it stores `37` -- a clock that never started. Nothing here reads
+        those records back, but the lamp keeps them for the vendor app, and
+        matching the app costs one unacknowledged frame per connection.
+
+        FIRE, like the app: there is no reply, and none is waited for.
+
+        Never raises. The clock is a nicety; the light has to work without it.
+        """
+        payload = build_datetime_set_payload(local_time_seconds(dt_util.now()))
+        sid = self._next_seq()
+        pkt = build_short(
+            MSG_FIRE,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2,
+            b3=self._addr_b3,
+            addressed=True,
+        )
+        _LOGGER.debug("Fermob %s →DATETIME_SET %s", self._address, pkt.hex())
+        try:
+            await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
+        except Exception:
+            _LOGGER.debug(
+                "Fermob %s: DATETIME_SET failed", self._address, exc_info=True
             )
 
     # There is deliberately no state-read method here. Both candidate commands

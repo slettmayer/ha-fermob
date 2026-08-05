@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,7 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     STATE_PUSH_TYPES,
     ack_error,
     build_battery_request,
+    build_datetime_set_payload,
     build_led_payload,
     build_long,
     build_short,
@@ -61,8 +63,10 @@ from fermob_protocol import (  # noqa: E402 — must follow the loader above
     decode_fragment,
     error_name,
     kelvin_to_warm_ratio,
+    local_time_seconds,
     pad15,
     parse_battery,
+    parse_device_record,
     parse_device_state,
     parse_module_info,
     warm_ratio_to_kelvin,
@@ -346,6 +350,54 @@ def test_parse_device_state_rejects_bad_payloads():
 def test_parse_device_state_tolerates_missing_second_channel():
     """A 10-byte DW response has no warm byte; ch2 must default to 0."""
     assert parse_device_state(_state_payload(True, 55, 0)[:10]) == (True, 55, 0)
+
+
+def test_parse_device_record_reads_the_lamps_own_stamp():
+    """Bytes 3..6, little-endian. Nothing branches on it -- it gets logged.
+
+    It is the only outside evidence that DATETIME_SET took effect: an H134 that
+    had never been sent one stamped every record it wrote `37`.
+    """
+    pl = bytearray(_state_payload(True, 33, 67))
+    pl[3:7] = (1_785_882_856).to_bytes(4, "little")
+    record = parse_device_record(bytes(pl))
+    assert record.timestamp == 1_785_882_856
+    assert (record.is_on, record.ch1, record.ch2) == (True, 33, 67)
+
+
+def test_parse_device_state_is_the_undated_view_of_the_record():
+    pl = _state_payload(True, 33, 67)
+    record = parse_device_record(pl)
+    assert parse_device_state(pl) == (record.is_on, record.ch1, record.ch2)
+
+
+# ---------------------------------------------------------------------------
+# The lamp's own clock
+# ---------------------------------------------------------------------------
+
+
+def test_datetime_set_body():
+    """[5, 26, t0..t3] -- the 5 counts the command byte plus four time bytes."""
+    assert build_datetime_set_payload(0x6A70B631) == [5, 26, 0x31, 0xB6, 0x70, 0x6A]
+
+
+def test_local_time_seconds_labels_local_wall_clock_as_utc():
+    """The app's own quirk, reproduced rather than corrected.
+
+    JS adds the local UTC offset before dividing, so a lamp in Vienna is told
+    12:00 when it is 12:00 there. Our records have to line up with the app's.
+    """
+    vienna = timezone(timedelta(hours=2))
+    noon = datetime(2026, 8, 5, 12, 0, 0, tzinfo=vienna)
+    assert local_time_seconds(noon) == int(
+        datetime(2026, 8, 5, 12, 0, 0, tzinfo=UTC).timestamp()
+    )
+
+
+def test_local_time_seconds_refuses_a_naive_datetime():
+    """A naive value has no offset to add, and would silently stamp UTC."""
+    with pytest.raises(ValueError):
+        local_time_seconds(datetime(2026, 8, 5, 12, 0, 0))
 
 
 def test_battery_request_body():
