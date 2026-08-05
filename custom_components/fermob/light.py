@@ -167,17 +167,16 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
     # Push subscriptions
     #
-    # These were single assignable slots (`on_battery`, `on_state_change`) and
-    # that cost us a silently wrong entity. Two entities want the battery push,
-    # so whichever registered second had to *chain* onto whatever it found in
-    # the slot -- and nothing ever unchained, because entities had no removal
-    # hook. Any moment where a connection object outlived or predated its
-    # entities therefore orphaned them: pushes went to a connection with an
-    # empty slot, or to a closure holding entities that had been removed. No
-    # error, no log, just a battery reading frozen at whatever it last was.
+    # These were single assignable slots (`on_battery`, `on_state_change`).
+    # Two entities want the battery push, so whichever registered second had to
+    # *chain* onto whatever it found in the slot -- and nothing ever unchained,
+    # because the entities had no removal hook. Knowing who was subscribed then
+    # meant knowing the platform setup order, which is a poor thing to have to
+    # reason about.
     #
-    # Observed on 2026-08-05: both battery entities stopped updating after
-    # startup and stayed stale for hours while the light kept working.
+    # No user-visible failure was ever demonstrated from that shape; this is a
+    # defensive change to the HA idiom, not a fix. See
+    # `docs/tech/ARCHITECTURE.md`.
     # ------------------------------------------------------------------
 
     def add_battery_listener(
@@ -215,8 +214,8 @@ class FermobBLEConnection:
         called. Each call is guarded so one broken subscriber cannot stop the
         others -- these run in the BLE notification callback, where an escaping
         exception would take the whole push with it. Logged at error level
-        rather than swallowed: this path going quiet is the exact failure this
-        machinery exists to prevent.
+        rather than swallowed, because a push path that goes quiet is invisible
+        from the outside: the value stays plausible, just stale.
         """
         for listener in list(listeners):
             try:

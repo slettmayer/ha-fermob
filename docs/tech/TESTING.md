@@ -69,6 +69,33 @@ so the half-to-even tie-breaking rule itself is unverified. Details and the reas
 [PROTOCOL-LIGHT-COMMAND.md](../domain/PROTOCOL-LIGHT-COMMAND.md#rounding-ties-are-unspecified) — kept there
 to avoid two copies.
 
+## Verifying on a live lamp: `last_reported` lies
+
+When checking by hand whether an entity is still being updated — the natural question for a push-only
+integration — **do not read `last_reported` through the HA API.** It goes stale and makes a healthy entity look
+frozen.
+
+In `StateMachine.async_set_internal`, a write whose state *and* attributes repeat the previous value takes the
+`same_state and same_attr` branch: it mutates `old_state.last_reported` in place, sets only
+`_cache["last_reported_timestamp"]`, fires `EVENT_STATE_REPORTED`, and returns. `_as_dict`, `as_dict_json` and
+`json_fragment` are `under_cached_property`, filled lazily on first serialization, and none of them is
+invalidated. So once anything has serialized that State, every later report-only update is invisible to an API
+reader — and a battery sensor sitting at a steady percentage reports nothing but its last *change*.
+
+Read the live object through the template engine instead:
+
+```jinja
+{{ states.sensor.<lamp>_battery.last_reported }}
+```
+
+This is not hypothetical. On 2026-08-05 the API view was taken at face value, a non-existent bug was diagnosed
+from it, and 0.8.1 shipped with release notes describing a failure that never happened; both were corrected. A
+single unchanged-write "control" is not enough to trust the API value — the one that passed did so only because
+it was the first serialization after a value change, the single case where the API *is* fresh.
+
+Related trap: reading state in the same batch as the action that triggers the write races it. Sequence the read
+after the write has landed.
+
 ## What is not tested
 
 `tests/test_light.py` closed the worst of this gap, but not all of it. Still verified only by running against
