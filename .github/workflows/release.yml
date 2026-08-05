@@ -41,11 +41,22 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         id: notes
         run: |
+          # No post-processing: the section is already valid Markdown, and the
+          # tidy-up this used to pipe through destroyed it. `sed '/^$/N'` pulls a
+          # blank line and the line after it into one pattern space, and the
+          # following `s/^[[:space:]]*//` then matched that leading newline --
+          # `^` anchors to the pattern space, and [[:space:]] includes \n. So
+          # every paragraph break disappeared, along with the two-space indent
+          # on wrapped bullets. A closing paragraph would then be swallowed into
+          # the last bullet by Markdown's lazy continuation.
+          #
+          # Command substitution strips trailing newlines, which is the only
+          # trimming actually wanted here.
           notes=$(awk -v ver="${VERSION}" '
             $0 == "## " ver { found=1; next }
             found && /^## / { exit }
             found { print }
-          ' CHANGELOG.md | sed -e '/^$/N;/^\n$/d' -e 's/^[[:space:]]*//')
+          ' CHANGELOG.md)
           echo "${notes}" > /tmp/release-notes.md
         env:
           VERSION: ${{ steps.version.outputs.version }}
