@@ -86,6 +86,11 @@ Two deliberate restrictions, both of which stop this from being worse than the b
   range — and re-pairing on that evidence would flash the lamp unattended *and* throw away keys that were still
   good. Only a lamp that positively answers in a non-`PRIVATE` mode is treated as reset.
 
+A *refusal* is an answer, though, and the probe goes through `_send_frames` rather than `_send` to keep the
+two apart. `_send` drops the `answered` flag, so reading the payload would classify a reset lamp that NAKs the
+probe as still-ours — and since the caller then raises on every subsequent connect, it would never be
+re-paired.
+
 The second pass always pairs and always stops. If the freshly-paired lamp *still* does not answer, the connect
 fails with `LampNotAnswering` rather than looping round to pair again — so a lamp that is deaf for some third
 reason is re-paired once, not repeatedly.
@@ -94,6 +99,11 @@ A freshly-paired lamp is held to the same standard, and this is the case that ma
 ACKs all landed on the pre-`REGISTER_END` link, which is exactly the link the lamp stops honouring. "We just
 paired" is therefore not evidence the *new* link works, and exempting it would report the reproduced
 post-pairing failure as success.
+
+Its error message says so explicitly — *"paired, but the lamp did not acknowledge on the new link"*. By that
+point the handshake has run to completion: keys saved, `REGISTER_END` sent, the lamp registered to Home
+Assistant. A message reading like "pairing failed" would send the user to a factory reset they do not need,
+when retrying the command takes the reconnect path and works if the link does.
 
 ## Setup prerequisites
 

@@ -408,7 +408,6 @@ class FermobBLEConnection:
 
         deadline = asyncio.get_event_loop().time() + 3.0
         fragments: dict[int, bytes] = {}
-        seq_total: int | None = None
         first_enc = 0
         LONG_START = {3, 4, 5}
 
@@ -421,14 +420,37 @@ class FermobBLEConnection:
         def _drain() -> None:
             for pending in deferred:
                 self._ack_queue.put_nowait(pending)
+            deferred.clear()
 
+        try:
+            return await self._await_ack(
+                my_seq, deadline, fragments, deferred, first_enc, LONG_START
+            )
+        finally:
+            # In a finally, not on each return path: `decode_fragment` below can
+            # raise on a malformed ACK, and anything still held here would be
+            # dropped rather than handed back -- during pairing that can swallow
+            # the post-REGISTER_END EVENT that `_wait_for_event` is waiting for.
+            _drain()
+
+    async def _await_ack(
+        self,
+        my_seq: int,
+        deadline: float,
+        fragments: dict[int, bytes],
+        deferred: list[bytes],
+        first_enc: int,
+        LONG_START: set[int],
+    ) -> tuple[bytes | None, int, bool]:
+        """The ACK-matching loop of `_send_frames`. Split out so its caller can
+        re-queue deferred pushes in a `finally`."""
+        seq_total: int | None = None
         while True:
             rem = deadline - asyncio.get_event_loop().time()
             if rem <= 0:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                _drain()
                 return None, 0, False
             try:
                 frame = await asyncio.wait_for(self._ack_queue.get(), timeout=rem)
@@ -436,7 +458,6 @@ class FermobBLEConnection:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                _drain()
                 return None, 0, False
 
             if len(frame) < 20:
@@ -489,8 +510,6 @@ class FermobBLEConnection:
                 seq_total = 1
             if seq_total is not None and len(fragments) >= seq_total:
                 break
-
-        _drain()
 
         if not fragments:
             return None, first_enc, False
@@ -769,8 +788,25 @@ class FermobBLEConnection:
         were still good. Only a lamp that positively answers in some mode other
         than PRIVATE is treated as reset.
         """
+        # `_send_frames` rather than `_send`, for the `answered` flag: a lamp
+        # that *refuses* the probe has still told us which mode it is in, and
+        # `_send` drops that distinction. Reading a refusal as silence would
+        # classify a reset lamp as still-ours, and since the caller then raises
+        # `LampNotAnswering` on every subsequent connect, it would never be
+        # re-paired -- a permanent dead end reached by the code meant to avoid
+        # one.
+        payload = [2, CMD_REGISTER, 0]
+        frame = build_short(
+            MSG_CMD,
+            ENCRYPT_NONE,
+            payload,
+            self._next_seq(),
+            self._pub,
+            self._priv,
+            self._nonce,
+        )
         try:
-            pl, probe_enc = await self._send(ENCRYPT_NONE, [2, CMD_REGISTER, 0])
+            _pl, probe_enc, answered = await self._send_frames([frame])
         except Exception:
             # Any transport failure here says nothing about pairing.
             _LOGGER.debug(
@@ -779,7 +815,7 @@ class FermobBLEConnection:
                 exc_info=True,
             )
             return True
-        if pl is None:
+        if not answered:
             _LOGGER.debug("Fermob %s: pairing probe unanswered", self._address)
             return True
         return probe_enc == ENCRYPT_PRIVATE
@@ -915,7 +951,20 @@ class FermobBLEConnection:
             # the new link has been acknowledged by anything, so "we just paired"
             # is not evidence the session works, and accepting it as evidence
             # would report the reproduced post-pairing failure as success.
-            if not have_keys or not allow_pairing:
+            if not have_keys:
+                # Say what actually happened. The handshake completed -- keys
+                # saved, REGISTER_END sent -- so the lamp *is* registered to us,
+                # and a message reading like "pairing failed" would send the user
+                # to a 10-second factory reset they do not need. Retrying the
+                # command takes the reconnect path and will work if the link does.
+                await self.disconnect()
+                raise LampNotAnswering(
+                    f"Fermob {self._address}: paired, but the lamp did not "
+                    "acknowledge on the new link -- it is registered to Home "
+                    "Assistant, so retry the command rather than resetting it"
+                )
+
+            if not allow_pairing:
                 await self.disconnect()
                 raise LampNotAnswering(
                     f"Fermob {self._address}: connected, but the lamp is not answering"
@@ -988,7 +1037,10 @@ class FermobBLEConnection:
 
         Diagnostic only -- a failure must never stop the light from working.
         """
-        if self.module_type is not None:
+        # "Once" means once it has told us both things it carries. A lamp whose
+        # family is known but whose short address is still 0 has not, and every
+        # addressed frame is misdirected until it does.
+        if self.module_type is not None and (self._addr_b2 or self._addr_b3):
             return
         try:
             pl, _ = await self._send(ENCRYPT_PRIVATE, [1, CMD_MODULE_INFO_GET])
@@ -1000,6 +1052,14 @@ class FermobBLEConnection:
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET not answered", self._address)
             return
         info = parse_module_info(pl)
+        # The short address too, not just the family. Only the handshake's step 7
+        # ever set it, so a pairing whose MODULE_INFO_GET went unanswered left it
+        # at 0 for good -- and every addressed frame after that, the battery
+        # request included, goes to the wrong place. That used to cost an
+        # unavailable battery sensor; now that the battery ACK is the liveness
+        # signal it would cost the whole light, permanently.
+        if info.addr_b2 or info.addr_b3:
+            self._addr_b2, self._addr_b3 = info.addr_b2, info.addr_b3
         self._store_module_info(info)
         if self._have_keys:
             await self._save_keys()
@@ -1052,6 +1112,11 @@ class FermobBLEConnection:
             connected = bool(
                 self._connected and self._client and self._client.is_connected
             )
+            # Set once we have *proved* the session was dead. From then on any
+            # failure means unavailable, even a routine-looking one: "could not
+            # reach it" only excuses the entity while the last thing we knew was
+            # that the lamp was fine.
+            proven_dead = False
             try:
                 await self.ensure_connected(allow_pairing=False)
                 if connected:
@@ -1071,6 +1136,7 @@ class FermobBLEConnection:
                             "-- reconnecting",
                             self._address,
                         )
+                        proven_dead = True
                         await self.disconnect()
                         await self.ensure_connected(allow_pairing=False)
             except LampNotAnswering:
@@ -1091,6 +1157,19 @@ class FermobBLEConnection:
                 # missed advertisement, for a lamp that would answer a command
                 # perfectly well. Leaving it alone is what the "as of last
                 # contact" contract means.
+                #
+                # Unless we already knew: if the recovery reconnect is what
+                # failed, the session it was replacing had already gone unanswered
+                # on an open link. Staying quiet there would leave the entity
+                # reading available and on for up to another interval, which is
+                # the exact failure this release is about.
+                if proven_dead:
+                    _LOGGER.warning(
+                        "Fermob %s: lost a dead session and could not get it back",
+                        self._address,
+                    )
+                    self._notify(self._availability_listeners, "availability", False)
+                    return
                 _LOGGER.debug(
                     "Fermob %s: check-in did not reach the lamp",
                     self._address,

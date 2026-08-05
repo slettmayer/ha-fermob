@@ -86,6 +86,11 @@ no advertisement yet, adapter busy — that is the normal condition of a balcony
 next check-in is six hours away. Reporting unavailable there would grey the entity out for the rest of the day
 over one missed advertisement, for a lamp that would answer a command perfectly well.
 
+**With one exception: once the session has been *proved* dead, that excuse expires.** If the check-in found an
+open link the lamp was ignoring, tore it down, and then could not get the lamp back, "cannot reach it" is no
+longer reassuring — the last thing known for certain is that the lamp was not answering. It reports unavailable
+in that case too.
+
 ### It is also the liveness probe
 
 **The battery ACK is the only acknowledgement this integration ever receives on a live link.** Every other
