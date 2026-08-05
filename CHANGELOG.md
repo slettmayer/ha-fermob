@@ -30,13 +30,15 @@ re-pair, no settings to revisit.
 - **A lamp you factory-reset is detected and re-paired automatically.** Home
   Assistant kept its old keys and went on encrypting with them forever, against
   a lamp that could no longer read them — connected, available, and deaf, with
-  no way out but deleting `.storage/fermob_*` by hand. Every reconnect now asks
-  the lamp whether it still knows us. A lamp that is merely out of range is never
-  mistaken for a reset one.
+  no way out but deleting `.storage/fermob_*` by hand. A lamp that stops
+  answering is now asked whether it still knows us, and re-paired if it says no.
+  Only then: a lamp that is answering is never asked, and one that is merely out
+  of range is never mistaken for a reset one.
 
-- **Deleting the integration now deletes its pairing keys.** They used to survive
-  it, so removing the integration and adding it back — the first thing anyone
-  tries — silently reused them.
+- **A lamp that cannot be woken is reported as unavailable instead of pretending.**
+  A connection that comes up but gets no answer from the lamp is now a failed
+  connection, so the light entity goes unavailable rather than accepting commands
+  it cannot deliver. It retries on its own at the next check-in.
 
 - **`fermob.unpair` no longer strands the lamp when it cannot be reached.** It
   used to delete the keys regardless, leaving the lamp registered to a Home

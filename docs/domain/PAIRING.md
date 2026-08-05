@@ -53,27 +53,41 @@ grep for it in lower case during recovery. It holds five keys: `pub`, `priv` and
 
 ## Reconnects
 
-Reconnecting is **a BLE connect, `start_notify` and one probe** — no `REGISTER_END`, no key exchange. The lamp
-keeps its gateway state, so re-running the handshake would be wrong.
+Reconnecting is **a BLE connect plus `start_notify`** — no `REGISTER_END`, no key exchange. The lamp keeps its
+gateway state, so re-running the handshake would be wrong.
 
 This is also why there is no state resync: see
 [DEAD-ENDS.md](DEAD-ENDS.md#the-lamp-emits-no-event-after-a-plain-ble-reconnect).
 
-### The probe: is this still our lamp?
+It ends, as every connect does, with a battery request — and that request is also the check that the session
+works at all, because its ACK is the only one the lamp ever sends
+([STATE-MODEL.md](STATE-MODEL.md#it-is-also-the-liveness-probe)). A reconnect that gets an answer is done.
 
-`_lamp_still_paired()` re-sends step 1's unencrypted `REGISTER(0)` on every reconnect and reads **the
-encryption mode the lamp answers in**, not the body. Anything other than `PRIVATE` means the lamp no longer
-holds our keys — it was factory-reset behind our back — so the stored keys are discarded and the full
-handshake runs.
+### When the lamp does not answer: is this still our lamp?
+
+`ensure_connected()` runs at most **two passes**, and only an unanswered battery request starts the second.
+`_lamp_still_paired()` re-sends step 1's unencrypted `REGISTER(0)` and reads **the encryption mode the lamp
+answers in**, not the body. Anything other than `PRIVATE` means the lamp no longer holds our keys — it was
+factory-reset behind our back — so the keys are discarded and the full handshake runs on a fresh pass.
 
 This covers the **inverse** of step 1's check, and nothing else did. Step 1 catches *lamp registered, us with
 no keys*. The reverse — *us with keys, lamp reset* — was a silent, permanent dead end: the reconnect path
 skipped the handshake, every frame went out `PRIVATE`-encrypted to a lamp back in `NONE` mode, and the only
 recovery was deleting `.storage/fermob_*` by hand. The BLE link looked perfect throughout.
 
-**Silence is read as "still paired", deliberately.** A probe that times out proves nothing — the lamp may be
-at the edge of range — and re-pairing on that evidence would flash the lamp unattended *and* throw away keys
-that were still good. Only a lamp that positively answers in a non-`PRIVATE` mode is treated as reset.
+Two deliberate restrictions, both of which stop this from being worse than the bug it fixes:
+
+- **It is never sent to a lamp that is answering.** `REGISTER(0)` is the first frame of the *pairing* sequence.
+  What it does to a lamp that is already registered is unknown beyond "it answers" — the protocol is
+  reverse-engineered, Fermob document none of it, and the vendor app has never been observed sending it to a
+  lamp it owns. Putting it on the happy path would mean sending a pairing frame to a working lamp on every
+  connect, on a guess. Behind a failure, the lamp is useless anyway and a surprise is worth the diagnosis.
+- **Silence is read as "still paired".** A probe that times out proves nothing — the lamp may be at the edge of
+  range — and re-pairing on that evidence would flash the lamp unattended *and* throw away keys that were still
+  good. Only a lamp that positively answers in a non-`PRIVATE` mode is treated as reset.
+
+The second pass always pairs and always stops, answered or not, so a lamp that is deaf for some third reason
+is re-paired once rather than in a loop.
 
 ## Setup prerequisites
 
@@ -85,19 +99,32 @@ that were still good. Only a lamp that positively answers in a non-`PRIVATE` mod
 
 ## Unpairing
 
-`fermob.unpair` (an entity service) broadcasts `UNREGISTER`, then removes the config entry — which deletes the
-stored keys with it, via `async_remove_entry`. The lamp flashes 3× and resets its crypto state to `NONE`, so
-it can be paired with the app again.
+`fermob.unpair` (an entity service) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
+entry. The lamp flashes 3× and resets its crypto state to `NONE`, so it can be paired with the app again. It is
+**the only thing that deletes the keys** — see below.
 
-**It is both halves or neither.** `UNREGISTER` is a fire-and-forget broadcast, exactly as the app sends it, so
-it can never be acknowledged — but the session carrying it can be, with a battery request one command earlier.
-If the lamp does not answer that, `async_unpair` raises `HomeAssistantError` and removes nothing. Deleting the
-keys while the lamp stays registered produces the one state nothing recovers from except a paperclip: the lamp
-owned by a controller that has forgotten it, which then reads as *"PRIVATE mode but no stored keys"* forever.
+**It is both halves or neither, and the order matters.** `UNREGISTER` is a fire-and-forget broadcast, exactly
+as the app sends it, so it can never be acknowledged. What *can* be checked is the session carrying it, with a
+battery request one command earlier; if that goes unanswered, `async_unpair` raises `HomeAssistantError` and
+removes nothing. Be precise about what that establishes: it rules out a broadcast fired into a link the lamp
+had already stopped honouring. It does **not** prove the lamp received or acted on the broadcast — nothing can.
 
-Removing the config entry by hand is equally safe now — `async_remove_entry` deletes
-`.storage/fermob_<mac>` — but it does **not** tell the lamp anything, so the lamp stays registered. Use the
-service when you want the lamp released; delete the entry when you want Home Assistant to forget it.
+Deleting the keys while the lamp stays registered produces the one state nothing recovers from except a
+paperclip: a lamp owned by a controller that has forgotten it, which reads as *"PRIVATE mode but no stored
+keys"* forever.
+
+### Removing the config entry by hand keeps the keys, deliberately
+
+There is **no `async_remove_entry`**, and that is a decision rather than an omission. Removing an entry tells
+the lamp nothing, so the lamp stays registered in `PRIVATE`. Delete the keys at the same moment and *"delete it
+and add it again"* — the first thing anyone tries — becomes unrecoverable, because the re-add hits step 1's
+probe, finds the lamp registered, and has no key to talk to it.
+
+Keeping them makes that re-add just work. The case deletion would have covered — stale keys against a lamp
+factory-reset in between — is handled by the reconnect probe above, without anyone touching `.storage`.
+
+So: use the **service** when you want the lamp released. **Delete the entry** when you want Home Assistant to
+stop managing a lamp it can still talk to.
 
 ## Recovery
 
@@ -117,8 +144,8 @@ entry was deleted. There is no way to talk to it in that state.
 4. Power-cycle the lamp and set it up again.
 
 Since 0.9.0 the integration should not put you here on its own: an unacknowledged unpair keeps the keys, and
-removing the entry deletes them. A factory reset performed *while* the entry exists is handled automatically by
-the reconnect probe above — no manual `.storage` surgery needed.
+removing the entry keeps them too. A factory reset performed *while* the entry exists is handled automatically
+by the reconnect probe above — no manual `.storage` surgery needed.
 
 **Symptom: the lamp flashes 3× when toggled.**
 Something sent `UNREGISTER`. Use the `fermob.unpair` service deliberately rather than toggling, then re-pair.

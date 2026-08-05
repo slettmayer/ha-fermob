@@ -100,26 +100,37 @@ check-in finds the link already up and the request goes unanswered, it disconnec
 replaces the 30 s idle disconnect, which used to repair a dead session by accident after every command. See
 [STATE-MODEL.md](../domain/STATE-MODEL.md#it-is-also-the-liveness-probe).
 
-### Connect is three shapes, not one
+### Connect is a two-pass loop, not a straight line
 
-`ensure_connected()` opens a raw link with `_open_link()` (device lookup, `establish_connection`,
-`start_notify`) and then takes one of three paths:
+`ensure_connected()` runs **at most two passes**. Each opens a raw link with `_open_link()` (device lookup,
+`establish_connection`, `start_notify`), establishes the session, and ends with `set_module_time()` and a
+battery request. What happens next depends only on whether that request was answered:
 
-| Situation | Path |
+| Pass outcome | Next |
 |---|---|
-| No stored keys | `_pairing_handshake()`, then **disconnect and `_open_link()` again** |
-| Keys, lamp answers the probe in `PRIVATE` | `_fetch_module_info_once()` |
-| Keys, lamp answers in any other mode | `_discard_keys()`, then the pairing path above |
+| Freshly paired (`not have_keys`) | done — the handshake ACKed ten commands, the session is proven |
+| Battery answered | done |
+| Unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
+| Unanswered, lamp answers in a non-`PRIVATE` mode | `discard_keys()`, second pass pairs |
 
-Both non-obvious branches are load-bearing and neither is a redundant round trip:
+That `raise` is the point of the whole exercise. Returning a link nobody could get an answer over hands
+`_async_send_led` something it will write into and mark *available*, because `send_led` cannot fail — so
+`ensure_connected` has to be the layer that refuses. The entity goes unavailable, which is true, and the
+check-in retries on its own schedule.
+
+Three things here are load-bearing, and none is a redundant round trip:
 
 - **The reconnect after pairing.** `REGISTER_END` puts the lamp in gateway mode and it stops honouring the link
   it was paired on — reproduced on an H134, where every post-pairing command was accepted by HA and ignored by
-  the lamp until a reload. A reload is a fresh connect.
-- **`_lamp_still_paired()`**, the inverse of the handshake's step-1 probe: *us with keys, lamp factory-reset*.
-  Silence is read as still-paired, so a lamp at the edge of range is never re-paired by accident.
+  the lamp until a reload. A reload is a fresh connect, so the pairing branch does one itself.
+- **`_lamp_still_paired()`** is the inverse of the handshake's step-1 probe: *us with keys, lamp factory-reset*.
+  It is **gated behind the unanswered battery request on purpose** — `REGISTER(0)` is a pairing frame, and what
+  it does to a lamp that is already registered is not known. Never send it on a healthy connect.
+- **`_ready`/`_connected` are cleared at the top of each pass**, because a link that dropped without going
+  through `disconnect()` would otherwise leave `_ready` set and the handshake's state pushes would be
+  dispatched to entities that cannot decode them.
 
-Both are detailed in [PAIRING.md](../domain/PAIRING.md#reconnects).
+All three are detailed in [PAIRING.md](../domain/PAIRING.md#reconnects).
 
 ### Learning what the lamp is, without deadlocking
 

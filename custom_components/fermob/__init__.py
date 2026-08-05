@@ -149,17 +149,24 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete the lamp's stored pairing keys along with the entry.
-
-    Without this the keys outlive the integration that made them, and "delete it
-    and add it again" -- the first thing anyone tries -- silently reuses them.
-    Against a lamp that was factory-reset in between, that is not a fresh start
-    at all: the reconnect path finds keys, skips pairing, and sends frames the
-    lamp can no longer decrypt. `_lamp_still_paired` now catches that case on
-    its own, but the keys should not have survived the removal to begin with.
-    """
-    await _key_store(hass, entry.data[CONF_ADDRESS]).async_remove()
+# There is deliberately no `async_remove_entry`, and this was tried and undone.
+#
+# Deleting the stored keys along with the config entry looks like obvious
+# hygiene, and it is the opposite: it is the one action that cannot be walked
+# back. Removing an entry does not tell the lamp anything, so the lamp stays
+# registered to us in PRIVATE mode. Throw the keys away at the same moment and
+# "delete it and add it again" -- the first thing anyone tries -- becomes
+# unrecoverable, because the re-add hits the handshake's step-1 probe, finds the
+# lamp already registered with no key to talk to it, and the only way out is a
+# 10-second factory reset with a paperclip.
+#
+# Keeping the keys makes that same re-add just work. The case the deletion was
+# meant to cover -- stale keys against a lamp that was factory-reset in between
+# -- is handled properly by `_lamp_still_paired()` on reconnect, which detects
+# it and re-pairs without anyone touching `.storage`.
+#
+# `fermob.unpair` still deletes them, because there the lamp has been told: it
+# is back in NONE mode and the keys are genuinely dead. See PAIRING.md.
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

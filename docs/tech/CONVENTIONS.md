@@ -59,9 +59,12 @@ Two sanctioned exceptions, both deliberate:
 - **`async_unpair()` is the one sanctioned exception.** It runs its own lock → `ensure_connected()` → `unpair()` →
   `disconnect()` block, because it is removing the config entry: there is no availability to maintain and no entity
   left to update afterwards. It is not a precedent — any *new* command belongs in `_async_send_led()`.
-- **`async_unpair()` removes both halves or neither.** Removing the entry deletes the keys (`async_remove_entry`), so
-  doing that when the lamp never heard `UNREGISTER` strands it registered to a controller with no key — recoverable
-  only by a 10-second factory reset. An unreachable lamp raises `HomeAssistantError` and removes nothing.
+- **`async_unpair()` removes both halves or neither, and it is the only thing that deletes the keys.** Doing that
+  when the lamp never heard `UNREGISTER` strands it registered to a controller with no key — recoverable only by a
+  10-second factory reset. So it verifies the session is answering first, and an unreachable lamp raises
+  `HomeAssistantError` and removes nothing. That check proves the session was alive, not that the broadcast landed.
+- **Do not add an `async_remove_entry`.** Entry removal must *keep* the keys, or "delete and re-add" becomes
+  unrecoverable — the reasoning is in the comment where it would go, in `__init__.py`.
 - **Update attributes only after a confirmed send**, so a failure never leaves HA asserting a state the lamp does not have.
 - **Branch on `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`**, never on model names or `module_type`.
 - **Hold the connection lock for the whole connect-and-send.** `ensure_connected()` and `send_led()` assume the caller holds it.

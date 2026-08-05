@@ -50,7 +50,7 @@ takes a schema.
 | Service | What it does |
 |---|---|
 | `fermob.check_in` | Contacts the lamp now — reconnecting a dropped link and refreshing the battery — rather than waiting for the scheduled check-in. Never touches the light |
-| `fermob.unpair` | Broadcasts `UNREGISTER` and removes the config entry, which deletes the stored keys with it. The lamp flashes 3× and resets its crypto state, so the Fermob app can claim it again. **Raises if the lamp did not answer**, removing nothing |
+| `fermob.unpair` | Checks the session is alive, broadcasts `UNREGISTER` (best-effort — the broadcast is never acknowledged), then deletes the stored keys and removes the config entry. The lamp flashes 3× and resets its crypto state, so the Fermob app can claim it again. **Raises if the lamp was not answering**, removing nothing |
 
 `fermob.check_in` is the scheduled check-in routine on demand — see
 [STATE-MODEL.md](STATE-MODEL.md#the-check-in). `fermob.unpair` is the one light-path exception in the codebase,

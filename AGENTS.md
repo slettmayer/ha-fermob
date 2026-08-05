@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1006 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1011 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -112,10 +112,12 @@ channels whose sum is the total output, which is how colour temperature is expre
   failures traced to this one blind spot — see
   [STATE-MODEL.md](docs/domain/STATE-MODEL.md#it-is-also-the-liveness-probe). Do not add a command path that
   assumes a successful write means the lamp heard it.
-- **`ensure_connected()` has two non-obvious branches, and neither is a redundant round trip.** Pairing
+- **`ensure_connected()` is a two-pass loop, and neither extra step is a redundant round trip.** Pairing
   reconnects afterwards, because the lamp stops honouring the link it was paired on once `REGISTER_END` lands.
-  And every reconnect probes whether the lamp still holds our keys, because a lamp factory-reset behind our
-  back is otherwise a silent, permanent dead end. See [PAIRING.md](docs/domain/PAIRING.md#reconnects).
+  And an *unanswered* battery request triggers `_lamp_still_paired()`, because a lamp factory-reset behind our
+  back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose effect
+  on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the happy
+  path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
 - **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in
   calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the
   link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for
