@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (975 tests, no Home Assistant needed)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (975 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other two use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -26,9 +26,13 @@
 | Understand CI / ruleset / release | [INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md) |
 | Know how this fork relates to upstream | [UPSTREAM.md](docs/tech/UPSTREAM.md) |
 | Change the icon, or understand the licence stance | [BRANDING.md](docs/tech/BRANDING.md) |
-| Understand the lamps and what we control | [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md) |
-| Work on frames, crypto or payloads | [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md) |
+| Get oriented in the domain | [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md) — index, concept catalog, glossary |
+| Know which lamp is which, or add a model | [DEVICES.md](docs/domain/DEVICES.md) |
+| Work on frames, crypto or payloads | [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md) — protocol index |
+| Understand state freshness or connection modes | [STATE-MODEL.md](docs/domain/STATE-MODEL.md) |
+| Change an entity, service or option | [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md) |
 | Debug pairing, ownership or resets | [PAIRING.md](docs/domain/PAIRING.md) |
+| Check whether something was already tried | [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md) |
 
 ## Architecture Overview
 
@@ -51,14 +55,20 @@ is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/A
 
 ## Core Conventions
 
-- Keep `protocol.py` free of `homeassistant` imports — that is what makes the frame layer testable without a `hass` instance.
-- All protocol constants (commands, encryption modes, message types, light families, Kelvin envelope) live in `protocol.py` — never inline literals.
-- Import at **module level**, never inside a coroutine: HA imports integration modules in an executor, and an in-loop import trips core's blocking-call detection.
+- Keep `protocol.py` free of `homeassistant` imports — that is what makes the frame layer testable without a
+  `hass` instance.
+- All protocol constants (commands, encryption modes, message types, light families, Kelvin envelope) live in
+  `protocol.py` — never inline literals.
+- Import at **module level**, never inside a coroutine: HA imports integration modules in an executor, and an
+  in-loop import trips core's blocking-call detection. Two sanctioned exceptions only — `__init__.py` importing
+  `light` (circular), and the test module's file-path load.
 - Every **light** command goes through `FermobLight._async_send_led()`, which owns the connect/send/failure/availability
   path — do not add a second copy. `async_unpair()` is the one deliberate exception: it tears the entry down, so it has
   no availability state to maintain.
-- Lamp families are the strings `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`; anything family-dependent branches on those, not on model names.
-- Ruff-enforced: 4 spaces, double quotes, line length 88, rule set `E,W,F,I,UP,B,SIM,C4,RUF`. See [CONVENTIONS.md](docs/tech/CONVENTIONS.md).
+- Lamp families are the strings `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`; anything family-dependent branches on those,
+  not on model names.
+- Ruff-enforced: 4 spaces, double quotes, line length 88, rule set `E,W,F,I,UP,B,SIM,C4,RUF`. See
+  [CONVENTIONS.md](docs/tech/CONVENTIONS.md).
 
 ## Business Domain
 
@@ -71,19 +81,43 @@ channels whose sum is the total output, which is how colour temperature is expre
 
 ## Structural Risks
 
-- **Nothing is verified against the official Fermob app.** The protocol was reverse-engineered from its JS by others; our tests pin *our* layout and intent only. See [UPSTREAM.md](docs/tech/UPSTREAM.md).
-- **Lamp-family detection is a name heuristic** (`"hoop"` in the name → dimmable white, everything else → tunable white). It is wrong for a renamed Hoopik; the options flow is the escape hatch. The model cannot be read from the advertisement — it is rotating and encrypted.
-- **There is no way to read the lamp's state, and holding the BLE link open is the only mechanism there is.** Settled by a vendor-app packet capture (2026-08-04) plus hardware tests: `DEVICE_DATA_GET` (66) is refused with error 18; `DEVICES_DATA_LIST_GET` (74) returns a stored record that never changes (it reported the lamp off while lit, and setting the lamp's clock first does not unfreeze it); and the app sends neither — it holds the link and listens to what the lamp volunteers. Hence the permanent hold, and everything about state freshness follows from it. Two things to know before touching this: only marker **146** may reach an entity (147 is the stale record), and the check-in is the **only** thing that reconnects after an unexpected drop, so lengthening its interval directly lengthens how long the entity can show confidently stale state. See [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md).
-- **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for exactly that reason; do not expose them as two independent numbers.
-- **The lamp limits its own light output on battery** — roughly half off the charger, worse at a low state of charge. Firmware behaviour with **no setting anywhere**: the official app has no lamp-configuration surface at all and never sends the config commands its own enum defines. Do not go looking for a command to send, and do not treat a "capped brightness" report as a mapping bug. See [OVERVIEW.md](docs/domain/OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot).
-- **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA holds the link, and re-pairing from the app invalidates our stored keys. See [PAIRING.md](docs/domain/PAIRING.md).
+- **Nothing is verified against the official Fermob app.** The protocol was reverse-engineered from its JS by
+  others; our tests pin *our* layout and intent only. See [UPSTREAM.md](docs/tech/UPSTREAM.md).
+- **Lamp-family detection resolves in three tiers, and only the last is a name heuristic.** Explicit override,
+  then the `module_type` the lamp reported via `MODULE_INFO_GET`, then `"hoop"` in the name → dimmable white.
+  The name is the **first-run guess only**: the model cannot be read from the advertisement (rotating and
+  encrypted), so tier 2 needs one connection first. Do not describe this as name-based — the user-facing
+  options label still does, which is a known string bug. See
+  [DEVICES.md](docs/domain/DEVICES.md#lamp-family-detection).
+- **There is no way to read the lamp's state, and holding the BLE link open is the only mechanism there is.**
+  Settled by a vendor-app packet capture (2026-08-04) plus hardware tests: `DEVICE_DATA_GET` (66) is refused
+  with error 18; `DEVICES_DATA_LIST_GET` (74) returns a stored record that never changes; and the app sends
+  neither — it holds the link and listens to what the lamp volunteers. Two things to know before touching this:
+  only marker **146** may reach an entity (147 is the stale record), and the check-in is the **only** thing that
+  reconnects after an unexpected drop, so lengthening its interval directly lengthens how long the entity can
+  show confidently stale state. See [STATE-MODEL.md](docs/domain/STATE-MODEL.md) and
+  [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md).
+- **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in
+  calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the
+  link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for
+  exactly that reason; do not expose them as two independent numbers.
+- **The lamp limits its own light output on battery** — roughly half off the charger, worse at a low state of
+  charge. Firmware behaviour with **no setting anywhere**: the official app has no lamp-configuration surface at
+  all and never sends the config commands its own enum defines. Do not go looking for a command to send, and do
+  not treat a "capped brightness" report as a mapping bug. See
+  [APP-CAPABILITIES.md](docs/domain/APP-CAPABILITIES.md).
+- **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA
+  holds the link, and re-pairing from the app invalidates our stored keys. See
+  [PAIRING.md](docs/domain/PAIRING.md).
 - **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them
   from `protocol.py`, so the two must be kept in sync by hand. See
   [CONVENTIONS.md](docs/tech/CONVENTIONS.md#protocol-code).
 - `hacs/action@main` and `home-assistant/actions/hassfest@master` are floating CI refs. The HACS action runs with
   **no ignored checks** — reintroducing an `ignore:` key would disqualify the repository from the HACS default
   store. See [BRANDING.md](docs/tech/BRANDING.md).
-- Only the MOOON! Moon2AD2 has been confirmed by anyone; other MOOON! sizes are inferred from the same `module_type`.
+- **Only two lamps have ever been confirmed on hardware** — the MOOON! H134 on this build, and the Moon2AD2 by
+  the contributor; the Hoopik only by upstream, on an older build. Every other MOOON! size is inferred from the
+  same `module_type`. See [DEVICES.md](docs/domain/DEVICES.md#confidence).
 
 ## Development Workflow
 
@@ -96,4 +130,4 @@ channels whose sum is the total output, which is how colour temperature is expre
 ## Detailed Guides
 
 - [Technical Context](docs/tech/README.md) -- architecture, tech stack, conventions, testing, infrastructure, upstream
-- [Domain Context](docs/domain/README.md) -- lamps, Linkio protocol, pairing
+- [Domain Context](docs/domain/README.md) -- lamps, entities, state model, Linkio protocol, pairing, dead ends

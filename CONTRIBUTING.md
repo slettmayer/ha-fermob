@@ -66,10 +66,15 @@ with the Fermob app.
 
 ### Testing
 
-- Tests cover `protocol.py` only, and need **neither Home Assistant nor a `hass` fixture** — that is the point of keeping that module free of `homeassistant` imports
 - Install test dependencies: `pip install -r requirements_test.txt`
-- Run: `python -m pytest tests/ -q`
-- See [docs/tech/TESTING.md](docs/tech/TESTING.md) for what the suite does and does not establish, and for the untested surface (`FermobBLEConnection` and `FermobLight` have no tests)
+- Run: `python -m pytest tests/ -q` — 975 tests, about 10 s, most of it importing Home Assistant
+- **`tests/test_protocol.py` needs neither Home Assistant nor a `hass` fixture**, which is the point of keeping
+  `protocol.py` free of `homeassistant` imports. It is the bulk of the suite
+- **`tests/test_light.py` and `tests/test_connection_profile.py` do need the HA test harness**, which is why
+  `requirements_test.txt` installs `pytest-homeassistant-custom-component`
+- See [docs/tech/TESTING.md](docs/tech/TESTING.md) for what the suite does and does not establish, and for the
+  surface that is still verified only against a real lamp — the pairing handshake, ACK matching, long-frame
+  reassembly, the idle disconnect's real timing, and the options flow
 
 ### Code Style
 
@@ -91,10 +96,9 @@ a fact — a confident wrong protocol note costs the next person hours. See
 the model in the PR. If you cannot, say so explicitly rather than leaving it implied — an untested protocol
 change is still worth submitting, but only if it is labelled as one.
 
-**Check the dead ends first.** [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these)
-records what these lamps do *not* answer — state queries in gateway mode, notifications after a plain
-reconnect, the model in the advertisement. Those were each established the hard way; re-implementing one costs
-a 3-second timeout on every command.
+**Check the dead ends first.** [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md) records what these lamps do *not*
+answer — state queries, notifications after a plain reconnect, the model in the advertisement. Those were each
+established the hard way; re-implementing one costs a 3-second timeout on every command.
 
 ## Adding a Lamp Model
 
@@ -103,7 +107,7 @@ Open an issue with the model name and debug log output
 whether brightness and colour temperature respond, and the `→FIRE` frames from the log.
 
 If the lamp is tunable white and simply works, the only change needed may be a note in the supported-devices
-table and the confidence table in [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md#confidence).
+table and the confidence table in [docs/domain/DEVICES.md](docs/domain/DEVICES.md#confidence).
 
 ## Relationship to Upstream
 

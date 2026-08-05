@@ -65,7 +65,8 @@ The rest, by area:
 
 Exact warm/cold splits are pinned at a handful of points, but **no pinned case lands on a `.5` rounding tie**,
 so the half-to-even tie-breaking rule itself is unverified. Details and the reasoning are in
-[LINKIO-PROTOCOL.md](../domain/LINKIO-PROTOCOL.md#tunable-white-mixing) — kept there to avoid two copies.
+[PROTOCOL-LIGHT-COMMAND.md](../domain/PROTOCOL-LIGHT-COMMAND.md#rounding-ties-are-unspecified) — kept there
+to avoid two copies.
 
 ## What is not tested
 

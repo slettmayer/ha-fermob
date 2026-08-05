@@ -60,7 +60,7 @@ hardware:
 - **A disc carrying a horizontal warm-to-cold gradient.** This is the domain concept: these lamps express
   colour temperature as two intensity channels whose sum is the total output, warm at the 3000 K end and cold
   at 6000 K. Left-to-right in the icon matches low-to-high Kelvin. See
-  [LINKIO-PROTOCOL.md](../domain/LINKIO-PROTOCOL.md#tunable-white-mixing).
+  [PROTOCOL-LIGHT-COMMAND.md](../domain/PROTOCOL-LIGHT-COMMAND.md#tunable-white-mixing).
 - **Eight radiating rays**, so the disc reads as something emitting light rather than an abstract sphere.
 - **A dark slate rounded square**, chosen to hold up against both light and dark Home Assistant themes.
 

@@ -10,7 +10,11 @@ registration. The pairing sequence exchanges keys and ends with `REGISTER_END`, 
 
 What follows from that:
 
-- **While Home Assistant holds the link, the Fermob app cannot connect.** We hold it for 30 s after each command, then disconnect.
+- **While Home Assistant holds the link, the Fermob app cannot connect.** By default the link is never
+  released; under the *on demand* connection mode it is dropped 30 s after the last command. See
+  [STATE-MODEL.md](STATE-MODEL.md#connection-modes).
+- **Releasing the link does not release ownership.** Pairing is what confers it, so *on demand* does not let
+  the phone app in — you still have to unpair from HA and pair from the app.
 - **If someone re-pairs from the app, our stored keys stop working.** Recovery is a factory reset, not a retry.
 - **In practice: pick one.** After pairing to HA, treat the app as a factory-reset tool only.
 
@@ -44,15 +48,16 @@ grep for it in lower case during recovery. It holds five keys: `pub`, `priv` and
 Reconnecting is **just a BLE connect plus `start_notify`** — no `REGISTER`, no key exchange. The lamp keeps
 its gateway state, so re-running the handshake would be wrong.
 
-This is also why there is no state resync: see the dead ends in
-[LINKIO-PROTOCOL.md](LINKIO-PROTOCOL.md#dead-ends--do-not-re-litigate-these).
+This is also why there is no state resync: see
+[DEAD-ENDS.md](DEAD-ENDS.md#the-lamp-emits-no-event-after-a-plain-ble-reconnect).
 
 ## Setup prerequisites
 
 - The lamp must be **powered on and not connected to the Fermob app**.
 - **Power-cycle it** (off, 2 s, on) immediately before setup — that triggers the advertisement burst HA needs to discover it.
 - HA needs a Bluetooth adapter or an **active** ESPHome Bluetooth proxy (`bluetooth_proxy: active: true`) within range. A passive-only proxy can see the lamp but cannot connect to it.
-- Battery-powered/portable variants are frequently asleep or out of range. That is normal, and it is why the entity reports *unavailable* on a failed command rather than pretending its last state is current.
+- Battery-powered/portable variants are frequently asleep or out of range. That is normal, and it is why the
+  entity reports *unavailable* on a failed command rather than pretending its last state is current.
 
 ## Unpairing
 

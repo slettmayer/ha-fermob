@@ -91,7 +91,7 @@ _fetch_module_info_once()  →  _store_module_info()  →  on_module_info callba
 `async_update_entry` only *schedules* the listener, so the reload queues behind the in-flight command instead of
 deadlocking against it. The callback must therefore stay synchronous and must not await a reload itself.
 
-It is also self-limiting: once the value is in `entry.data`, `_resolve_light_type` agrees with the lamp, the
+It is also self-limiting: once the value is in `entry.data`, `resolve_light_type` agrees with the lamp, the
 callback's diff is empty, and no further entry updates or reloads happen. Both halves of that matter — the
 `changed` check in `_store_module_info` and the diff in the callback — or a lamp would reload on every connect.
 
@@ -137,9 +137,10 @@ acquires it, and `ensure_connected()`/`send_led()` assume it is already held.
   [CONVENTIONS.md](CONVENTIONS.md#entity-and-connection-code).
 - **Availability is tracked explicitly** — optimistic at startup, `False` after a failed command, `True` after a successful one or an inbound EVENT. It is not derived from the Bluetooth stack's presence cache, which would flap for a lamp that stops advertising while connected.
 - **`unique_id`** is `fermob_<mac_with_underscores>`; the device identifier is `("fermob", address)`.
-- **`fermob.unpair` is an entity service**, registered in `async_setup_entry` via
-  `entity_platform.async_get_current_platform().async_register_entity_service("unpair", {}, "async_unpair")` — not a
-  plain method and not a `hass.services` registration. It takes no schema. See
-  [PAIRING.md](../domain/PAIRING.md#unpairing) for what it does to the lamp.
+- **Both services are entity services**, registered in the platform's `async_setup_entry` via
+  `entity_platform.async_get_current_platform().async_register_entity_service(...)` — not plain methods and not
+  `hass.services` registrations. Neither takes a schema: `"unpair"` → `async_unpair`, `"check_in"` →
+  `async_check_in`. See [ENTITIES-AND-SERVICES.md](../domain/ENTITIES-AND-SERVICES.md#services) for what each
+  is for, and [PAIRING.md](../domain/PAIRING.md#unpairing) for what unpairing does to the lamp.
 
-See [OVERVIEW.md](../domain/OVERVIEW.md#state-model-and-its-limits) for why there is no state resync.
+See [STATE-MODEL.md](../domain/STATE-MODEL.md) for why there is no state resync.
