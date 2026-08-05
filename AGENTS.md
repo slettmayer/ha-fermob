@@ -81,8 +81,11 @@ channels whose sum is the total output, which is how colour temperature is expre
 
 ## Structural Risks
 
-- **Nothing is verified against the official Fermob app.** The protocol was reverse-engineered from its JS by
-  others; our tests pin *our* layout and intent only. See [UPSTREAM.md](docs/tech/UPSTREAM.md).
+- **Reverse-engineered, not vendor-supported.** The protocol came from the official app's JS, a decrypted
+  capture of its BLE traffic, and hardware tests — never from Fermob, who document none of it. The framing,
+  crypto and handshake in particular have never been checked against the running app, and our tests pin *our*
+  layout and intent only. Every domain doc marks which of the three a claim rests on; keep it that way. See
+  [UPSTREAM.md](docs/tech/UPSTREAM.md).
 - **Lamp-family detection resolves in three tiers, and only the last is a name heuristic.** Explicit override,
   then the `module_type` the lamp reported via `MODULE_INFO_GET`, then `"hoop"` in the name → dimmable white.
   The name is the **first-run guess only**: the model cannot be read from the advertisement (rotating and

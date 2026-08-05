@@ -70,8 +70,10 @@ with the Fermob app.
 - Run: `python -m pytest tests/ -q` — 975 tests, about 10 s, most of it importing Home Assistant
 - **`tests/test_protocol.py` needs neither Home Assistant nor a `hass` fixture**, which is the point of keeping
   `protocol.py` free of `homeassistant` imports. It is the bulk of the suite
-- **`tests/test_light.py` and `tests/test_connection_profile.py` do need the HA test harness**, which is why
-  `requirements_test.txt` installs `pytest-homeassistant-custom-component`
+- **`tests/test_light.py` needs a real `hass` fixture**, which is why `requirements_test.txt` installs
+  `pytest-homeassistant-custom-component`
+- **`tests/test_connection_profile.py` needs no fixture but does import the `fermob` package**, and that
+  reaches Home Assistant through `__init__.py` — so it needs HA installed, just not a `hass` instance
 - See [docs/tech/TESTING.md](docs/tech/TESTING.md) for what the suite does and does not establish, and for the
   surface that is still verified only against a real lamp — the pairing handshake, ACK matching, long-frame
   reassembly, the idle disconnect's real timing, and the options flow
