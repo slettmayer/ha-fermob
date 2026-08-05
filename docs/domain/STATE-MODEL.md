@@ -74,6 +74,24 @@ Two deliberate refusals:
 - **It swallows every failure.** An out-of-range balcony lamp is the normal case, and a missed check-in must
   leave the last known level in place rather than clearing it or marking the entities unavailable.
 
+### It is also the liveness probe
+
+**The battery ACK is the only acknowledgement this integration ever receives on a live link.** Every other
+frame it sends — `send_led`, `DATETIME_SET`, `UNREGISTER` — is a write-without-response and cannot fail. So
+when the check-in finds the link already up, an unacknowledged battery request is the *only* available evidence
+that the lamp has stopped listening, and it acts on it: disconnect, reconnect, and let the connect path
+re-establish the session.
+
+This is what replaces the 30 s idle disconnect. Before 0.8.0 that timer dropped the link after every command,
+so a session the lamp had stopped honouring was repaired within half a minute — invisibly, and by accident.
+Holding the link open removed that and put nothing in its place: `is_connected` stays `True` on a session the
+lamp is ignoring, `_async_send_led` marks the entity *available* after a write that cannot fail, and
+`request_battery` logged its timeout and swallowed it. The result was a lamp that read as connected and
+healthy in Home Assistant while ignoring every command, permanently. Fixed in 0.9.0.
+
+The check-in interval is therefore also the **upper bound on how long that state can last**, which is a second
+reason not to lengthen it.
+
 `fermob.check_in` is the same routine on demand — see
 [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services).
 

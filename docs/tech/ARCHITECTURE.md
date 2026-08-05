@@ -94,6 +94,33 @@ handshake, which makes the lamp flash, unattended and at an arbitrary hour. It a
 out-of-range balcony lamp is the normal case, and a missed check-in must leave the last known level in place
 rather than clearing it or marking the entities unavailable.
 
+Its third job is **liveness**. `request_battery()` returns whether the lamp acknowledged, and that ACK is the
+only one the integration ever gets on a live link — every other frame is a write-without-response. When the
+check-in finds the link already up and the request goes unanswered, it disconnects and reconnects. That is what
+replaces the 30 s idle disconnect, which used to repair a dead session by accident after every command. See
+[STATE-MODEL.md](../domain/STATE-MODEL.md#it-is-also-the-liveness-probe).
+
+### Connect is three shapes, not one
+
+`ensure_connected()` opens a raw link with `_open_link()` (device lookup, `establish_connection`,
+`start_notify`) and then takes one of three paths:
+
+| Situation | Path |
+|---|---|
+| No stored keys | `_pairing_handshake()`, then **disconnect and `_open_link()` again** |
+| Keys, lamp answers the probe in `PRIVATE` | `_fetch_module_info_once()` |
+| Keys, lamp answers in any other mode | `_discard_keys()`, then the pairing path above |
+
+Both non-obvious branches are load-bearing and neither is a redundant round trip:
+
+- **The reconnect after pairing.** `REGISTER_END` puts the lamp in gateway mode and it stops honouring the link
+  it was paired on — reproduced on an H134, where every post-pairing command was accepted by HA and ignored by
+  the lamp until a reload. A reload is a fresh connect.
+- **`_lamp_still_paired()`**, the inverse of the handshake's step-1 probe: *us with keys, lamp factory-reset*.
+  Silence is read as still-paired, so a lamp at the edge of range is never re-paired by accident.
+
+Both are detailed in [PAIRING.md](../domain/PAIRING.md#reconnects).
+
 ### Learning what the lamp is, without deadlocking
 
 `_fetch_module_info_once()` runs inside `ensure_connected()`, which runs **while the connection lock is held**.

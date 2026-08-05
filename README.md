@@ -354,7 +354,9 @@ If the lamp has stale keys from a previous client and won't pair:
 | Symptom | Fix |
 |---|---|
 | Lamp not discovered | Move HA closer, or use a [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) |
-| *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA |
+| **Lamp shows as available but ignores every command, battery *unavailable*** | A dead session behind a link that still looks up. On 0.9.0+ this repairs itself — wait for the next check-in or call `fermob.check_in`. **On 0.8.0/0.8.1 it is permanent: upgrade to 0.9.0.** As a stopgap there, reload the integration |
+| Lamp unresponsive right after pairing | Fixed in 0.9.0, which reconnects after pairing. On earlier versions, reload the integration once |
+| *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA. On 0.9.0+ a lamp you factory-reset while the integration is installed is re-paired automatically, without any of that |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
 | Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |

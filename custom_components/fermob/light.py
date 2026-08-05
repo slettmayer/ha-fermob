@@ -26,6 +26,7 @@ from homeassistant.components.light import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -641,18 +642,12 @@ class FermobBLEConnection:
 
         self._idle_task = asyncio.ensure_future(_idle())
 
-    async def ensure_connected(self) -> None:
-        """Ensure an authenticated BLE connection is up.
+    async def _open_link(self) -> None:
+        """Open a raw BLE link and start notifications. No crypto, no state.
 
-        Runs the full pairing handshake on first use and a plain BLE reconnect
-        afterwards; the lamp keeps its GATEWAY+PRIVATE state across disconnects.
+        Split out of `ensure_connected` because pairing now needs to do it
+        twice -- see the reconnect there for why.
         """
-        have_keys = await self._load_keys()
-
-        if self._connected and self._client and self._client.is_connected:
-            self._schedule_idle_disconnect()
-            return
-
         device = async_ble_device_from_address(
             self.hass, self._address, connectable=True
         )
@@ -668,9 +663,93 @@ class FermobBLEConnection:
 
         await self._client.start_notify(CHAR_UUID, self._notif_handler)
 
+    async def _lamp_still_paired(self) -> bool:
+        """Ask the lamp which encryption mode it is in, and believe only a yes.
+
+        A lamp that has been factory-reset is back in NONE mode and can no
+        longer decrypt anything we send, but it still advertises, still accepts
+        a BLE link, and still says nothing about it -- so with keys in
+        `.storage` the reconnect path would hand back a link that looks perfect
+        and discards every frame. Permanently: nothing else in the integration
+        ever re-examines stored keys, and the only recovery was deleting them by
+        hand. This is the inverse of the handshake's step-1 probe, which covers
+        only the other direction (lamp PRIVATE, us with no keys).
+
+        The probe is the same unencrypted REGISTER query, and the answer we care
+        about is the mode the lamp replies *in*, not its body.
+
+        Silence is read as "still paired", deliberately. A probe can time out
+        because the lamp is at the edge of range, and re-pairing on that
+        evidence would both flash the lamp unattended and throw away keys that
+        were still good. Only a lamp that positively answers in some mode other
+        than PRIVATE is treated as reset.
+        """
+        try:
+            pl, probe_enc = await self._send(ENCRYPT_NONE, [2, CMD_REGISTER, 0])
+        except Exception:
+            # Any transport failure here says nothing about pairing.
+            _LOGGER.debug(
+                "Fermob %s: pairing probe did not complete",
+                self._address,
+                exc_info=True,
+            )
+            return True
+        if pl is None:
+            _LOGGER.debug("Fermob %s: pairing probe unanswered", self._address)
+            return True
+        return probe_enc == ENCRYPT_PRIVATE
+
+    async def _discard_keys(self) -> None:
+        """Forget the stored pairing, in memory and on disk."""
+        await self._store.async_remove()
+        self._pub = bytes(16)
+        self._priv = bytes(16)
+        self._nonce = bytes(16)
+        self._addr_b2 = 0
+        self._addr_b3 = 0
+        self._have_keys = False
+        self._keys_loaded = True  # known state: no keys, do not re-read the store
+        _LOGGER.warning("Fermob %s: stored keys discarded", self._address)
+
+    async def ensure_connected(self) -> None:
+        """Ensure an authenticated BLE connection is up.
+
+        Runs the full pairing handshake on first use and a plain BLE reconnect
+        afterwards; the lamp keeps its GATEWAY+PRIVATE state across disconnects.
+        """
+        have_keys = await self._load_keys()
+
+        if self._connected and self._client and self._client.is_connected:
+            self._schedule_idle_disconnect()
+            return
+
+        await self._open_link()
+
+        if have_keys and not await self._lamp_still_paired():
+            _LOGGER.warning(
+                "Fermob %s: lamp is no longer paired with us (factory reset?) "
+                "-- re-pairing",
+                self._address,
+            )
+            await self._discard_keys()
+            have_keys = False
+
         if not have_keys:
             # First pairing: full handshake (sets _have_keys and saves keys)
             await self._pairing_handshake()
+
+            # ...and then start again on a fresh link. REGISTER_END puts the
+            # lamp into GATEWAY mode, and it stops honouring the link it was
+            # paired on: reproduced on an H134, where every command after
+            # pairing was accepted by Home Assistant and ignored by the lamp
+            # until the integration was reloaded. A reload is a fresh connect,
+            # so pairing does that itself rather than asking the user to.
+            _LOGGER.debug(
+                "Fermob %s: reconnecting after pairing (lamp is now a gateway)",
+                self._address,
+            )
+            await self.disconnect()
+            await self._open_link()
         else:
             # Reconnect: the lamp retains GATEWAY+PRIVATE state across BLE
             # disconnects, so no crypto handshake is needed. It also emits no
@@ -786,7 +865,21 @@ class FermobBLEConnection:
                     # ensure_connected already asked on a fresh connect; this is
                     # the branch where it returned early.
                     await self.set_module_time()
-                    await self.request_battery()
+                    if not await self.request_battery():
+                        # The link is up by every measure available to us and
+                        # the lamp is not answering on it, which is the failure
+                        # holding the link open made permanent: `is_connected`
+                        # stays True, `send_led` is a write-without-response and
+                        # cannot fail, so nothing else would ever notice. Before
+                        # 0.8.0 the 30 s idle disconnect repaired this by
+                        # accident after every command; this is what replaces it.
+                        _LOGGER.warning(
+                            "Fermob %s: no answer over a link that looks up "
+                            "-- reconnecting",
+                            self._address,
+                        )
+                        await self.disconnect()
+                        await self.ensure_connected()
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
                 # all of it is routine here and none of it is worth a warning.
@@ -800,13 +893,18 @@ class FermobBLEConnection:
     # Lamp commands
     # ------------------------------------------------------------------
 
-    async def request_battery(self) -> None:
-        """Ask the lamp for its state of charge.
+    async def request_battery(self) -> bool:
+        """Ask the lamp for its state of charge. Returns whether it answered.
 
         The ACK carries nothing but a success code -- the value follows as a
         separate STATUS push, which `_dispatch_event` picks up. So this returns
         as soon as the request is acknowledged and does *not* wait for the
         reading; in practice the push arrives in the same millisecond.
+
+        That acknowledgement is the only one this integration ever receives on a
+        live link -- every other frame we send is fire-and-forget -- which makes
+        it the only evidence available that the lamp is still listening at all.
+        Callers use the return value for exactly that; see `async_check_in`.
 
         Never raises: a lamp that will not answer must not break the connect
         path, it must just leave the sensor unknown.
@@ -826,11 +924,13 @@ class FermobBLEConnection:
             addressed=True,
         )
         try:
-            await self._send_frames([frame])
+            pl, _ = await self._send_frames([frame])
         except Exception:
             _LOGGER.debug(
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
+            return False
+        return pl is not None
 
     async def set_module_time(self) -> None:
         """Start (or re-sync) the lamp's own clock — JS `setModuleTime`.
@@ -913,8 +1013,25 @@ class FermobBLEConnection:
         )
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
 
-    async def unpair(self) -> None:
-        """Send LMP_COMMAND_UNREGISTER broadcast (JS "Forget")."""
+    async def unpair(self) -> bool:
+        """Send LMP_COMMAND_UNREGISTER broadcast (JS "Forget").
+
+        Returns whether the lamp was demonstrably listening when it went out.
+
+        The broadcast itself is fire-and-forget, exactly as the app sends it, so
+        it can never be acknowledged -- but the session carrying it can be
+        checked, with a battery request one command earlier. That matters
+        because of what the caller does next: deleting our keys while the lamp
+        stays registered leaves it owned by a controller that has forgotten it,
+        and nothing recovers that except a factory reset with a paperclip.
+        """
+        reached = await self.request_battery()
+        if not reached:
+            _LOGGER.warning(
+                "Fermob %s: lamp did not answer before UNREGISTER; sending anyway",
+                self._address,
+            )
+
         sid = self._next_seq()
         pkt = build_short(
             MSG_FIRE,
@@ -931,6 +1048,7 @@ class FermobBLEConnection:
         _LOGGER.warning("Fermob %s: sending UNREGISTER broadcast", self._address)
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
         await asyncio.sleep(0.5)
+        return reached
 
 
 # ---------------------------------------------------------------------------
@@ -1161,22 +1279,38 @@ class FermobLight(LightEntity):
         await self._conn.async_check_in()
 
     async def async_unpair(self) -> None:
-        """Unpair the lamp and remove this config entry."""
+        """Unpair the lamp and remove this config entry.
+
+        Both halves or neither. Removing the entry deletes the stored keys with
+        it (`async_remove_entry`), so doing that when the lamp never heard the
+        UNREGISTER produces the one state nothing can recover from: the lamp
+        still registered to us, and us with no key to talk to it. That reads as
+        "paired and dead" on the next attempt -- the lamp answers in PRIVATE, we
+        have nothing to decrypt it with, and only a factory reset clears it.
+
+        So an unreachable lamp raises instead, leaving entry and keys alone. The
+        user sees why, and can retry once the lamp is in range.
+        """
+        address = self._entry.data[CONF_ADDRESS]
         async with self._conn.lock:
             try:
                 await self._conn.ensure_connected()
-                await self._conn.unpair()
-            except Exception as exc:  # reported to the user via the log
-                _LOGGER.error(
-                    "Fermob %s unpair error: %s",
-                    self._entry.data[CONF_ADDRESS],
-                    exc,
-                    exc_info=True,
-                )
+                reached = await self._conn.unpair()
+            except Exception as exc:
+                _LOGGER.error("Fermob %s unpair error: %s", address, exc, exc_info=True)
+                raise HomeAssistantError(
+                    f"Could not reach the Fermob lamp at {address} to unpair it: {exc}"
+                ) from exc
             finally:
                 await self._conn.disconnect()
-                await self._conn._store.async_remove()
-                self._conn._keys_loaded = False
-                self._conn._have_keys = False
+
+        if not reached:
+            raise HomeAssistantError(
+                f"The Fermob lamp at {address} did not answer, so it was probably "
+                "not unpaired. Nothing has been removed -- bring the lamp in range "
+                "and try again. Removing the integration now would leave the lamp "
+                "registered to Home Assistant with no way back except a factory "
+                "reset."
+            )
 
         await self.hass.config_entries.async_remove(self._entry.entry_id)

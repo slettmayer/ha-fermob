@@ -66,6 +66,11 @@ _CONNECTION_PROFILES = {
 CHECK_IN_STARTUP_DELAY = timedelta(minutes=2)
 
 
+def _key_store(hass: HomeAssistant, address: str) -> Store:
+    """The store holding one lamp's pairing keys, keyed by its BLE address."""
+    return Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+
+
 def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
     """Map the connection-mode option onto its timings.
 
@@ -85,7 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .light import FermobBLEConnection, resolve_light_type
 
     address = entry.data[CONF_ADDRESS]
-    store = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    store = _key_store(hass, address)
     profile = resolve_connection_profile(entry)
     conn = FermobBLEConnection(
         hass,
@@ -142,6 +147,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the lamp's stored pairing keys along with the entry.
+
+    Without this the keys outlive the integration that made them, and "delete it
+    and add it again" -- the first thing anyone tries -- silently reuses them.
+    Against a lamp that was factory-reset in between, that is not a fresh start
+    at all: the reconnect path finds keys, skips pairing, and sends frames the
+    lamp can no longer decrypt. `_lamp_still_paired` now catches that case on
+    its own, but the keys should not have survived the removal to begin with.
+    """
+    await _key_store(hass, entry.data[CONF_ADDRESS]).async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
