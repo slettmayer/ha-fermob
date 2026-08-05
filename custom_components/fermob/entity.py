@@ -42,10 +42,9 @@ class FermobBatteryEntityBase(Entity):
         disturbing the other.
 
         This used to chain onto a single assignable `on_battery` slot, with no
-        unsubscribe anywhere. Any moment where the connection object and the
-        entities went out of step orphaned both entities silently -- they kept
-        serving their last value indefinitely while the light carried on
-        working. Observed on 2026-08-05.
+        unsubscribe anywhere, which meant you had to know the platform setup
+        order to know who was subscribed. No failure was ever demonstrated from
+        it; the list is simply the HA idiom and easier to reason about.
         """
         self.async_on_remove(self._conn.add_battery_listener(self._handle_battery))
 

@@ -423,11 +423,11 @@ async def test_event_reporting_off_clears_is_on(hass: HomeAssistant):
 # ---------------------------------------------------------------------------
 # Push subscriptions
 #
-# These replaced single assignable callback slots, and the bug that motivated it
-# was silent: both battery entities served a stale value for hours while the
-# light kept working, with nothing in the log. So these tests are less about the
-# happy path than about the two properties the slots could not offer --
-# several independent subscribers, and a removal that actually removes.
+# These replaced single assignable callback slots, which required each new
+# subscriber to chain onto whatever it found and offered no way to unchain. So
+# these tests are less about the happy path than about the two properties the
+# slots could not offer -- several independent subscribers, and a removal that
+# actually removes.
 # ---------------------------------------------------------------------------
 
 

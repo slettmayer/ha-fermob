@@ -70,8 +70,8 @@ is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/A
 - **Push subscriptions are lists with removal, never assignable callback slots.** Subscribe via
   `conn.add_battery_listener()` / `add_state_listener()` and hand the returned unsubscribe callable to
   `Entity.async_on_remove`. A single assignable slot forces the second subscriber to chain onto the first and
-  offers no way to unchain, which orphaned both battery entities silently for hours — see
-  [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md#push-subscriptions-must-be-lists-with-removal-never-assignable-slots).
+  offers no way to unchain — see
+  [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md#push-subscriptions-are-lists-with-removal-not-assignable-slots).
 - Ruff-enforced: 4 spaces, double quotes, line length 88, rule set `E,W,F,I,UP,B,SIM,C4,RUF`. See
   [CONVENTIONS.md](docs/tech/CONVENTIONS.md).
 

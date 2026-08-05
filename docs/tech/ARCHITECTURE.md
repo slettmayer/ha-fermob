@@ -19,18 +19,20 @@ Seven files in `custom_components/fermob/`:
 The three battery files carry no BLE logic: they read `FermobBLEConnection.battery` and subscribe to its
 pushes.
 
-### Push subscriptions must be lists with removal, never assignable slots
+### Push subscriptions are lists with removal, not assignable slots
 
 `add_battery_listener()` / `add_state_listener()` append to a list and return an unsubscribe callable, which
 entities register through `Entity.async_on_remove`. Follow that pattern for any future push.
 
-The alternative was tried and it failed silently. `on_battery` and `on_state_change` used to be single
-assignable attributes. Two entities want the battery push, so whichever was added second had to *chain* onto
-whatever it found in the slot — and nothing ever unchained, because entities had no removal hook. Any moment
-where a connection object and its entities went out of step (a `setup_retry` at startup is the obvious one)
-left pushes going to a connection with an empty slot, or to a closure holding entities HA had already removed.
-No exception, no log: both battery entities simply served their last value forever while the light kept
-working. Observed on 2026-08-05, two hours of a frozen reading with a healthy link.
+`on_battery` and `on_state_change` used to be single assignable attributes, which is the pattern this replaced.
+Two entities want the battery push, so whichever was added second had to *chain* onto whatever it found in the
+slot, and nothing ever unchained because the entities had no removal hook. That is hard to reason about — you
+have to know the platform setup order to know who is subscribed — and it is not the Home Assistant idiom. The
+list makes subscribers independent of each other and ties each subscription to its entity's lifetime.
+
+**No user-visible failure was ever demonstrated from the old pattern**, and 0.8.1's release notes were
+corrected to say so. This is a defensive change, not a bug fix. Do not cite it as evidence that the old shape
+broke in production.
 
 `on_module_info` is still a single slot, and that is correct — the config entry is its only writer, and it is
 set before the platforms are forwarded.

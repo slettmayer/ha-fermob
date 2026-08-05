@@ -1,8 +1,8 @@
 """The two battery entities, and how they stay subscribed to the lamp.
 
-Neither had any test coverage before, which is part of why the bug these pin
-survived: both entities silently stopped updating and served a stale reading for
-hours, while the light -- the thing anyone would check -- carried on working.
+Neither had any test coverage before, which was the real gap: the light is the
+thing anyone would look at, so a diagnostic entity that quietly stopped updating
+would not be noticed from the outside.
 
 The properties that matter here are about lifetime, not about values. Both
 entities want every battery push, they are added and removed independently of
@@ -74,8 +74,8 @@ async def test_the_subscription_is_tied_to_entity_removal(hass: HomeAssistant):
 async def test_both_entities_update_from_one_push(hass: HomeAssistant):
     """The level and the charging flag travel in the same byte, and one push.
 
-    The observed failure was both of these going quiet together, so the test
-    asserts both wrote -- not just that the push was parsed.
+    Asserts both entities wrote, not merely that the push was parsed -- a single
+    shared callback slot could feed one and silently miss the other.
     """
     conn = _conn(hass)
     entry = _entry()
