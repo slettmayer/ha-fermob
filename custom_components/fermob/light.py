@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from bleak import BleakClient
@@ -154,10 +155,79 @@ class FermobBLEConnection:
         # a real 0; "never reported" must stay distinguishable from "empty".
         self.battery: Battery | None = None
 
-        # Queues / callbacks
         self._ack_queue: asyncio.Queue = asyncio.Queue()
-        self.on_state_change: Any = None  # (is_on, ch1, ch2) -> None
-        self.on_battery: Any = None  # (Battery) -> None
+
+        # Push subscribers. Lists with explicit removal, not single assignable
+        # slots, because more than one entity wants each push and they are added
+        # and removed independently of this object's lifetime -- see
+        # `add_battery_listener`.
+        self._battery_listeners: list[Callable[[Battery], None]] = []
+        self._state_listeners: list[Callable[[bool, int, int], None]] = []
+
+    # ------------------------------------------------------------------
+    # Push subscriptions
+    #
+    # These were single assignable slots (`on_battery`, `on_state_change`) and
+    # that cost us a silently wrong entity. Two entities want the battery push,
+    # so whichever registered second had to *chain* onto whatever it found in
+    # the slot -- and nothing ever unchained, because entities had no removal
+    # hook. Any moment where a connection object outlived or predated its
+    # entities therefore orphaned them: pushes went to a connection with an
+    # empty slot, or to a closure holding entities that had been removed. No
+    # error, no log, just a battery reading frozen at whatever it last was.
+    #
+    # Observed on 2026-08-05: both battery entities stopped updating after
+    # startup and stayed stale for hours while the light kept working.
+    # ------------------------------------------------------------------
+
+    def add_battery_listener(
+        self, listener: Callable[[Battery], None]
+    ) -> Callable[[], None]:
+        """Subscribe to battery pushes. Returns a callable that unsubscribes.
+
+        Hand the returned callable to `Entity.async_on_remove` so the
+        subscription dies with the entity rather than outliving it.
+        """
+        self._battery_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._battery_listeners:
+                self._battery_listeners.remove(listener)
+
+        return _remove
+
+    def add_state_listener(
+        self, listener: Callable[[bool, int, int], None]
+    ) -> Callable[[], None]:
+        """Subscribe to light-state pushes. Returns a callable that unsubscribes."""
+        self._state_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._state_listeners:
+                self._state_listeners.remove(listener)
+
+        return _remove
+
+    def _notify(self, listeners: list, what: str, *args: Any) -> None:
+        """Fan a push out to every subscriber, isolating their failures.
+
+        Iterates a copy, because a listener may unsubscribe itself while being
+        called. Each call is guarded so one broken subscriber cannot stop the
+        others -- these run in the BLE notification callback, where an escaping
+        exception would take the whole push with it. Logged at error level
+        rather than swallowed: this path going quiet is the exact failure this
+        machinery exists to prevent.
+        """
+        for listener in list(listeners):
+            try:
+                listener(*args)
+            except Exception:
+                _LOGGER.error(
+                    "Fermob %s: %s listener failed",
+                    self._address,
+                    what,
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Key persistence
@@ -224,8 +294,7 @@ class FermobBLEConnection:
                 battery.percent,
                 battery.charging,
             )
-            if self.on_battery is not None:
-                self.on_battery(battery)
+            self._notify(self._battery_listeners, "battery", battery)
             return
 
         if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
@@ -257,8 +326,9 @@ class FermobBLEConnection:
         if solicited:
             return
 
-        if self.on_state_change is not None:
-            self.on_state_change(record.is_on, record.ch1, record.ch2)
+        self._notify(
+            self._state_listeners, "state", record.is_on, record.ch1, record.ch2
+        )
 
     def _notif_handler(self, sender, data: bytearray) -> None:
         frame = bytes(data)
@@ -913,9 +983,10 @@ async def async_setup_entry(
     # platforms share it, and they are set up concurrently with this one, so
     # creating it here would be a race.
     conn = hass.data[DOMAIN][entry.entry_id]
-    entity = FermobLight(hass, entry, conn, conn.light_type)
-    conn.on_state_change = entity.on_lamp_state_change
-    async_add_entities([entity])
+    # The state subscription is taken in the entity's async_added_to_hass, not
+    # here: registering it against an entity that has not been added yet is what
+    # allows a subscription to outlive the entity holding it.
+    async_add_entities([FermobLight(hass, entry, conn, conn.light_type)])
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service("unpair", {}, "async_unpair")
@@ -975,8 +1046,16 @@ class FermobLight(LightEntity):
         )
 
     # ------------------------------------------------------------------
-    # State sync from the lamp (unsolicited EVENT during pairing)
+    # State sync from the lamp (unsolicited EVENT pushes)
     # ------------------------------------------------------------------
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to the lamp's state pushes for as long as this entity lives.
+
+        Tied to the entity via async_on_remove, so the subscription cannot
+        outlive it -- the failure this replaced was exactly that.
+        """
+        self.async_on_remove(self._conn.add_state_listener(self.on_lamp_state_change))
 
     def on_lamp_state_change(self, is_on: bool, ch1: int, ch2: int) -> None:
         """ch1/ch2 = (level, 0) for DW, (cold_white, warm_white) for TW."""

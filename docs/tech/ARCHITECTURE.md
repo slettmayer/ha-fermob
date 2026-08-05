@@ -10,15 +10,30 @@ Seven files in `custom_components/fermob/`:
 |---|---|---|
 | `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, TLV walking, all protocol constants | **No — keep it that way** |
 | `light.py` | `FermobBLEConnection` (BLE link, handshake, key/module-info persistence, ACK matching, idle disconnect) and `FermobLight` (the entity) | Yes |
-| `config_flow.py` | Bluetooth discovery, manual add, the lamp-type options flow | Yes |
-| `entity.py` | `FermobBatteryEntityBase` — device info and the chained `on_battery` subscription shared by both diagnostic entities | Yes |
+| `config_flow.py` | Bluetooth discovery, manual add, the options flow (lamp type, connection mode) | Yes |
+| `entity.py` | `FermobBatteryEntityBase` — device info and the battery-push subscription shared by both diagnostic entities | Yes |
 | `sensor.py` | `FermobBatterySensor` — state of charge | Yes |
 | `binary_sensor.py` | `FermobChargingSensor` — charging flag | Yes |
-| `__init__.py` | Platform forwarding, unload, the options-update listener | Yes |
+| `__init__.py` | Platform forwarding, unload, the check-in timers, the connection profile, the options-update listener | Yes |
 
 The three battery files carry no BLE logic: they read `FermobBLEConnection.battery` and subscribe to its
-callback. The subscription is **chained rather than assigned**, because the sensor and the binary sensor share
-one connection and overwriting `on_battery` would silently disconnect the other.
+pushes.
+
+### Push subscriptions must be lists with removal, never assignable slots
+
+`add_battery_listener()` / `add_state_listener()` append to a list and return an unsubscribe callable, which
+entities register through `Entity.async_on_remove`. Follow that pattern for any future push.
+
+The alternative was tried and it failed silently. `on_battery` and `on_state_change` used to be single
+assignable attributes. Two entities want the battery push, so whichever was added second had to *chain* onto
+whatever it found in the slot — and nothing ever unchained, because entities had no removal hook. Any moment
+where a connection object and its entities went out of step (a `setup_retry` at startup is the obvious one)
+left pushes going to a connection with an empty slot, or to a closure holding entities HA had already removed.
+No exception, no log: both battery entities simply served their last value forever while the light kept
+working. Observed on 2026-08-05, two hours of a frozen reading with a healthy link.
+
+`on_module_info` is still a single slot, and that is correct — the config entry is its only writer, and it is
+set before the platforms are forwarded.
 
 ### Why `protocol.py` has no HA imports
 

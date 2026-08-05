@@ -421,6 +421,121 @@ async def test_event_reporting_off_clears_is_on(hass: HomeAssistant):
 
 
 # ---------------------------------------------------------------------------
+# Push subscriptions
+#
+# These replaced single assignable callback slots, and the bug that motivated it
+# was silent: both battery entities served a stale value for hours while the
+# light kept working, with nothing in the log. So these tests are less about the
+# happy path than about the two properties the slots could not offer --
+# several independent subscribers, and a removal that actually removes.
+# ---------------------------------------------------------------------------
+
+
+def _battery_push(conn: FermobBLEConnection, percent: int = 42) -> None:
+    """Drive one battery push through `_dispatch_event`, skipping the crypto."""
+    payload = bytes([2, 0xC0, percent]) + bytes(12)
+    with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
+        conn._dispatch_event(bytes(20), 2)
+
+
+async def test_every_battery_subscriber_gets_the_push(hass: HomeAssistant):
+    """The sensor and the binary sensor both want it; neither may shadow the other.
+
+    With a single slot this only worked if the second registrant remembered to
+    chain onto whatever it found there.
+    """
+    conn = _conn(hass)
+    seen: list[str] = []
+    conn.add_battery_listener(lambda b: seen.append(f"sensor:{b.percent}"))
+    conn.add_battery_listener(lambda b: seen.append(f"binary:{b.percent}"))
+
+    _battery_push(conn, 42)
+
+    assert seen == ["sensor:42", "binary:42"]
+
+
+async def test_removing_one_battery_subscriber_leaves_the_other(hass: HomeAssistant):
+    """An entity being removed must not take its neighbour's updates with it."""
+    conn = _conn(hass)
+    seen: list[str] = []
+    remove_first = conn.add_battery_listener(lambda b: seen.append("first"))
+    conn.add_battery_listener(lambda b: seen.append("second"))
+
+    remove_first()
+    _battery_push(conn)
+
+    assert seen == ["second"]
+
+
+async def test_a_removed_subscriber_is_never_called_again(hass: HomeAssistant):
+    """The property the old code had no way to express: a real unsubscribe.
+
+    Without it, a subscription outlived the entity holding it -- which is how
+    pushes ended up being delivered to entities that no longer existed while
+    the live ones got nothing.
+    """
+    conn = _conn(hass)
+    seen: list[Battery] = []
+    remove = conn.add_battery_listener(seen.append)
+
+    _battery_push(conn, 42)
+    remove()
+    _battery_push(conn, 7)
+
+    assert [b.percent for b in seen] == [42]
+
+
+async def test_removing_twice_is_harmless(hass: HomeAssistant):
+    """HA can call a remover more than once; it must not raise."""
+    conn = _conn(hass)
+    remove = conn.add_battery_listener(lambda b: None)
+    remove()
+    remove()  # must not raise
+
+
+async def test_one_broken_subscriber_does_not_silence_the_others(hass: HomeAssistant):
+    """These run in the BLE notification callback, so an escape takes the push.
+
+    A raising sensor must not cost the binary sensor its update.
+    """
+    conn = _conn(hass)
+    seen: list[str] = []
+
+    def _explode(battery: Battery) -> None:
+        raise RuntimeError("entity not added yet")
+
+    conn.add_battery_listener(_explode)
+    conn.add_battery_listener(lambda b: seen.append("survived"))
+
+    _battery_push(conn)
+
+    assert seen == ["survived"]
+
+
+async def test_state_subscribers_behave_the_same_way(hass: HomeAssistant):
+    """The light uses the same mechanism, so it gets the same guarantees."""
+    conn = _conn(hass)
+    seen: list[tuple] = []
+    remove = conn.add_state_listener(lambda *args: seen.append(args))
+    pushed = _device_data(1_785_882_856, is_on=True, marker=LMP_EVENT_DEVICE_DATA)
+
+    with patch("custom_components.fermob.light.decode_fragment", return_value=pushed):
+        conn._dispatch_event(bytes(20), 2)
+    remove()
+    with patch("custom_components.fermob.light.decode_fragment", return_value=pushed):
+        conn._dispatch_event(bytes(20), 2)
+
+    assert seen == [(True, 40, 60)]
+
+
+async def test_a_battery_push_with_no_subscribers_is_not_an_error(hass: HomeAssistant):
+    """Pushes can arrive before the platforms have finished setting up."""
+    conn = _conn(hass)
+    _battery_push(conn)  # must not raise
+    assert conn.battery == Battery(percent=42, charging=False)
+
+
+# ---------------------------------------------------------------------------
 # Believing (or not) what the lamp pushes
 #
 # The two DEVICE_DATA markers carry byte-identical bodies, so nothing but the
@@ -451,7 +566,7 @@ def _device_data(
 def _dispatch(conn: FermobBLEConnection, payload: bytes) -> list[tuple]:
     """Push one decoded payload through `_dispatch_event`, skipping the crypto."""
     seen: list[tuple] = []
-    conn.on_state_change = lambda *args: seen.append(args)
+    conn.add_state_listener(lambda *args: seen.append(args))
     with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
         conn._dispatch_event(bytes(20), 2)
     return seen

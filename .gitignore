@@ -6,3 +6,6 @@ __pycache__/
 .coverage
 htmlcov/
 .DS_Store
+
+# JetBrains IDE
+.idea/
