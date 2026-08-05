@@ -96,10 +96,15 @@ silently re-register a lamp its owner had deliberately freed. It also swallows e
 balcony lamp is the normal case, and a missed check-in must leave the last known level in place rather than
 clearing it.
 
-Swallowing is not the same as hiding, though: the check-in **reports its verdict** through
+Swallowing is not the same as hiding, though: the check-in reports **`LampNotAnswering`** through
 `add_availability_listener`, and `FermobLight.on_check_in_result` is the subscriber. Without that, availability
 is written only on the command path (`_async_send_led`), so a lamp that has gone deaf reads *available* and *on*
 indefinitely until somebody presses the switch — which is the failure this release exists to fix.
+
+Only that exception. Every other connect failure — out of range, adapter busy, no advertisement — leaves
+availability untouched, because it is routine and because the next check-in may be six hours away. That is what
+the dedicated exception type is for: `RuntimeError` alone would have conflated "cannot reach it" with "it is
+ignoring me".
 
 Its third job is **liveness**. `request_battery()` returns whether the lamp acknowledged, and that ACK is the
 only one the integration ever gets on a live link — every other frame is a write-without-response. When the
@@ -115,8 +120,8 @@ battery request. What happens next depends only on whether that request was answ
 
 | Pass outcome | Next |
 |---|---|
-| Freshly paired (`not have_keys`) | done — the handshake ACKed ten commands, the session is proven |
 | Battery answered (first try **or the retry**) | done |
+| Both unanswered, freshly paired (`not have_keys`) | **disconnect and raise** — no probe, no third pass |
 | Both unanswered, `allow_pairing=False` | **disconnect and raise** |
 | Both unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
 | Both unanswered, lamp answers in a non-`PRIVATE` mode | `_forget_keys_in_memory()`, second pass pairs |

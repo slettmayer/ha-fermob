@@ -101,6 +101,18 @@ _STORAGE_VERSION = 1
 _IDLE_DISCONNECT_DELAY: float | None = None
 
 
+class LampNotAnswering(RuntimeError):
+    """The BLE link came up and the lamp said nothing on it.
+
+    Distinct from every other connect failure on purpose. "Could not reach the
+    lamp at all" -- out of range, taken indoors, adapter busy, no advertisement
+    yet -- is the normal condition of a balcony lamp and must leave the entity
+    alone. This one means we *did* reach it, twice, and it is not honouring the
+    session: that is the failure worth telling the user about, because the lamp
+    will not respond to anything until it is repaired.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Connection — mirrors JS meshConnectionService + BLEProtocolService
 #
@@ -615,6 +627,10 @@ class FermobBLEConnection:
         # Persist keys before REGISTER_END so they survive a missing EVENT
         await self._save_keys()
         self._have_keys = True
+        # In sync with `_have_keys`, or the next `_load_keys()` re-reads the
+        # store and overwrites everything the handshake just put in memory --
+        # harmless only for as long as all of it happens to be persisted.
+        self._keys_loaded = True
 
         # Step 9: REGISTER_END → lamp enters GATEWAY mode
         await self._send(ENCRYPT_PRIVATE, [2, CMD_REGISTER, 1])
@@ -874,8 +890,7 @@ class FermobBLEConnection:
             await self.set_module_time()
             answered = await self.request_battery()
 
-            # Freshly paired, or the lamp is answering: nothing to diagnose.
-            if answered or not have_keys:
+            if answered:
                 break
 
             # One dropped ACK is a marginal link, not a diagnosis. Everything
@@ -890,11 +905,19 @@ class FermobBLEConnection:
             if await self.request_battery():
                 break
 
-            if not allow_pairing:
-                # Nothing further is permitted here: the probe is a pairing
-                # frame and anything it could conclude leads to the handshake.
+            # A pass that just paired gets no probe and no second pass: the keys
+            # are seconds old, so nothing is wrong with them, and re-pairing a
+            # lamp we have just paired would be a loop.
+            #
+            # It does still have to fail here. The handshake's ten ACKs happened
+            # on the *pre-REGISTER_END* link, which is exactly the link the lamp
+            # stops honouring -- that is why this pass reconnected. Nothing on
+            # the new link has been acknowledged by anything, so "we just paired"
+            # is not evidence the session works, and accepting it as evidence
+            # would report the reproduced post-pairing failure as success.
+            if not have_keys or not allow_pairing:
                 await self.disconnect()
-                raise RuntimeError(
+                raise LampNotAnswering(
                     f"Fermob {self._address}: connected, but the lamp is not answering"
                 )
 
@@ -911,7 +934,7 @@ class FermobBLEConnection:
                 # rejected here is one the entity will call available while the
                 # lamp sits dark. The check-in retries on its own schedule.
                 await self.disconnect()
-                raise RuntimeError(
+                raise LampNotAnswering(
                     f"Fermob {self._address}: connected, but the lamp is not answering"
                 )
 
@@ -1050,15 +1073,29 @@ class FermobBLEConnection:
                         )
                         await self.disconnect()
                         await self.ensure_connected(allow_pairing=False)
+            except LampNotAnswering:
+                # Reached it, twice, and it is ignoring us. This is the one
+                # outcome worth reporting: nothing the user does will work until
+                # the session is repaired.
+                _LOGGER.warning("Fermob %s: reachable but not answering", self._address)
+                self._notify(self._availability_listeners, "availability", False)
+                return
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
                 # all of it is routine here and none of it is worth a warning.
+                #
+                # And explicitly NOT an availability change. A balcony lamp is
+                # out of range for whole seasons, and in on-demand mode the next
+                # check-in is six hours away -- so reporting unavailable here
+                # would grey the entity out for the rest of the day over one
+                # missed advertisement, for a lamp that would answer a command
+                # perfectly well. Leaving it alone is what the "as of last
+                # contact" contract means.
                 _LOGGER.debug(
                     "Fermob %s: check-in did not reach the lamp",
                     self._address,
                     exc_info=True,
                 )
-                self._notify(self._availability_listeners, "availability", False)
                 return
 
         self._notify(self._availability_listeners, "availability", True)
@@ -1201,7 +1238,13 @@ class FermobBLEConnection:
         stays registered leaves it owned by a controller that has forgotten it,
         and nothing recovers that except a factory reset with a paperclip.
         """
-        if not await self.request_battery():
+        # Retried once, for the same reason `ensure_connected` retries: one
+        # dropped ACK is a marginal link, not a verdict. Without it a single
+        # missed reply aborts the service and tells the user to "bring the lamp
+        # in range" when the lamp was in range all along. This is also the only
+        # check there is -- `async_unpair`'s `ensure_connected()` returns early
+        # on an already-open link without probing anything.
+        if not await self.request_battery() and not await self.request_battery():
             # Do NOT send it anyway. UNREGISTER is destructive and unacknowledged,
             # so a broadcast fired here is a coin toss the caller then has to
             # guess the result of: the lamp may well receive it and drop to NONE
@@ -1501,7 +1544,14 @@ class FermobLight(LightEntity):
         address = self._entry.data[CONF_ADDRESS]
         async with self._conn.lock:
             try:
-                await self._conn.ensure_connected()
+                # Never pairing: this service exists to *release* the lamp. On a
+                # lamp the user reset behind our back the default would run the
+                # re-pair branch -- flashing it, re-registering it to Home
+                # Assistant -- and only then broadcast UNREGISTER, which is the
+                # exact opposite of what was asked for. Failing instead sends the
+                # user to the documented path for a lamp that is already free:
+                # delete the integration.
+                await self._conn.ensure_connected(allow_pairing=False)
                 reached = await self._conn.unpair()
             except Exception as exc:
                 _LOGGER.error("Fermob %s unpair error: %s", address, exc, exc_info=True)

@@ -34,7 +34,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.fermob as fermob
 from custom_components.fermob import _key_store
-from custom_components.fermob.light import FermobBLEConnection, FermobLight
+from custom_components.fermob.light import (
+    FermobBLEConnection,
+    FermobLight,
+    LampNotAnswering,
+)
 from custom_components.fermob.protocol import (
     ENCRYPT_NONE,
     ENCRYPT_PRIVATE,
@@ -87,6 +91,17 @@ def _deaf(hass: HomeAssistant) -> FermobBLEConnection:
     """
     conn = _conn(hass, keys=_KEYS)
     conn.request_battery = AsyncMock(return_value=False)
+    return conn
+
+
+def _deaf_until_repaired(hass: HomeAssistant) -> FermobBLEConnection:
+    """Deaf on the first pass, answering once it has been re-paired.
+
+    The realistic factory-reset shape: two unanswered requests, the probe, the
+    handshake, and then a lamp that talks again.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.request_battery = AsyncMock(side_effect=[False, False, True])
     return conn
 
 
@@ -154,7 +169,7 @@ async def test_a_factory_reset_lamp_is_repaired(hass: HomeAssistant):
     goes out PRIVATE-encrypted to a lamp back in NONE mode, and the only recovery
     was deleting `.storage/fermob_*` by hand.
     """
-    conn = _deaf(hass)
+    conn = _deaf_until_repaired(hass)
     conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE))
 
     await conn.ensure_connected()
@@ -177,7 +192,7 @@ async def test_the_repair_does_not_delete_the_stored_keys_first(
     registered to us, and nothing retries: `async_check_in` short-circuits on
     `_load_keys()`. That is the unrecoverable state.
     """
-    conn = _deaf(hass)
+    conn = _deaf_until_repaired(hass)
     conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE))
 
     await conn.ensure_connected()
@@ -206,7 +221,7 @@ async def test_one_dropped_ack_is_not_a_diagnosis(hass: HomeAssistant):
 
 async def test_a_half_paired_lamp_is_also_repaired(hass: HomeAssistant):
     """PUBLIC is not PRIVATE: our stored private key is no use there either."""
-    conn = _deaf(hass)
+    conn = _deaf_until_repaired(hass)
     conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_PUBLIC))
 
     await conn.ensure_connected()
@@ -216,12 +231,14 @@ async def test_a_half_paired_lamp_is_also_repaired(hass: HomeAssistant):
 
 async def test_the_repair_pass_never_loops(hass: HomeAssistant):
     """A lamp that is deaf for some other reason must not pair over and over."""
-    conn = _deaf(hass)
+    conn = _deaf(hass)  # never answers, even after re-pairing
     conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE))
 
-    await conn.ensure_connected()
+    with pytest.raises(LampNotAnswering):
+        await conn.ensure_connected()
 
-    # Exactly one repair: the second pass pairs and stops, answered or not.
+    # Exactly one repair: the second pass pairs, and then fails rather than
+    # looping back round to pair again.
     assert conn._pairing_handshake.await_count == 1
 
 
@@ -286,20 +303,24 @@ async def test_a_deaf_lamp_that_is_still_ours_fails_the_connect(hass: HomeAssist
     assert conn._connected is False
 
 
-async def test_a_fresh_pairing_is_trusted_without_a_battery_answer(
+async def test_a_fresh_pairing_is_not_trusted_without_an_answer(
     hass: HomeAssistant,
 ):
-    """The handshake ACKs every step, so the session is proven already.
+    """ "We just paired" is not evidence the session works.
 
-    Failing here on a silent battery request would refuse a lamp that has just
-    demonstrably completed a ten-command exchange.
+    The handshake's ten ACKs all landed on the pre-REGISTER_END link -- the very
+    link the lamp stops honouring, which is why pairing reconnects. Nothing on
+    the new link has been acknowledged by anything, so exempting this path would
+    report the reproduced post-pairing failure as success.
     """
     conn = _conn(hass)  # no keys
     conn.request_battery = AsyncMock(return_value=False)
 
-    await conn.ensure_connected()  # must not raise
+    with pytest.raises(LampNotAnswering):
+        await conn.ensure_connected()
 
-    assert conn._connected is True
+    # And it does not loop round to pair a second time.
+    conn._pairing_handshake.assert_awaited_once()
 
 
 async def test_start_notify_failure_releases_the_client(hass: HomeAssistant):
@@ -401,13 +422,35 @@ async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
     has gone deaf reads as available and *on* until somebody presses the switch.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.ensure_connected = AsyncMock(side_effect=RuntimeError("not answering"))
+    conn.ensure_connected = AsyncMock(side_effect=LampNotAnswering("deaf"))
     seen: list[bool] = []
     conn.add_availability_listener(seen.append)
 
     await conn.async_check_in()
 
     assert seen == [False]
+
+
+async def test_an_out_of_range_lamp_is_not_reported_unavailable(
+    hass: HomeAssistant,
+):
+    """A balcony lamp is out of range for whole seasons. That is not a fault.
+
+    In on-demand mode the next check-in is six hours away, so greying the entity
+    out over one missed advertisement would lock the user out of a lamp that
+    would answer a command perfectly well -- and `async_check_in`'s own contract
+    says the reading is "as of last contact".
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=RuntimeError("Fermob BLE device not found")
+    )
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen == []
 
 
 async def test_check_in_reports_a_lamp_that_did_answer(hass: HomeAssistant):
@@ -629,8 +672,37 @@ async def test_unpair_does_not_broadcast_when_the_session_is_dead(
     conn._client.write_gatt_char = AsyncMock()
 
     assert await conn.unpair() is False
-    conn.request_battery.assert_awaited_once()
+    # Retried, like every other place that acts on an unanswered request.
+    assert conn.request_battery.await_count == 2
     conn._client.write_gatt_char.assert_not_called()
+
+
+async def test_unpair_survives_one_dropped_ack(hass: HomeAssistant):
+    """One missed reply must not abort the service and blame the user."""
+    conn = _conn(hass, keys=_KEYS)
+    conn.request_battery = AsyncMock(side_effect=[False, True])
+    conn._client = MagicMock(write_gatt_char=AsyncMock())
+
+    assert await conn.unpair() is True
+    conn._client.write_gatt_char.assert_awaited_once()
+
+
+async def test_unpair_never_pairs(hass: HomeAssistant):
+    """The service releases the lamp; it must not claim one on the way there.
+
+    On a lamp reset behind HA's back, the default `allow_pairing=True` would run
+    the re-pair branch -- flashing it, re-registering it -- and only then
+    broadcast UNREGISTER.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.unpair = AsyncMock(return_value=True)
+    conn.ensure_connected = AsyncMock()
+    light = _light(hass, conn)
+
+    with patch.object(hass.config_entries, "async_remove", AsyncMock()):
+        await light.async_unpair()
+
+    assert conn.ensure_connected.await_args.kwargs == {"allow_pairing": False}
 
 
 async def test_unpair_broadcasts_when_the_session_answers(hass: HomeAssistant):

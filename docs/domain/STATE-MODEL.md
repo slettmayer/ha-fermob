@@ -77,9 +77,14 @@ Two deliberate refusals:
 - **It swallows every failure.** An out-of-range balcony lamp is the normal case, and a missed check-in must
   leave the last known level in place rather than clearing it.
 
-It does, however, **report the outcome**. Availability is otherwise written only when a command is sent, so a
-lamp that has gone deaf would read *available* and *on* in the UI indefinitely — exactly the appearance this
-release is about. The check-in tells subscribers whether the lamp answered, and the light entity follows.
+It does, however, **report one specific outcome**: `LampNotAnswering`, meaning the link came up and the lamp
+ignored two requests on it. Availability is otherwise written only when a command is sent, so a lamp that has
+gone deaf would read *available* and *on* in the UI indefinitely — exactly the appearance this release is about.
+
+**Failing to reach the lamp at all is not that**, and deliberately changes nothing. Out of range, taken indoors,
+no advertisement yet, adapter busy — that is the normal condition of a balcony lamp, and in *on demand* mode the
+next check-in is six hours away. Reporting unavailable there would grey the entity out for the rest of the day
+over one missed advertisement, for a lamp that would answer a command perfectly well.
 
 ### It is also the liveness probe
 

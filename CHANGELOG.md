@@ -41,6 +41,8 @@ re-pair, no settings to revisit.
   it cannot deliver — and the scheduled check-in updates that too, so a lamp that
   goes quiet is noticed without anyone pressing a switch. The lamp is always asked
   twice before any of this: one lost reply on a marginal link changes nothing.
+  A lamp that simply cannot be reached — out of range, taken indoors for the
+  winter — is left alone as before, and is not the same thing.
 
 - **Deleting the integration now deletes its pairing keys**, so a lamp that is
   gone for good — dead battery, given away, already reset — leaves nothing behind.

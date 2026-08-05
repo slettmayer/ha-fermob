@@ -86,8 +86,14 @@ Two deliberate restrictions, both of which stop this from being worse than the b
   range — and re-pairing on that evidence would flash the lamp unattended *and* throw away keys that were still
   good. Only a lamp that positively answers in a non-`PRIVATE` mode is treated as reset.
 
-The second pass always pairs and always stops, answered or not, so a lamp that is deaf for some third reason
-is re-paired once rather than in a loop.
+The second pass always pairs and always stops. If the freshly-paired lamp *still* does not answer, the connect
+fails with `LampNotAnswering` rather than looping round to pair again — so a lamp that is deaf for some third
+reason is re-paired once, not repeatedly.
+
+A freshly-paired lamp is held to the same standard, and this is the case that matters most: the handshake's ten
+ACKs all landed on the pre-`REGISTER_END` link, which is exactly the link the lamp stops honouring. "We just
+paired" is therefore not evidence the *new* link works, and exempting it would report the reproduced
+post-pairing failure as success.
 
 ## Setup prerequisites
 
@@ -101,12 +107,19 @@ is re-paired once rather than in a loop.
 
 `fermob.unpair` (an entity service) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
 entry. The lamp flashes 3× and resets its crypto state to `NONE`, so it can be paired with the app again. It is
-**the only thing that deletes the keys** — see below.
+the only thing that deletes the keys **while telling the lamp** — removing the entry deletes them too, but
+silently, which is why that is a one-way door; see below.
 
 **It is both halves or neither, and the order matters.** `UNREGISTER` is a fire-and-forget broadcast, exactly
 as the app sends it, so it can never be acknowledged. What *can* be checked is the session carrying it, with a
-battery request one command earlier. If that goes unanswered, **the broadcast is not sent at all** and
-`async_unpair` raises `HomeAssistantError`, removing nothing.
+battery request one command earlier — retried once, because a single dropped ACK is a marginal link and not a
+verdict. If both go unanswered, **the broadcast is not sent at all** and `async_unpair` raises
+`HomeAssistantError`, removing nothing.
+
+It also **never pairs**: `ensure_connected(allow_pairing=False)`. On a lamp the user reset behind Home
+Assistant's back, the default would run the re-pair branch — flashing the lamp, re-registering it — and only
+then broadcast `UNREGISTER`, which is the opposite of what the service is for. It fails cleanly instead, and
+the user deletes the entry, which is the documented path for a lamp that is already free.
 
 Sending it anyway would make the error message a coin toss: the lamp might well receive it and drop to `NONE`
 while Home Assistant truthfully reported "nothing has been removed" and kept the keys. Lamp unregistered, HA
