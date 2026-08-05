@@ -25,8 +25,8 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 - **Physical button presses show up in HA** — the lamp reports its own on/off, brightness and colour temperature the moment someone presses its button, so the light entity follows the lamp rather than only the last HA command
 - **Automatic check-in** — reconnects a dropped link and refreshes the battery on a timer, without turning the lamp on, so a lamp left switched off does not keep a stale reading
 - **Lamp family read from the lamp** — `MODULE_INFO_GET` reports what the lamp actually is, rather than guessing from its name, with a manual override if it is ever wrong
-- **Unpair service** — cleanly remove the lamp from HA (equivalent to "Forget" in the Fermob app)
-- **Choice of connection mode** — hold the BLE link open (the default, and what makes button presses visible), or release it between commands to free a connection slot on a busy Bluetooth proxy
+- **Two services** — `fermob.check_in` (contact the lamp now) and `fermob.unpair` (cleanly remove it, equivalent to "Forget" in the Fermob app)
+- **Two options** — lamp type and connection mode, both under **Configure**; see [Configuration](#configuration)
 
 ## Entities
 
@@ -43,9 +43,11 @@ at least once, so a lamp that has never answered is never mistaken for a flat
 one. They exist on every lamp; a model with no battery simply never reports one
 and they stay unavailable.
 
-Because the lamp only speaks when spoken to, the level is best read as **"as of
-last contact"** rather than live. The check-in keeps that recent, and it holds
-the last known value rather than blanking when the lamp is out of range.
+The lamp reports its level when asked, and also **pushes an update of its own
+accord whenever the charger goes on or off** — so the two entities react to being
+docked or lifted within about a second. Between those events the figure is still
+best read as **"as of last contact"**: the scheduled check-in keeps it recent, and
+the last known value is held rather than blanked when the lamp is out of range.
 
 > **The percentage moves faster than a battery can charge or drain.** It jumps as
 > soon as the charger goes on — 24 % straight to 33 % in one test, 86 % to 98 % in
@@ -78,8 +80,8 @@ The integration asks the lamp which it is: `MODULE_INFO_GET` reports a
 `module_type` (401 dimmable / 404 tunable) and a model string, both of which are
 stored, so a renamed lamp is not misidentified. The name heuristic — only the
 Hoopik is treated as dimmable-white — remains the first-run guess and the
-fallback for an unrecognised `module_type`. A manual override under
-**Configure → Lamp type** beats both.
+fallback for an unrecognised `module_type`. A manual override beats both — see
+[Configuration](#configuration).
 
 Other Fermob lamps using the Linkio BLE protocol (advertisement UUID
 `41C13060-6DEF-11E5-BCDE-0002A5D5C51B`) may work but have not all been tested.
@@ -116,7 +118,7 @@ This integration is in the HACS default store, so no custom repository is needed
 3. Within a few seconds, a notification should appear in **Settings → Devices & Services**: *"Fermob lamp detected"*
 4. Click **Configure** and confirm
 5. The first toggle will perform the initial BLE pairing (~4 s)
-6. Subsequent toggles use fast reconnect (~1 s)
+6. After that the BLE link is kept open by default, so subsequent commands go out immediately — and the lamp's own button presses show up in HA. See [Configuration](#configuration) if you would rather it released the link between commands
 
 > **Nothing appearing?** Make sure your HA instance has a working Bluetooth adapter. You can check in **Settings → System → Hardware**. If your HA server has no Bluetooth, a [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) on an ESP32 nearby works perfectly.
 
@@ -130,6 +132,90 @@ If the automatic notification does not appear:
 4. The lamp should appear in the list — select it and confirm
 
 > If you see *"No Fermob lamp found"*, the lamp has not been seen by the BLE scanner yet. Power-cycle it again and retry immediately.
+
+## Configuration
+
+Two options, both under **Settings → Devices & Services → Fermob → Configure**.
+Changing either reloads the integration; neither requires re-pairing.
+
+| Option | Default | What it decides |
+|---|---|---|
+| **Lamp type** | Auto-detect (by name) | Whether the lamp is treated as dimmable white or tunable white — i.e. whether it gets a colour-temperature slider |
+| **Connection** | Always connected | Whether the BLE link is held open, which is what makes the lamp's own button presses visible in HA |
+
+### Lamp type
+
+Leave this alone unless the lamp is detected as the wrong family. Auto-detect
+asks the lamp what it is (`MODULE_INFO_GET` reports `module_type` 401 dimmable /
+404 tunable) and falls back to the name only for a lamp that has never connected
+or reports something unrecognised — the name heuristic treats only the Hoopik as
+dimmable white. An explicit choice here beats both.
+
+### Connection
+
+| | Always connected (default) | On demand |
+|---|---|---|
+| BLE link | held open | released 30 s after the last command |
+| Button presses | reported in ~1 s | **not reported** |
+| Charger on/off | reported in ~1 s | picked up at the next check-in |
+| Check-in runs | every 30 min | every 6 hours |
+| Connection slot | permanently occupied | free between commands |
+
+**Always connected** is the default because it is the only way HA learns what the
+lamp is doing. The lamp pushes its state when it changes, but only while
+something is connected, and it pushes nothing when a connection is
+re-established — so a link that was down during a press has lost that press for
+good. There is no query that recovers it; see [Physical button](#physical-button).
+
+**On demand** is the pre-0.8.0 behaviour, and the reason to pick it is
+**connection slots**. An ESPHome Bluetooth proxy typically allows three
+simultaneous connections, and a held link occupies one of them indefinitely. If
+your proxy is near its limit, or several lamps share one, handing the slot back
+between commands may be worth losing press detection for.
+
+There is deliberately no middle setting. A link held for a few minutes would give
+a light that is sometimes right with no way to tell which times those were, which
+is worse than either end.
+
+The two timings behind the modes are set together rather than exposed
+separately, because they interact: a check-in re-establishes the link and so
+re-arms the idle timer, meaning any check-in interval shorter than the timeout
+would hold the link open regardless of what the timeout said.
+
+### What holding the link costs the battery
+
+**Preliminary, and an upper bound rather than a measurement of the link itself.**
+
+Measured on an H134 left dark on its stand overnight with the link held open:
+**86 % → 85 % over 7.6 hours**. Least-squares fit −0.078 %/h; the reading's own
+band stepped down once in 7.1 h, which is 0.14 %/h. Call it **~0.1 %/h**, so
+roughly **2 % per day** — which extrapolates to somewhere between about four
+and eight weeks of standby from full, depending on which of those two estimates
+you take. Link uptime over the same window was 5 h 20 min continuous, with no
+disconnects, reconnects or errors.
+
+Four caveats, because this is one night's data and it is easy to over-read:
+
+- **It is total drain, not the cost of the connection.** The same lamp was never
+  measured over a comparable period with *no* connection, so how much of that
+  0.1 %/h the held link is responsible for is unknown. The lamp self-discharges
+  and runs its radio either way. Treat ~0.1 %/h as the ceiling on what switching
+  to *on demand* could possibly save you, not as the saving.
+- **The gauge is a voltage proxy, not a capacity count** — see [Entities](#entities).
+  So %/h is not uniform across the charge range, and a figure taken around 85 %
+  need not hold near the top or bottom of it.
+- **One lamp, one run, one night, one temperature.** Nothing here has been
+  repeated, and a cold balcony in winter changes both battery chemistry and BLE
+  behaviour.
+- **The lamp being dark is doing a lot of work.** Lit, the LEDs dominate the
+  draw so completely that the link is noise by comparison — Fermob quote 6 h at
+  100 % brightness, which is about 16 %/h.
+
+Practical reading: for a lamp that lives on or near its charger, the cost is not
+worth thinking about. For one stored off-charger for a season, it is still
+probably not the dominant term — but the honest answer is that we have not
+measured the alternative, so switch modes for the connection slot, not for the
+battery.
 
 ## Usage
 
@@ -189,6 +275,10 @@ the integration converts to/from Kelvin automatically.
 > If the Fermob app connects, it takes ownership and HA loses control until you
 > **Forget** the lamp in the app, **power-cycle** it, and re-pair in HA. Pick
 > HA *or* the app, and keep the other disconnected.
+>
+> Switching the connection mode does **not** change this. Pairing is what confers
+> ownership, not whether a link happens to be open, so *on demand* does not let
+> the phone app in — you still have to unpair from HA and pair with the app.
 
 ### Physical button
 
