@@ -69,10 +69,17 @@ last until something turned the light on. The delay lets the Bluetooth stack com
 
 Two deliberate refusals:
 
-- **It will not run on an unpaired lamp.** `ensure_connected()` would otherwise start the pairing handshake,
-  which makes the lamp flash — unattended and at an arbitrary hour.
+- **It never pairs, at all.** Not merely "will not run on an unpaired lamp" — it passes
+  `ensure_connected(allow_pairing=False)`, which forbids the handshake outright. The older key-presence guard
+  was not enough: a lamp someone factory-reset to hand back to the Fermob app leaves *our* keys on disk, so the
+  guard passed, and the re-pair branch would have flashed it through a full handshake overnight and silently
+  taken ownership again. Pairing belongs to something the user just did.
 - **It swallows every failure.** An out-of-range balcony lamp is the normal case, and a missed check-in must
-  leave the last known level in place rather than clearing it or marking the entities unavailable.
+  leave the last known level in place rather than clearing it.
+
+It does, however, **report the outcome**. Availability is otherwise written only when a command is sent, so a
+lamp that has gone deaf would read *available* and *on* in the UI indefinitely — exactly the appearance this
+release is about. The check-in tells subscribers whether the lamp answered, and the light entity follows.
 
 ### It is also the liveness probe
 
@@ -81,6 +88,13 @@ frame it sends — `send_led`, `DATETIME_SET`, `UNREGISTER` — is a write-witho
 when the check-in finds the link already up, an unacknowledged battery request is the *only* available evidence
 that the lamp has stopped listening, and it acts on it: disconnect, reconnect, and let the connect path
 re-establish the session.
+
+Two things make that signal trustworthy enough to act on:
+
+- **A refusal counts as an answer.** The lamp NAKs some commands outright (`DEVICE_DATA_GET` is refused with
+  error 18), and a NAK is proof it is listening. `request_battery()` therefore reports the *acknowledgement*,
+  not the payload — both a NAK and a timeout come back with no body.
+- **One miss is not a diagnosis.** The request is retried once before anything acts on the failure.
 
 This is what replaces the 30 s idle disconnect. Before 0.8.0 that timer dropped the link after every command,
 so a session the lamp had stopped honouring was repaired within half a minute — invisibly, and by accident.

@@ -105,26 +105,37 @@ entry. The lamp flashes 3× and resets its crypto state to `NONE`, so it can be 
 
 **It is both halves or neither, and the order matters.** `UNREGISTER` is a fire-and-forget broadcast, exactly
 as the app sends it, so it can never be acknowledged. What *can* be checked is the session carrying it, with a
-battery request one command earlier; if that goes unanswered, `async_unpair` raises `HomeAssistantError` and
-removes nothing. Be precise about what that establishes: it rules out a broadcast fired into a link the lamp
-had already stopped honouring. It does **not** prove the lamp received or acted on the broadcast — nothing can.
+battery request one command earlier. If that goes unanswered, **the broadcast is not sent at all** and
+`async_unpair` raises `HomeAssistantError`, removing nothing.
+
+Sending it anyway would make the error message a coin toss: the lamp might well receive it and drop to `NONE`
+while Home Assistant truthfully reported "nothing has been removed" and kept the keys. Lamp unregistered, HA
+still holding keys and an entry — and the next connect would silently re-pair it, so a user trying to hand the
+lamp back to the Fermob app could never succeed.
+
+Be precise about what the check does establish: it rules out a broadcast fired into a link the lamp had already
+stopped honouring. It does **not** prove the lamp received or acted on the broadcast — nothing can.
 
 Deleting the keys while the lamp stays registered produces the one state nothing recovers from except a
 paperclip: a lamp owned by a controller that has forgotten it, which reads as *"PRIVATE mode but no stored
 keys"* forever.
 
-### Removing the config entry by hand keeps the keys, deliberately
+### Removing the config entry deletes the keys — and is a one-way door
 
-There is **no `async_remove_entry`**, and that is a decision rather than an omission. Removing an entry tells
-the lamp nothing, so the lamp stays registered in `PRIVATE`. Delete the keys at the same moment and *"delete it
-and add it again"* — the first thing anyone tries — becomes unrecoverable, because the re-add hits step 1's
-probe, finds the lamp registered, and has no key to talk to it.
+`async_remove_entry` deletes `.storage/fermob_<mac>`. That is the cleanup path for a lamp that is *gone* —
+dead battery, given away, already reset — because the service above deliberately refuses on a lamp it cannot
+reach, and the keys should not outlive the integration as an orphan.
 
-Keeping them makes that re-add just work. The case deletion would have covered — stale keys against a lamp
-factory-reset in between — is handled by the reconnect probe above, without anyone touching `.storage`.
+⚠️ **It also means deleting and re-adding the same lamp does not work.** Removing an entry tells the lamp
+nothing: it stays registered in `PRIVATE`, and once the keys are gone the re-add hits step 1's probe, finds a
+lamp it cannot decrypt, and stops with *"Lamp is in PRIVATE mode but no stored keys found"*. The only way back
+is holding the lamp's button for ten seconds. This is a deliberate trade, not an oversight.
 
-So: use the **service** when you want the lamp released. **Delete the entry** when you want Home Assistant to
-stop managing a lamp it can still talk to.
+Note this is **not** how a factory-reset lamp is recovered — `_lamp_still_paired()` handles that automatically
+while the entry still exists, with no `.storage` surgery and no re-add.
+
+So: use the **service** when you want the lamp released and Home Assistant can still reach it. **Delete the
+entry** only when you are done with the lamp, or are prepared to factory-reset it.
 
 ## Recovery
 
@@ -143,9 +154,11 @@ entry was deleted. There is no way to talk to it in that state.
 3. Restart Home Assistant.
 4. Power-cycle the lamp and set it up again.
 
-Since 0.9.0 the integration should not put you here on its own: an unacknowledged unpair keeps the keys, and
-removing the entry keeps them too. A factory reset performed *while* the entry exists is handled automatically
-by the reconnect probe above — no manual `.storage` surgery needed.
+Two ways to reach this since 0.9.0, one accidental and one not. A factory reset performed *while* the entry
+exists is handled automatically by the reconnect probe above — no manual `.storage` surgery needed. But
+**deleting the config entry and re-adding the lamp lands you here by design**, because entry removal takes the
+keys with it; see the warning under [Unpairing](#unpairing). An unacknowledged `fermob.unpair` cannot cause it:
+it removes nothing.
 
 **Symptom: the lamp flashes 3× when toggled.**
 Something sent `UNREGISTER`. Use the `fermob.unpair` service deliberately rather than toggling, then re-pair.

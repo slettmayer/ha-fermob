@@ -38,14 +38,30 @@ re-pair, no settings to revisit.
 - **A lamp that cannot be woken is reported as unavailable instead of pretending.**
   A connection that comes up but gets no answer from the lamp is now a failed
   connection, so the light entity goes unavailable rather than accepting commands
-  it cannot deliver. It retries on its own at the next check-in.
+  it cannot deliver — and the scheduled check-in updates that too, so a lamp that
+  goes quiet is noticed without anyone pressing a switch. The lamp is always asked
+  twice before any of this: one lost reply on a marginal link changes nothing.
+
+- **Deleting the integration now deletes its pairing keys**, so a lamp that is
+  gone for good — dead battery, given away, already reset — leaves nothing behind.
+  Note the consequence: deleting the integration and adding the same lamp back
+  will not work, because the lamp is still registered to Home Assistant and the
+  key it needs is gone. Hold the lamp's button for ten seconds first, or use
+  `fermob.unpair` instead, which releases the lamp properly.
 
 - **`fermob.unpair` no longer strands the lamp when it cannot be reached.** It
   used to delete the keys regardless, leaving the lamp registered to a Home
   Assistant that had forgotten it: the *"lamp is in PRIVATE mode but no stored
   keys"* dead end, which only a 10-second factory reset clears. It now checks
-  that the lamp is listening first, and if it is not, it reports an error and
-  changes nothing. Bring the lamp in range and try again.
+  that the lamp is listening first, and if it is not, it does not even send the
+  unpair command — it reports an error and changes nothing. Bring the lamp in
+  range and try again.
+
+- **The background check-in can no longer pair a lamp.** It was only ever
+  supposed to reconnect and read the battery, but the new re-pairing above could
+  be reached from it, which meant a lamp you had reset to hand back to the Fermob
+  app could be silently claimed again overnight. Pairing now only ever happens
+  because you did something.
 
 With thanks to Thomas Rehm, who hit all of this on real hardware and reported it
 carefully enough to find.

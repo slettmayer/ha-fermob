@@ -149,24 +149,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unloaded
 
 
-# There is deliberately no `async_remove_entry`, and this was tried and undone.
-#
-# Deleting the stored keys along with the config entry looks like obvious
-# hygiene, and it is the opposite: it is the one action that cannot be walked
-# back. Removing an entry does not tell the lamp anything, so the lamp stays
-# registered to us in PRIVATE mode. Throw the keys away at the same moment and
-# "delete it and add it again" -- the first thing anyone tries -- becomes
-# unrecoverable, because the re-add hits the handshake's step-1 probe, finds the
-# lamp already registered with no key to talk to it, and the only way out is a
-# 10-second factory reset with a paperclip.
-#
-# Keeping the keys makes that same re-add just work. The case the deletion was
-# meant to cover -- stale keys against a lamp that was factory-reset in between
-# -- is handled properly by `_lamp_still_paired()` on reconnect, which detects
-# it and re-pairs without anyone touching `.storage`.
-#
-# `fermob.unpair` still deletes them, because there the lamp has been told: it
-# is back in NONE mode and the keys are genuinely dead. See PAIRING.md.
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the lamp's stored pairing keys along with the entry.
+
+    Removing the integration is how a lamp that can no longer be reached gets
+    cleaned up -- `fermob.unpair` refuses on an unreachable lamp by design -- so
+    the keys must not outlive it as an orphaned `.storage/fermob_<mac>`.
+
+    **This makes "delete it and add it again" a one-way door**, and that is a
+    known, accepted cost rather than an oversight. Removing an entry tells the
+    lamp nothing: it stays registered to us in PRIVATE mode, and once the keys
+    are gone the re-add hits the handshake's step-1 probe, finds a lamp it cannot
+    decrypt, and stops. The only way back is holding the lamp's button for ten
+    seconds. The pairing error says exactly that, and README/PAIRING.md warn
+    about it up front.
+
+    Note this is *not* the recovery path for a lamp that was factory-reset while
+    the entry existed -- `_lamp_still_paired()` handles that one automatically,
+    with no `.storage` surgery and no re-add.
+    """
+    await _key_store(hass, entry.data[CONF_ADDRESS]).async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1011 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1021 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -114,10 +114,17 @@ channels whose sum is the total output, which is how colour temperature is expre
   assumes a successful write means the lamp heard it.
 - **`ensure_connected()` is a two-pass loop, and neither extra step is a redundant round trip.** Pairing
   reconnects afterwards, because the lamp stops honouring the link it was paired on once `REGISTER_END` lands.
-  And an *unanswered* battery request triggers `_lamp_still_paired()`, because a lamp factory-reset behind our
-  back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose effect
-  on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the happy
-  path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
+  And a battery request unanswered **twice** triggers `_lamp_still_paired()`, because a lamp factory-reset behind
+  our back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose
+  effect on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the
+  happy path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
+- **Only a user action may pair.** `async_check_in` passes `ensure_connected(allow_pairing=False)`; a
+  key-presence guard is *not* sufficient, because a factory-reset lamp leaves our keys on disk. Pairing flashes
+  the lamp and takes ownership of it, and the owner may have reset it on purpose to free it for the vendor app.
+- **Entry removal deletes the pairing keys, and that makes "delete and re-add" a one-way door** — the lamp stays
+  registered while its key is gone, so the re-add needs a 10-second factory reset first. Deliberate: it is the
+  cleanup path for a lamp that is gone, since `fermob.unpair` refuses on an unreachable one. Documented in
+  `async_remove_entry`, [PAIRING.md](docs/domain/PAIRING.md#unpairing) and the README troubleshooting table.
 - **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in
   calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the
   link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for

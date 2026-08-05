@@ -89,10 +89,17 @@ which is also how the vendor app behaves (it polls the same command on a timer w
 every 40 s while its screen is open). `fermob.check_in` is the same routine on demand. Both timers are
 cancelled via `entry.async_on_unload`.
 
-It deliberately **refuses to run on an unpaired lamp**: `ensure_connected()` would otherwise start the pairing
-handshake, which makes the lamp flash, unattended and at an arbitrary hour. It also swallows every failure — an
-out-of-range balcony lamp is the normal case, and a missed check-in must leave the last known level in place
-rather than clearing it or marking the entities unavailable.
+It **never pairs**, and the guard for that is `ensure_connected(allow_pairing=False)`, not the key-presence
+check at the top. That check alone was not enough: a lamp someone factory-reset leaves our keys on disk, so it
+passes, and the re-pair branch would then flash the lamp through a full handshake at an arbitrary hour and
+silently re-register a lamp its owner had deliberately freed. It also swallows every failure — an out-of-range
+balcony lamp is the normal case, and a missed check-in must leave the last known level in place rather than
+clearing it.
+
+Swallowing is not the same as hiding, though: the check-in **reports its verdict** through
+`add_availability_listener`, and `FermobLight.on_check_in_result` is the subscriber. Without that, availability
+is written only on the command path (`_async_send_led`), so a lamp that has gone deaf reads *available* and *on*
+indefinitely until somebody presses the switch — which is the failure this release exists to fix.
 
 Its third job is **liveness**. `request_battery()` returns whether the lamp acknowledged, and that ACK is the
 only one the integration ever gets on a live link — every other frame is a write-without-response. When the
@@ -109,14 +116,25 @@ battery request. What happens next depends only on whether that request was answ
 | Pass outcome | Next |
 |---|---|
 | Freshly paired (`not have_keys`) | done — the handshake ACKed ten commands, the session is proven |
-| Battery answered | done |
-| Unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
-| Unanswered, lamp answers in a non-`PRIVATE` mode | `discard_keys()`, second pass pairs |
+| Battery answered (first try **or the retry**) | done |
+| Both unanswered, `allow_pairing=False` | **disconnect and raise** |
+| Both unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
+| Both unanswered, lamp answers in a non-`PRIVATE` mode | `_forget_keys_in_memory()`, second pass pairs |
 
 That `raise` is the point of the whole exercise. Returning a link nobody could get an answer over hands
 `_async_send_led` something it will write into and mark *available*, because `send_led` cannot fail — so
 `ensure_connected` has to be the layer that refuses. The entity goes unavailable, which is true, and the
 check-in retries on its own schedule.
+
+Three guards keep that from over-firing:
+
+- **The battery request is retried once** before anything expensive or destructive happens. One dropped ACK on a
+  marginal link is not evidence of anything, and the cost of treating it as evidence is a pairing frame or a
+  light that goes unavailable while working.
+- **`request_battery()` reports the ACK, not the payload.** `_send_frames` returns `(payload, enc, answered)`; a
+  NAK has `payload=None` but `answered=True`, and a lamp that *refuses* the command has still proved it is
+  listening. Conflating the two would take a working lamp unavailable for declining one diagnostic read.
+- **`allow_pairing=False` forbids the handshake**, and `async_check_in` passes it. See below.
 
 Three things here are load-bearing, and none is a redundant round trip:
 

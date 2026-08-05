@@ -30,6 +30,7 @@ import pytest
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.fermob as fermob
 from custom_components.fermob import _key_store
@@ -159,13 +160,48 @@ async def test_a_factory_reset_lamp_is_repaired(hass: HomeAssistant):
     await conn.ensure_connected()
 
     conn._pairing_handshake.assert_awaited_once()
-    conn._store.async_remove.assert_awaited_once()
-    # In memory too: a stale key left behind would encrypt the next frame.
+    # In memory only: a stale key left behind would encrypt the next frame.
     assert conn._pub == bytes(16)
     assert conn._priv == bytes(16)
     assert conn._nonce == bytes(16)
     # One link for the failed pass, then the pairing pass's two.
     assert conn._open_link.await_count == 3
+
+
+async def test_the_repair_does_not_delete_the_stored_keys_first(
+    hass: HomeAssistant,
+):
+    """The handshake's own `_save_keys()` replaces the record, so deleting it
+    up front buys nothing -- and costs everything if the probe misread the lamp
+    or the handshake fails halfway. Then the keys are gone, the lamp is still
+    registered to us, and nothing retries: `async_check_in` short-circuits on
+    `_load_keys()`. That is the unrecoverable state.
+    """
+    conn = _deaf(hass)
+    conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE))
+
+    await conn.ensure_connected()
+
+    conn._store.async_remove.assert_not_called()
+    # And a failed re-pair must re-read what is still on disk, not assume none.
+    assert conn._keys_loaded is False
+
+
+async def test_one_dropped_ack_is_not_a_diagnosis(hass: HomeAssistant):
+    """A marginal link drops one ACK. That must not cost a pairing frame.
+
+    Everything past this point is expensive or destructive -- REGISTER(0), maybe
+    a re-pair, otherwise a failed connect that takes the light unavailable.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.request_battery = AsyncMock(side_effect=[False, True])
+    conn._send = AsyncMock()
+
+    await conn.ensure_connected()
+
+    assert conn.request_battery.await_count == 2
+    conn._send.assert_not_called()  # never reached the probe
+    assert conn._connected is True
 
 
 async def test_a_half_paired_lamp_is_also_repaired(hass: HomeAssistant):
@@ -341,6 +377,70 @@ async def test_check_in_stays_put_when_the_lamp_answers(hass: HomeAssistant):
     conn.ensure_connected.assert_awaited_once()
 
 
+async def test_check_in_never_pairs(hass: HomeAssistant):
+    """A 3 a.m. timer must not take ownership of a lamp.
+
+    The old guard only checked that *we* have keys, which a factory-reset lamp
+    leaves untouched on disk. So a user who reset their lamp to hand it back to
+    the Fermob app would find it silently re-registered to Home Assistant
+    overnight, flashing through the handshake unattended.
+    """
+    conn = _deaf(hass)
+    conn._send = AsyncMock(return_value=(b"\x01", ENCRYPT_NONE))  # says "reset"
+
+    await conn.async_check_in()  # must not raise
+
+    conn._pairing_handshake.assert_not_called()
+    conn._store.async_remove.assert_not_called()
+
+
+async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
+    """Swallowing the failure is not the same as pretending it did not happen.
+
+    Availability is otherwise written only on the command path, so a lamp that
+    has gone deaf reads as available and *on* until somebody presses the switch.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(side_effect=RuntimeError("not answering"))
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen == [False]
+
+
+async def test_check_in_reports_a_lamp_that_did_answer(hass: HomeAssistant):
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock()
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen == [True]
+
+
+async def test_the_light_follows_the_check_in_verdict(hass: HomeAssistant):
+    conn = _conn(hass, keys=_KEYS)
+    entry = SimpleNamespace(data={CONF_ADDRESS: ADDRESS}, options={}, entry_id="abc123")
+    light = FermobLight(hass, entry, conn, LIGHT_TYPE_TW)
+    light.hass = hass
+    light.schedule_update_ha_state = MagicMock()
+    light._attr_available = True
+
+    light.on_check_in_result(False)
+    assert light.available is False
+
+    light.on_check_in_result(True)
+    assert light.available is True
+
+    # Unchanged verdicts must not churn the state machine.
+    light.schedule_update_ha_state.reset_mock()
+    light.on_check_in_result(True)
+    light.schedule_update_ha_state.assert_not_called()
+
+
 async def test_a_failed_recovery_is_not_an_error(hass: HomeAssistant):
     """A lamp taken indoors for the winter must not log an error every 30 min."""
     conn = _conn(hass, keys=_KEYS)
@@ -362,18 +462,87 @@ async def test_a_failed_recovery_is_not_an_error(hass: HomeAssistant):
 async def test_request_battery_reports_an_acknowledgement(hass: HomeAssistant):
     conn = _conn(hass, keys=_KEYS)
     del conn.request_battery  # use the real one
-    conn._send_frames = AsyncMock(return_value=(b"\x00\x00\x00", ENCRYPT_PRIVATE))
+    conn._send_frames = AsyncMock(return_value=(b"\x00\x00\x00", ENCRYPT_PRIVATE, True))
 
     assert await conn.request_battery() is True
 
 
 async def test_request_battery_reports_a_timeout(hass: HomeAssistant):
-    """`_send_frames` returns None for both a timeout and a rejection."""
     conn = _conn(hass, keys=_KEYS)
     del conn.request_battery
-    conn._send_frames = AsyncMock(return_value=(None, 0))
+    conn._send_frames = AsyncMock(return_value=(None, 0, False))
 
     assert await conn.request_battery() is False
+
+
+async def test_a_refused_battery_request_still_counts_as_an_answer(
+    hass: HomeAssistant,
+):
+    """A NAK is proof the lamp is listening, which is the only thing asked here.
+
+    `_send_frames` returns `payload=None` for a rejection as well as a timeout,
+    so reading the payload would call a lamp that answered "no" dead -- and this
+    codebase already documents commands the lamp refuses outright in GATEWAY
+    mode. The consequence would be a working lamp taken unavailable, and sent a
+    pairing frame, for declining one diagnostic read.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    del conn.request_battery
+    conn._send_frames = AsyncMock(return_value=(None, ENCRYPT_PRIVATE, True))
+
+    assert await conn.request_battery() is True
+
+
+async def test_open_link_releases_a_stale_client_first(hass: HomeAssistant):
+    """A session that died without `disconnect()` leaves a client behind.
+
+    Overwriting it strands the old BleakClient: never closed, never collected,
+    and still holding one of an ESPHome proxy's three connection slots.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    del conn._open_link
+    conn._client = MagicMock(is_connected=False)  # stale
+
+    with (
+        patch(
+            "custom_components.fermob.light.async_ble_device_from_address",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "custom_components.fermob.light.establish_connection",
+            AsyncMock(return_value=MagicMock(start_notify=AsyncMock())),
+        ),
+    ):
+        await conn._open_link()
+
+    conn.disconnect.assert_awaited_once()
+
+
+async def test_a_push_during_an_ack_wait_does_not_spin(hass: HomeAssistant):
+    """Re-queue-and-continue re-reads the same frame immediately.
+
+    With `_ready` False -- which every connect pass now sets -- an unsolicited
+    push arriving before its ACK would spin the event loop until the 3 s
+    deadline. It must be set aside and the ACK still matched.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._ready = False
+    conn._client = MagicMock(write_gatt_char=AsyncMock())
+
+    push = bytes([(4 << 5) | 0, 0x00, 0, 0]) + bytes(16)  # mt=4, a state push
+    ack = bytes([(2 << 5) | 0, 0x01, 0, 0]) + bytes(16)  # mt=2, cmd == our seq
+    conn._ack_queue.put_nowait(push)
+    conn._ack_queue.put_nowait(ack)
+
+    with patch(
+        "custom_components.fermob.light.decode_fragment", return_value=bytes(15)
+    ):
+        pl, _enc, answered = await conn._send_frames([ack])
+
+    assert answered is True
+    assert pl is not None
+    # Set aside, not dropped: it goes back for the notification handler's turn.
+    assert conn._ack_queue.qsize() == 1
 
 
 async def test_request_battery_still_never_raises(hass: HomeAssistant):
@@ -442,8 +611,18 @@ async def test_unpair_removes_entry_and_keys_when_the_lamp_answered(
     assert conn._have_keys is False
 
 
-async def test_unpair_checks_the_session_before_sending(hass: HomeAssistant):
-    """The broadcast cannot be acknowledged, so something else has to be."""
+async def test_unpair_does_not_broadcast_when_the_session_is_dead(
+    hass: HomeAssistant,
+):
+    """Sending it anyway makes the caller's error message a coin toss.
+
+    UNREGISTER is destructive and unacknowledged. Fire it into a session we
+    just failed to verify and the lamp may well receive it and drop to NONE --
+    while `async_unpair` truthfully reports "nothing has been removed" and keeps
+    the keys. Lamp unregistered, HA still holding keys and an entry, and the next
+    connect silently re-pairs it: the user can never hand the lamp back to the
+    Fermob app.
+    """
     conn = _conn(hass, keys=_KEYS)
     conn.request_battery = AsyncMock(return_value=False)
     conn._client = MagicMock()
@@ -451,26 +630,40 @@ async def test_unpair_checks_the_session_before_sending(hass: HomeAssistant):
 
     assert await conn.unpair() is False
     conn.request_battery.assert_awaited_once()
-    # Still sent: a broadcast costs nothing and may yet land.
+    conn._client.write_gatt_char.assert_not_called()
+
+
+async def test_unpair_broadcasts_when_the_session_answers(hass: HomeAssistant):
+    conn = _conn(hass, keys=_KEYS)
+    conn.request_battery = AsyncMock(return_value=True)
+    conn._client = MagicMock()
+    conn._client.write_gatt_char = AsyncMock()
+
+    assert await conn.unpair() is True
     conn._client.write_gatt_char.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# Removing the entry deliberately keeps the keys
+# Removing the entry takes the keys with it
 # ---------------------------------------------------------------------------
 
 
-def test_removing_the_entry_does_not_delete_the_keys():
-    """A regression guard, because deleting them looks like obvious hygiene.
+async def test_removing_the_entry_deletes_the_stored_keys(hass: HomeAssistant):
+    """`fermob.unpair` refuses on an unreachable lamp, so this is the cleanup
+    path for a lamp that is gone -- the keys must not outlive it as an orphan.
 
-    It is the opposite. Removing an entry tells the lamp nothing, so it stays
-    registered to us in PRIVATE mode; throw the keys away at the same moment and
-    "delete it and add it again" -- the first thing anyone tries -- becomes
-    unrecoverable without a 10-second factory reset. Keeping them makes that
-    re-add just work, and `_lamp_still_paired()` covers the case the deletion
-    was meant to: a lamp factory-reset while the entry existed.
+    Accepted cost: this also makes "delete it and add it again" a one-way door,
+    because the lamp stays registered while its keys go. `async_remove_entry`
+    documents that, and the pairing error tells the user to factory-reset.
     """
-    assert not hasattr(fermob, "async_remove_entry")
+    entry = MockConfigEntry(domain="fermob", data={CONF_ADDRESS: ADDRESS})
+
+    with patch(
+        "custom_components.fermob.Store.async_remove", AsyncMock()
+    ) as async_remove:
+        await fermob.async_remove_entry(hass, entry)
+
+    async_remove.assert_awaited_once()
 
 
 def test_the_key_store_is_named_after_the_lamp():

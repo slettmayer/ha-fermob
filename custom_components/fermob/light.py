@@ -164,6 +164,7 @@ class FermobBLEConnection:
         # `add_battery_listener`.
         self._battery_listeners: list[Callable[[Battery], None]] = []
         self._state_listeners: list[Callable[[bool, int, int], None]] = []
+        self._availability_listeners: list[Callable[[bool], None]] = []
 
     # ------------------------------------------------------------------
     # Push subscriptions
@@ -193,6 +194,25 @@ class FermobBLEConnection:
         def _remove() -> None:
             if listener in self._battery_listeners:
                 self._battery_listeners.remove(listener)
+
+        return _remove
+
+    def add_availability_listener(
+        self, listener: Callable[[bool], None]
+    ) -> Callable[[], None]:
+        """Subscribe to check-in outcomes. Returns a callable that unsubscribes.
+
+        The scheduled check-in is the only thing that talks to the lamp when the
+        user is not; without this its verdict goes nowhere, because availability
+        is written only on the command path. A lamp that has gone deaf would
+        then keep reading *available* and *on* in the UI, indefinitely, while it
+        sits dark -- which is precisely the failure this release is about.
+        """
+        self._availability_listeners.append(listener)
+
+        def _remove() -> None:
+            if listener in self._availability_listeners:
+                self._availability_listeners.remove(listener)
 
         return _remove
 
@@ -357,8 +377,17 @@ class FermobBLEConnection:
         self._seq = (self._seq + 1) % 256
         return self._seq
 
-    async def _send_frames(self, frames: list[bytes]) -> tuple[bytes | None, int]:
-        """Write BLE frames and wait for the matching CMD_ACK (mt=2, cmd==seq)."""
+    async def _send_frames(self, frames: list[bytes]) -> tuple[bytes | None, int, bool]:
+        """Write BLE frames and wait for the matching CMD_ACK (mt=2, cmd==seq).
+
+        Returns `(payload, encryption, answered)`. The third value separates the
+        two ways `payload` can be None, which callers must not conflate: the lamp
+        said nothing at all (`answered=False`), or it answered and refused
+        (`answered=True`, an ACK carrying an error code). A refusal is proof the
+        lamp is listening, and `request_battery` reads it as exactly that -- see
+        the liveness check in `ensure_connected`. Reading a NAK as silence would
+        make a lamp that declines one diagnostic command look dead.
+        """
         my_seq = frames[0][1]
         for frame in frames:
             await self._client.write_gatt_char(CHAR_UUID, frame, response=False)
@@ -371,20 +400,32 @@ class FermobBLEConnection:
         first_enc = 0
         LONG_START = {3, 4, 5}
 
+        # State pushes that arrived while we were waiting, to be handled after
+        # the loop. Putting them straight back on the queue and `continue`ing
+        # re-reads the same frame immediately, which spins the event loop for
+        # the full 3 s deadline whenever a push arrives before its ACK.
+        deferred: list[bytes] = []
+
+        def _drain() -> None:
+            for pending in deferred:
+                self._ack_queue.put_nowait(pending)
+
         while True:
             rem = deadline - asyncio.get_event_loop().time()
             if rem <= 0:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                return None, 0
+                _drain()
+                return None, 0, False
             try:
                 frame = await asyncio.wait_for(self._ack_queue.get(), timeout=rem)
             except TimeoutError:
                 _LOGGER.warning(
                     "Fermob %s: ACK timeout seq=%02x", self._address, my_seq
                 )
-                return None, 0
+                _drain()
+                return None, 0, False
 
             if len(frame) < 20:
                 continue
@@ -410,7 +451,7 @@ class FermobBLEConnection:
                 if self._ready:
                     self._dispatch_event(frame, resp_enc)
                 else:
-                    self._ack_queue.put_nowait(frame)
+                    deferred.append(frame)
                 continue
 
             if mt != MSG_CMD_ACK or cmd != my_seq:
@@ -437,14 +478,16 @@ class FermobBLEConnection:
             if seq_total is not None and len(fragments) >= seq_total:
                 break
 
+        _drain()
+
         if not fragments:
-            return None, first_enc
+            return None, first_enc, False
         pl = b"".join(fragments[i] for i in sorted(fragments))
 
         # A rejected command still arrives as a correctly-sequenced CMD_ACK, so
         # without this check a NAK reads as success and whatever the caller
         # parses out of the body is garbage -- silently storing bad keys, in the
-        # handshake's case.
+        # handshake's case. It is still an answer, hence `answered=True`.
         err = ack_error(pl)
         if err is not None:
             _LOGGER.warning(
@@ -453,11 +496,12 @@ class FermobBLEConnection:
                 my_seq,
                 error_name(err),
             )
-            return None, first_enc
+            return None, first_enc, True
 
-        return pl, first_enc
+        return pl, first_enc, True
 
     async def _send(self, enc: int, payload: list[int]) -> tuple[bytes | None, int]:
+        """`_send_frames` without the liveness flag, for callers that want a body."""
         sid = self._next_seq()
         if len(payload) <= 15:
             frames = [
@@ -467,7 +511,8 @@ class FermobBLEConnection:
             ]
         else:
             frames = build_long(enc, payload, sid, self._pub, self._priv, self._nonce)
-        return await self._send_frames(frames)
+        pl, enc_out, _answered = await self._send_frames(frames)
+        return pl, enc_out
 
     async def _wait_for_event(
         self, timeout: float = 0.5
@@ -648,6 +693,13 @@ class FermobBLEConnection:
         Split out of `ensure_connected` because pairing now needs to do it
         twice -- see the reconnect there for why.
         """
+        # A session that died without going through disconnect() -- a BLE proxy
+        # reboot, an adapter reset -- leaves a client here with is_connected
+        # False. Overwriting it below would strand it: never closed, never
+        # collected, and still holding one of the proxy's three slots.
+        if self._client is not None:
+            await self.disconnect()
+
         device = async_ble_device_from_address(
             self.hass, self._address, connectable=True
         )
@@ -717,18 +769,40 @@ class FermobBLEConnection:
         return probe_enc == ENCRYPT_PRIVATE
 
     async def discard_keys(self) -> None:
-        """Forget the stored pairing, in memory and on disk."""
+        """Forget the stored pairing, in memory and on disk.
+
+        Irreversible, so `fermob.unpair` is the only caller: there the lamp has
+        been told and the keys are genuinely dead. The re-pair path inside
+        `ensure_connected` deliberately uses `_forget_keys_in_memory()` instead
+        -- see there.
+        """
         await self._store.async_remove()
+        self._forget_keys_in_memory()
+        self._keys_loaded = True  # known state: no keys, do not re-read the store
+        _LOGGER.warning("Fermob %s: stored keys discarded", self._address)
+
+    def _forget_keys_in_memory(self) -> None:
+        """Drop the in-memory keys, leaving the stored ones alone.
+
+        What the re-pair path needs, and all it needs: `_pairing_handshake()`
+        ends in `_save_keys()`, which overwrites the record anyway. Deleting it
+        first would buy nothing and cost everything -- if the probe misread the
+        lamp, or the handshake fails halfway, the old keys are gone and the lamp
+        is still registered to us. That is the unrecoverable state, and nothing
+        would retry: `async_check_in` short-circuits on `_load_keys()`.
+
+        `_keys_loaded` is cleared too, so a failed re-pair re-reads the record
+        that is still on disk rather than assuming there is none.
+        """
         self._pub = bytes(16)
         self._priv = bytes(16)
         self._nonce = bytes(16)
         self._addr_b2 = 0
         self._addr_b3 = 0
         self._have_keys = False
-        self._keys_loaded = True  # known state: no keys, do not re-read the store
-        _LOGGER.warning("Fermob %s: stored keys discarded", self._address)
+        self._keys_loaded = False
 
-    async def ensure_connected(self) -> None:
+    async def ensure_connected(self, allow_pairing: bool = True) -> None:
         """Ensure an authenticated BLE connection is up.
 
         Runs the full pairing handshake on first use and a plain BLE reconnect
@@ -736,16 +810,28 @@ class FermobBLEConnection:
 
         At most two passes, and the second one always pairs. A reconnect ends
         with a battery request, which is the only frame the lamp ever
-        acknowledges -- if that goes unanswered the stored keys are suspect, so
-        the lamp is asked whether it still holds them, and a lamp that says no
-        is re-paired on the spot. Everything else about a reconnect is unchanged
-        and costs nothing extra: the probe runs only after a failure.
+        acknowledges -- if that goes unanswered (twice; one dropped ACK is not
+        evidence of anything) the stored keys are suspect, so the lamp is asked
+        whether it still holds them, and a lamp that says no is re-paired.
+        Everything else about a reconnect is unchanged and costs nothing extra:
+        the probe runs only after a failure.
+
+        `allow_pairing=False` forbids the handshake outright and raises instead.
+        Pairing makes the lamp flash and takes ownership of it, so it belongs to
+        something the user just did -- `async_check_in` passes False, because a
+        3 a.m. timer must not re-register a lamp its owner deliberately reset to
+        hand back to the Fermob app.
         """
         have_keys = await self._load_keys()
 
         if self._connected and self._client and self._client.is_connected:
             self._schedule_idle_disconnect()
             return
+
+        if not have_keys and not allow_pairing:
+            raise RuntimeError(
+                f"Fermob {self._address}: not paired, and pairing is not allowed here"
+            )
 
         for _ in range(2):
             # Reset before opening: a link that dropped without going through
@@ -792,6 +878,26 @@ class FermobBLEConnection:
             if answered or not have_keys:
                 break
 
+            # One dropped ACK is a marginal link, not a diagnosis. Everything
+            # below this point is expensive or destructive -- a pairing frame,
+            # possibly a re-pair, otherwise a failed connect that takes the
+            # light entity unavailable -- so none of it happens on a single
+            # miss.
+            _LOGGER.debug(
+                "Fermob %s: battery request unanswered, retrying once",
+                self._address,
+            )
+            if await self.request_battery():
+                break
+
+            if not allow_pairing:
+                # Nothing further is permitted here: the probe is a pairing
+                # frame and anything it could conclude leads to the handshake.
+                await self.disconnect()
+                raise RuntimeError(
+                    f"Fermob {self._address}: connected, but the lamp is not answering"
+                )
+
             _LOGGER.warning(
                 "Fermob %s: no answer on a link that just came up -- asking the "
                 "lamp whether it still holds our keys",
@@ -814,7 +920,10 @@ class FermobBLEConnection:
                 "-- re-pairing",
                 self._address,
             )
-            await self.discard_keys()
+            # In memory only. The handshake's own `_save_keys()` replaces the
+            # stored record, and if it never gets that far the old one is still
+            # there to try again with -- see `_forget_keys_in_memory`.
+            self._forget_keys_in_memory()
             have_keys = False
             await self.disconnect()
 
@@ -901,9 +1010,17 @@ class FermobBLEConnection:
         normal case for a balcony lamp, not an error -- it must leave the last
         known level in place rather than clearing it or marking the entity
         unavailable, since the reading is explicitly "as of last contact".
+
+        It does, however, *report* the outcome: swallowing the exception is not
+        the same as pretending it did not happen. Subscribers are told whether
+        the lamp answered, which is how the light entity's availability changes
+        without anyone pressing a switch -- see `add_availability_listener`.
+
+        And it never pairs (`allow_pairing=False`). Pairing flashes the lamp and
+        takes ownership of it, which is not something a 3 a.m. timer may decide:
+        the lamp may have been factory-reset on purpose, to hand it back to the
+        Fermob app.
         """
-        # Never pair from a background timer: an unpaired lamp would run the full
-        # handshake, which makes it flash, unattended and at an arbitrary hour.
         if not await self._load_keys():
             _LOGGER.debug("Fermob %s: check-in skipped, not paired", self._address)
             return
@@ -913,7 +1030,7 @@ class FermobBLEConnection:
                 self._connected and self._client and self._client.is_connected
             )
             try:
-                await self.ensure_connected()
+                await self.ensure_connected(allow_pairing=False)
                 if connected:
                     # ensure_connected already asked on a fresh connect; this is
                     # the branch where it returned early.
@@ -932,7 +1049,7 @@ class FermobBLEConnection:
                             self._address,
                         )
                         await self.disconnect()
-                        await self.ensure_connected()
+                        await self.ensure_connected(allow_pairing=False)
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
                 # all of it is routine here and none of it is worth a warning.
@@ -941,6 +1058,10 @@ class FermobBLEConnection:
                     self._address,
                     exc_info=True,
                 )
+                self._notify(self._availability_listeners, "availability", False)
+                return
+
+        self._notify(self._availability_listeners, "availability", True)
 
     # ------------------------------------------------------------------
     # Lamp commands
@@ -977,13 +1098,15 @@ class FermobBLEConnection:
             addressed=True,
         )
         try:
-            pl, _ = await self._send_frames([frame])
+            _pl, _enc, answered = await self._send_frames([frame])
         except Exception:
             _LOGGER.debug(
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
             return False
-        return pl is not None
+        # `answered`, not `pl is not None`: a lamp that refuses this one command
+        # has still demonstrated it is listening, which is all the caller asks.
+        return answered
 
     async def set_module_time(self) -> None:
         """Start (or re-sync) the lamp's own clock — JS `setModuleTime`.
@@ -1078,12 +1201,20 @@ class FermobBLEConnection:
         stays registered leaves it owned by a controller that has forgotten it,
         and nothing recovers that except a factory reset with a paperclip.
         """
-        reached = await self.request_battery()
-        if not reached:
+        if not await self.request_battery():
+            # Do NOT send it anyway. UNREGISTER is destructive and unacknowledged,
+            # so a broadcast fired here is a coin toss the caller then has to
+            # guess the result of: the lamp may well receive it and drop to NONE
+            # while `async_unpair` truthfully reports "nothing has been removed"
+            # and keeps the keys. That combination -- lamp unregistered, HA still
+            # holding keys and an entry -- is worse than not trying, and the next
+            # connect would silently re-pair it, so a user trying to hand the lamp
+            # back to the Fermob app could never succeed.
             _LOGGER.warning(
-                "Fermob %s: lamp did not answer before UNREGISTER; sending anyway",
+                "Fermob %s: lamp did not answer; UNREGISTER not sent",
                 self._address,
             )
+            return False
 
         sid = self._next_seq()
         pkt = build_short(
@@ -1101,7 +1232,7 @@ class FermobBLEConnection:
         _LOGGER.warning("Fermob %s: sending UNREGISTER broadcast", self._address)
         await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
         await asyncio.sleep(0.5)
-        return reached
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -1226,6 +1357,21 @@ class FermobLight(LightEntity):
         outlive it -- the failure this replaced was exactly that.
         """
         self.async_on_remove(self._conn.add_state_listener(self.on_lamp_state_change))
+        self.async_on_remove(
+            self._conn.add_availability_listener(self.on_check_in_result)
+        )
+
+    def on_check_in_result(self, reached: bool) -> None:
+        """Track availability from the scheduled check-in, not just commands.
+
+        Without this the only writer of `_attr_available` is `_async_send_led`,
+        so a lamp that stops answering keeps reading *available* until somebody
+        happens to press the switch.
+        """
+        if self._attr_available == reached:
+            return
+        self._attr_available = reached
+        self.schedule_update_ha_state()
 
     def on_lamp_state_change(self, is_on: bool, ch1: int, ch2: int) -> None:
         """ch1/ch2 = (level, 0) for DW, (cold_white, warm_white) for TW."""
@@ -1334,15 +1480,17 @@ class FermobLight(LightEntity):
     async def async_unpair(self) -> None:
         """Unpair the lamp and remove this config entry.
 
-        Both halves or neither, and the order matters. Deleting the keys is only
-        safe once the lamp has been told, because it is the half that cannot be
-        walked back: the lamp stays registered until it hears UNREGISTER, and a
-        lamp registered to a controller with no key is recoverable only by a
-        10-second factory reset. That state reads as "PRIVATE mode but no stored
-        keys" on the next attempt.
+        Both halves or neither, and the order matters. Removing the entry deletes
+        the keys with it (`async_remove_entry`), and that half cannot be walked
+        back: the lamp stays registered until it hears UNREGISTER, and a lamp
+        registered to a controller with no key is recoverable only by a 10-second
+        factory reset. That state reads as "PRIVATE mode but no stored keys" on
+        the next attempt.
 
-        So an unreachable lamp raises and removes nothing -- not the keys, not
-        the entry. The user sees why, and can retry once the lamp is in range.
+        So an unreachable lamp raises and removes nothing. `unpair()` does not
+        even send the broadcast in that case -- see there. The user sees why, and
+        can retry once the lamp is in range; if it is gone for good, deleting the
+        integration is the cleanup path, and it takes the keys with it.
 
         What "reachable" can and cannot establish is worth being precise about:
         UNREGISTER is a broadcast with no acknowledgement, so nothing here proves
@@ -1373,8 +1521,9 @@ class FermobLight(LightEntity):
                 )
 
             # Only now: the lamp has been told, so the keys are genuinely dead.
-            # Nothing else deletes them -- removing a config entry deliberately
-            # does not, or "delete and re-add" could never work. See __init__.py.
+            # `async_remove_entry` deletes the stored record when the entry goes;
+            # this clears the copy this object is still holding, so nothing can
+            # use it in the window before the platforms unload.
             await self._conn.discard_keys()
 
         await self.hass.config_entries.async_remove(self._entry.entry_id)
