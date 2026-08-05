@@ -66,7 +66,7 @@ the last known value is held rather than blanked when the lamp is out of range.
 | MOOON! (Moon2AD2) | Tunable white | The contributor of the tunable-white support |
 | Other MOOON! / table lamps | Tunable white | ⚠️ nobody — same `module_type`, so expected to work |
 
-See [docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md#confidence) for what each of
+See [docs/domain/DEVICES.md](docs/domain/DEVICES.md#confidence) for what each of
 those claims actually rests on.
 
 Fermob lamps fall into two LED families that share an identical BLE
@@ -252,7 +252,7 @@ so they can run while charging, but never mentions output being reduced off the 
 
 If this matters for your setup, Fermob support (`support.lighting@fermob.com`) is the only route. Established by
 reading the decompiled Fermob Lighting app (3.0.2, build 1209) on 2026-08-04; details and evidence in
-[docs/domain/OVERVIEW.md](docs/domain/OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot).
+[docs/domain/APP-CAPABILITIES.md](docs/domain/APP-CAPABILITIES.md).
 
 ### Colour temperature (tunable-white lamps)
 
@@ -381,7 +381,7 @@ logger:
 |---|---|
 | [AGENTS.md](AGENTS.md) | Project context for humans and AI coding agents — start here |
 | [docs/tech/](docs/tech/README.md) | Architecture, tech stack, conventions, testing, CI/release, upstream relationship |
-| [docs/domain/](docs/domain/README.md) | The lamps, the Linkio BLE protocol, pairing and recovery |
+| [docs/domain/](docs/domain/README.md) | The lamps, the entities, the state model, the Linkio BLE protocol, pairing, and the dead ends |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development cycle, versioning policy, changelog format, protocol-change obligations |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 

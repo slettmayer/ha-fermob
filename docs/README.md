@@ -32,11 +32,27 @@ future session, and a wrong doc is worse than a missing one.
 - **Detail in `docs/tech`**: anything technical needing explanation, examples, tables, checklists, or code blocks.
 - **Detail in `docs/domain`**: the lamps and the Linkio protocol — anything that would still be true if this were reimplemented in another language.
 
+### Domain doc layout
+
+Domain docs are **per-concept**: one entity, flow, lifecycle, or protocol layer per file. A new concept is a
+**new file**, added to the table in `docs/domain/README.md`.
+
+`docs/domain/OVERVIEW.md` is an **index, not a detail dump** — domain classification, a one-liner-per-concept
+catalog with links, the cross-cutting decisions, and the glossary. `docs/domain/LINKIO-PROTOCOL.md` plays the
+same role for the four `PROTOCOL-*.md` layers and carries the confidence statement that covers all of them.
+If you find yourself adding a third top-level heading of detail to either index, that detail belongs in a
+sub-file.
+
 ## Rules
 
 1. **One topic per file.** If a file needs two unrelated headings at the top level, it is two files.
-2. **Mark confidence explicitly.** This project is built on reverse engineering. Every protocol claim must say whether it is *verified on hardware*, *derived from the app's JS*, or *inferred*. Never present an inference as a fact — a confident wrong protocol note costs hours.
+2. **Mark confidence explicitly.** This project is built on reverse engineering. Every protocol claim must say
+   whether it is *verified on hardware*, *derived from the app's JS*, or *inferred*. Never present an inference
+   as a fact — a confident wrong protocol note costs hours.
 3. **No duplication.** State a fact in exactly one file and link to it. If two files need it, one of them is the wrong place.
 4. **Link with relative paths** so the docs work on GitHub and in an editor.
-5. **Keep `AGENTS.md` under ~120 lines.** If it grows, move detail into `docs/` and leave the one-liner.
-6. **Record dead ends.** If something was tried and did not work (a command the lamp ignores, a state read that never answers), write it down with the reason. That is the knowledge that stops the next session repeating it.
+5. **Keep `AGENTS.md` under 150 lines**, and every `docs/**` file under 300. If one grows past that, move
+   detail into a sub-file and leave the one-liner plus a link.
+6. **Record dead ends.** If something was tried and did not work (a command the lamp ignores, a state read that
+   never answers), write it down in [domain/DEAD-ENDS.md](domain/DEAD-ENDS.md) with the reason. That is the
+   knowledge that stops the next session repeating it.

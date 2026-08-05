@@ -26,8 +26,16 @@ executor thread, which is what makes module-scope imports safe; an import execut
 core's blocking-call detection. This applies to `bleak`, `bleak_retry_connector`,
 `homeassistant.components.bluetooth`, `DeviceInfo` — all of which upstream imported lazily inside functions.
 
-The one exception is the test module, which loads `protocol.py` by file path deliberately (see
-[TESTING.md](TESTING.md)).
+Two sanctioned exceptions, both deliberate:
+
+- **`__init__.py` imports `light` inside `async_setup_entry`.** It has to: `light.py` does `from . import
+  DOMAIN`, so importing it at the package's module level is a circular import. This is the one place the rule
+  cannot be followed, and it is load-bearing — the connection object is built here because three platforms
+  share one lamp (see [ARCHITECTURE.md](ARCHITECTURE.md#modules)). If you need something else from a platform
+  module in `__init__.py`, prefer moving the shared name into `protocol.py` or a small constants module over
+  adding a second deferred import.
+- **The test module loads `protocol.py` by file path**, so importing it never executes `__init__.py` and never
+  pulls in Home Assistant (see [TESTING.md](TESTING.md)).
 
 ## Protocol code
 
@@ -39,7 +47,7 @@ The one exception is the test module, which loads `protocol.py` by file path del
   them properly. If you change a family string, change it in **both** files; better, delete the duplicates and import.
 - `config_flow.py` also owns `FERMOB_ADV_UUID`, the discovery-side advertisement UUID. That one is genuinely a
   config-flow concern (it is also declared in `manifest.json`) and is not the same value as the GATT service UUID — see
-  [LINKIO-PROTOCOL.md](../domain/LINKIO-PROTOCOL.md#transport).
+  [PROTOCOL-TRANSPORT.md](../domain/PROTOCOL-TRANSPORT.md#transport).
 - **Functions there are pure**: bytes in, bytes out, no I/O, no logging, no clock.
 - Public names (no leading underscore) since they cross a module boundary.
 
