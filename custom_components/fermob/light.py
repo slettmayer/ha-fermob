@@ -29,6 +29,7 @@ from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from . import DOMAIN
 from .protocol import (
@@ -47,6 +48,7 @@ from .protocol import (
     ENCRYPT_PUBLIC,
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
+    LMP_STATUS_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MSG_CMD,
@@ -57,15 +59,17 @@ from .protocol import (
     ModuleInfo,
     ack_error,
     build_battery_request,
+    build_datetime_set_payload,
     build_led_payload,
     build_long,
     build_short,
     decode_fragment,
     error_name,
     kelvin_to_warm_ratio,
+    local_time_seconds,
     module_type_to_light_type,
     parse_battery,
-    parse_device_state,
+    parse_device_record,
     parse_module_info,
     warm_ratio_to_kelvin,
 )
@@ -77,8 +81,22 @@ DEFAULT_KELVIN = 4000
 
 _STORAGE_VERSION = 1
 
-# JS keeps BLE connected indefinitely; we disconnect after 30 s idle
-_IDLE_DISCONNECT_DELAY = 30.0
+# How long the BLE link is held open after the last command, in seconds --
+# or None to hold it open indefinitely, which is now the default.
+#
+# This used to be 30 s, and that single number was the reason a lamp switched on
+# at its own button never showed up in Home Assistant. A vendor-app packet
+# capture (2026-08-04) settled what the lamp actually does: it pushes an
+# unsolicited EVENT_DEVICE_DATA on every physical button press and a battery
+# push on every charger change -- but only while the link is up, and it pushes
+# nothing on reconnect. The app reads no state at all, ever. It simply holds the
+# link and listens, which is what we now do too.
+#
+# The cost was measured rather than guessed, over 7.6 h on an H134 held
+# connected: about 0.1 %/h, some 2 %/day, against 5 h 20 min of link uptime with
+# no disconnects. The connection slot on the BLE proxy is the real cost, which
+# is what the on-demand option in the config flow is for.
+_IDLE_DISCONNECT_DELAY: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -102,11 +120,13 @@ class FermobBLEConnection:
         address: str,
         store: Store,
         light_type: str = LIGHT_TYPE_TW,
+        idle_disconnect_delay: float | None = _IDLE_DISCONNECT_DELAY,
     ) -> None:
         self.hass = hass
         self._address = address
         self._store = store
         self.light_type = light_type  # "dw" | "tw"
+        self._idle_disconnect_delay = idle_disconnect_delay
         self._client = None
         self._seq = 0
 
@@ -210,15 +230,35 @@ class FermobBLEConnection:
 
         if len(pl) < 10 or pl[1] not in DEVICE_DATA_MARKERS:
             return
-        state = parse_device_state(pl)
-        if state is None:
+        record = parse_device_record(pl)
+        if record is None:
             return
-        is_on, ch1, ch2 = state
+
+        # The marker separates live state from stale state, and it is the only
+        # thing that does -- the two bodies are byte-identical. 146 is the lamp
+        # volunteering a change as it happens; 147 is a stored record, and on an
+        # H134 that record reported the lamp off while it was lit. Nothing sends
+        # the query that produces a 147 any more, so this is a guard against
+        # bringing one back, not a live code path.
+        #
+        # `stamped` is logged, never branched on: it is the only outside
+        # evidence that DATETIME_SET reached the lamp, since a lamp whose clock
+        # never started stamps every record it writes with the same low number.
+        solicited = pl[1] == LMP_STATUS_DEVICE_DATA
         _LOGGER.debug(
-            "Fermob %s: EVENT is_on=%s ch1=%d ch2=%d", self._address, is_on, ch1, ch2
+            "Fermob %s: DEVICE_DATA %s is_on=%s ch1=%d ch2=%d stamped=%d",
+            self._address,
+            "record (stale, ignored)" if solicited else "push",
+            record.is_on,
+            record.ch1,
+            record.ch2,
+            record.timestamp,
         )
+        if solicited:
+            return
+
         if self.on_state_change is not None:
-            self.on_state_change(is_on, ch1, ch2)
+            self.on_state_change(record.is_on, record.ch1, record.ch2)
 
     def _notif_handler(self, sender, data: bytearray) -> None:
         frame = bytes(data)
@@ -395,12 +435,12 @@ class FermobBLEConnection:
                 )
                 continue
             if len(pl) >= 10 and pl[1] in DEVICE_DATA_MARKERS:
-                state = parse_device_state(pl)
-                if state is not None:
+                record = parse_device_record(pl)
+                if record is not None:
                     _LOGGER.debug(
-                        "Fermob %s: EVENT after REGISTER_END %s", self._address, state
+                        "Fermob %s: EVENT after REGISTER_END %s", self._address, record
                     )
-                    return state
+                    return record.is_on, record.ch1, record.ch2
 
     # ------------------------------------------------------------------
     # Initial pairing handshake (first-time only, mirrors JS startPairing)
@@ -464,6 +504,11 @@ class FermobBLEConnection:
         # Step 9: REGISTER_END → lamp enters GATEWAY mode
         await self._send(ENCRYPT_PRIVATE, [2, CMD_REGISTER, 1])
 
+        # Step 9b: start the lamp's clock, exactly where the app does it -- in
+        # the success handler of REGISTER_END. A lamp paired without this stamps
+        # every record it writes with a clock that never started.
+        await self.set_module_time()
+
         # Step 10: wait for the state EVENT the lamp emits on entering GATEWAY
         # mode. This is a confirmation + timing gate (it mirrors the app's 100 ms
         # settle after setMeshConnection); the state it carries is the lamp's
@@ -500,8 +545,8 @@ class FermobBLEConnection:
         """Release the BLE link and cancel the idle timer.
 
         Registered via entry.async_on_unload, so an entry unload *or reload*
-        (e.g. after changing the lamp-type option) closes the connection instead
-        of leaking an open BleakClient and a pending idle task.
+        (e.g. after changing an option) closes the connection instead of leaking
+        an open BleakClient and a pending idle task.
         """
         if self._idle_task:
             self._idle_task.cancel()
@@ -510,11 +555,17 @@ class FermobBLEConnection:
             await self.disconnect()
 
     def _schedule_idle_disconnect(self) -> None:
+        """(Re)arm the idle timer, or leave the link up if there is no timeout."""
         if self._idle_task:
             self._idle_task.cancel()
+            self._idle_task = None
+
+        delay = self._idle_disconnect_delay
+        if delay is None:
+            return
 
         async def _idle() -> None:
-            await asyncio.sleep(_IDLE_DISCONNECT_DELAY)
+            await asyncio.sleep(delay)
             async with self.lock:
                 _LOGGER.debug("Fermob %s: idle timeout → disconnect", self._address)
                 await self.disconnect()
@@ -564,6 +615,7 @@ class FermobBLEConnection:
         self._ready = True
         self._connected = True
         _LOGGER.debug("Fermob %s: ready", self._address)
+        await self.set_module_time()
         await self.request_battery()
         self._schedule_idle_disconnect()
 
@@ -619,22 +671,30 @@ class FermobBLEConnection:
         if self._have_keys:
             await self._save_keys()
 
-    async def async_poll_battery(self) -> None:
-        """Refresh the battery reading on a schedule, without touching the light.
+    async def async_check_in(self) -> None:
+        """Reconnect if the link dropped, and refresh the battery reading.
 
-        Reading the battery needs a BLE connection and nothing else. No light
-        command is involved and connecting cannot change what the lamp is doing,
-        so a check-in is invisible: the vendor app polls the same command on a
-        timer with every lamp dark, and its connect routine sends nothing at all.
+        Two jobs, and with the link now held open the first is the important
+        one. Nothing else notices an unexpected disconnect -- a BLE proxy
+        rebooting for a firmware update, say -- so without this the entity would
+        keep showing confidently stale state until someone next touched the
+        light. Reconnecting is the whole reason this runs as often as it does.
+
+        The second is the battery, which is why this existed in the first place:
+        the lamp reports its level only when asked.
+
+        No light command is involved, and connecting cannot change what the lamp
+        is doing, so a check-in is invisible -- the vendor app polls the same
+        command on a timer with every lamp dark, and its connect routine sends
+        nothing else either.
 
         Takes the command lock, because `ensure_connected` is only ever safe
         under it -- a check-in landing mid-transition waits for the in-flight
         command rather than interleaving frames with it.
 
-        When the link is already up this sends the request explicitly instead of
-        relying on the connect path, which would not run: a lamp held connected
-        through a long adaptive-lighting evening would otherwise keep the reading
-        it happened to take at connect time for hours.
+        When the link is already up it asks explicitly instead of relying on the
+        connect path, which would not run: a lamp held connected for days would
+        otherwise keep the reading it happened to take at connect time.
 
         Never raises. A lamp out of range or switched off at the socket is the
         normal case for a balcony lamp, not an error -- it must leave the last
@@ -644,9 +704,7 @@ class FermobBLEConnection:
         # Never pair from a background timer: an unpaired lamp would run the full
         # handshake, which makes it flash, unattended and at an arbitrary hour.
         if not await self._load_keys():
-            _LOGGER.debug(
-                "Fermob %s: battery check-in skipped, not paired", self._address
-            )
+            _LOGGER.debug("Fermob %s: check-in skipped, not paired", self._address)
             return
 
         async with self.lock:
@@ -656,12 +714,15 @@ class FermobBLEConnection:
             try:
                 await self.ensure_connected()
                 if connected:
+                    # ensure_connected already asked on a fresh connect; this is
+                    # the branch where it returned early.
+                    await self.set_module_time()
                     await self.request_battery()
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
                 # all of it is routine here and none of it is worth a warning.
                 _LOGGER.debug(
-                    "Fermob %s: battery check-in did not reach the lamp",
+                    "Fermob %s: check-in did not reach the lamp",
                     self._address,
                     exc_info=True,
                 )
@@ -702,22 +763,60 @@ class FermobBLEConnection:
                 "Fermob %s: battery request failed", self._address, exc_info=True
             )
 
-    # There is deliberately no state-read method here. Both candidate commands
-    # were tried on an H134 and neither yields usable state -- see
-    # `docs/domain/LINKIO-PROTOCOL.md` for the traces. In short:
+    async def set_module_time(self) -> None:
+        """Start (or re-sync) the lamp's own clock — JS `setModuleTime`.
+
+        The app sends this at the end of pairing and in the success handler of
+        each of its state reads, so its every read re-dates the lamp. This
+        integration never sent it at all, and an H134 paired by it stamps every
+        record it stores `37` -- a clock that never started. Nothing here reads
+        those records back, but the lamp keeps them for the vendor app, and
+        matching the app costs one unacknowledged frame per connection.
+
+        FIRE, like the app: there is no reply, and none is waited for.
+
+        Never raises. The clock is a nicety; the light has to work without it.
+        """
+        payload = build_datetime_set_payload(local_time_seconds(dt_util.now()))
+        sid = self._next_seq()
+        pkt = build_short(
+            MSG_FIRE,
+            ENCRYPT_PRIVATE,
+            payload,
+            sid,
+            self._pub,
+            self._priv,
+            self._nonce,
+            b2=self._addr_b2,
+            b3=self._addr_b3,
+            addressed=True,
+        )
+        _LOGGER.debug("Fermob %s →DATETIME_SET %s", self._address, pkt.hex())
+        try:
+            await self._client.write_gatt_char(CHAR_UUID, pkt, response=False)
+        except Exception:
+            _LOGGER.debug(
+                "Fermob %s: DATETIME_SET failed", self._address, exc_info=True
+            )
+
+    # There is deliberately no state-read method here, and this is settled
+    # rather than open. Both candidate commands were tried on an H134 and
+    # neither yields usable state -- see `docs/domain/LINKIO-PROTOCOL.md` for
+    # the traces. In short:
     #
     #   * `DEVICE_DATA_GET` (66) is refused with error 18, even when sent with
     #     the app's byte-exact body. Why is unexplained; the module-role and
     #     payload-length theories are both ruled out in the doc.
-    #   * `DEVICES_DATA_LIST_GET` (74), which is what the app actually uses, *is*
-    #     accepted and does push a `DEVICE_DATA` reply -- but the record it
-    #     returns is frozen. Eight reads across on/off cycles came back
-    #     byte-identical, reporting the lamp off while it was lit.
+    #   * `DEVICES_DATA_LIST_GET` (74) *is* accepted and does push a
+    #     `DEVICE_DATA` reply -- but the record it returns is frozen. Eight
+    #     reads across on/off cycles came back byte-identical, reporting the
+    #     lamp off while it was lit. Setting the lamp's clock first does not
+    #     unfreeze it; that was tested.
     #
-    # Wiring that reply to `on_state_change` is therefore worse than not reading
-    # at all: during the probe it drove the HA entity to "off" while the lamp was
-    # on. `parse_device_state` stays, because unsolicited EVENT pushes during
-    # pairing use the same layout.
+    # The 2026-08-04 vendor-app capture closed the question: the app builds that
+    # command and never sends it. It reads nothing, holds the link open, and
+    # relies entirely on the unsolicited pushes the lamp emits while connected.
+    # So do we -- see `_IDLE_DISCONNECT_DELAY`.
 
     async def send_led(
         self, on: bool, brightness_pct: int | None = None, warm_ratio: float = 0.5
@@ -820,6 +919,7 @@ async def async_setup_entry(
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service("unpair", {}, "async_unpair")
+    platform.async_register_entity_service("check_in", {}, "async_check_in")
 
 
 class FermobLight(LightEntity):
@@ -971,6 +1071,16 @@ class FermobLight(LightEntity):
 
         self._attr_is_on = False
         self.async_write_ha_state()
+
+    async def async_check_in(self) -> None:
+        """Reconnect and refresh the battery now, rather than on the timer.
+
+        The entity-service face of `FermobBLEConnection.async_check_in`, which
+        already takes the lock and swallows its own failures -- so this is a
+        plain delegation, and calling it on an out-of-range lamp is a no-op
+        rather than an error.
+        """
+        await self._conn.async_check_in()
 
     async def async_unpair(self) -> None:
         """Unpair the lamp and remove this config entry."""

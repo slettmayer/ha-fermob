@@ -39,6 +39,7 @@ warm_ratio 1.0 = 3000 K (all warm), 0.0 = 6000 K (all cold).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import NamedTuple
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -77,22 +78,34 @@ CMD_CRYPT_SET = 25
 CMD_MODULES_BATTERY_LEVEL_GET = 44  # 0x2C — battery level of one/all modules
 CMD_MODULE_INFO_GET = 48
 CMD_DEVICE_INFO_GET = 50
+CMD_DATETIME_SET = 26  # 0x1A — set the module's own clock (JS setModuleTime)
 CMD_DEVICE_DATA_SET = 65
 CMD_DEVICE_DATA_GET = 66
-# 0x4A — the app's actual lamp-state read (requestLatestsModuleStatuses). The
-# H134 accepts it where it rejects DEVICE_DATA_GET, but the record it returns is
-# frozen, so nothing sends it. Kept as protocol documentation; the traces are in
-# docs/domain/LINKIO-PROTOCOL.md.
+# 0x4A — the state read the app's `requestLatestsModuleStatuses` builds but, as
+# a 2026-08-04 packet capture showed, never actually sends. The H134 accepts it
+# where it rejects DEVICE_DATA_GET, yet answers with a stored record that never
+# changes, so nothing sends it here either. Kept as protocol documentation; the
+# traces are in docs/domain/LINKIO-PROTOCOL.md.
 CMD_DEVICES_DATA_LIST_GET = 74
 
-# Payload marker of an EVENT_DEVICE_DATA notification (payload[1])
+# Payload marker of a DEVICE_DATA notification (payload[1])
 LMP_STATUS_ACK = 128  # 0x80 — an acknowledgement TLV: [len, 0x80, err, ...]
-LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push
-LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query
+LMP_EVENT_DEVICE_DATA = 146  # unsolicited state push — live, and trustworthy
+LMP_STATUS_DEVICE_DATA = 147  # state pushed in reply to a query — stale
 
-# Both markers carry an identical body, and the app parses them through one
-# shared branch -- as it does for the STATUS and EVENT message types that wrap
-# them. Accepting only 146/EVENT silently discarded solicited state.
+# The two markers carry an identical body, so the same parser reads both, but
+# they do NOT mean the same thing and only 146 may be applied to an entity:
+#
+#   146  the lamp volunteering a change as it happens. A vendor-app packet
+#        capture (2026-08-04) showed one for every physical button press, each
+#        correctly reporting on/off and both channels.
+#   147  the reply to DEVICES_DATA_LIST_GET (74), which is a *stored* record and
+#        on an H134 was frozen: it reported the lamp off while it was lit. The
+#        app never sends 74 at all.
+#
+# Nothing sends 74 any more, so 147 should never arrive; `_dispatch_event`
+# still refuses it explicitly rather than by omission, because "accept both,
+# they look the same" is the mistake this pair of constants exists to prevent.
 DEVICE_DATA_MARKERS = (LMP_EVENT_DEVICE_DATA, LMP_STATUS_DEVICE_DATA)
 
 # LMP error codes (JS lmp_error_codes_e), used in the third byte of an ACK.
@@ -359,25 +372,89 @@ def parse_battery(payload: bytes) -> Battery | None:
     return Battery(percent=raw & 0x7F, charging=bool(raw & 0x80))
 
 
-def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
-    """Parse a DEVICE_DATA_GET response or EVENT_DEVICE_DATA notification.
+class DeviceRecord(NamedTuple):
+    """One device-state record as the lamp stores it.
 
-    Returns (is_on, ch1, ch2); the meaning of the two channel bytes depends on
-    the lamp family:
-      * DW -> (is_on, level,      0)
-      * TW -> (is_on, cold_white, warm_white)
+    `ch1`/`ch2` depend on the lamp family -- (level, 0) for DW, (cold, warm) for
+    TW -- and the caller interprets them according to its configured type.
 
-    (JS: `is_on = e[8] & 0x0F`, `cold = e[9]`, `warm = e[10]`.)
-    The caller interprets ch1/ch2 according to its configured light type.
+    `timestamp` is the lamp's own clock, not ours. Nothing branches on it; it is
+    carried so the connection can log it, which is the only way to see from the
+    outside whether `DATETIME_SET` took effect. An H134 that had never been sent
+    one stamped every record `37` -- thirty-seven seconds -- forever.
+    """
+
+    is_on: bool
+    ch1: int
+    ch2: int
+    timestamp: int
+
+
+def parse_device_record(payload: bytes) -> DeviceRecord | None:
+    """Parse a DEVICE_DATA push into a dated record, or None if it is not one.
+
+    (JS: `is_on = e[8] & 0x0F`, `cold = e[9]`, `warm = e[10]`.) Bytes 3..6 hold
+    the little-endian timestamp the lamp stamped the record with -- the app
+    never reads it back, and neither does anything here beyond the log.
     """
     if len(payload) < 10:
         return None
     if payload[7] != 0:
         return None
-    is_on = bool(payload[8] & 0x0F)
-    ch1 = payload[9]
-    ch2 = payload[10] if len(payload) >= 11 else 0
-    return is_on, ch1, ch2
+    return DeviceRecord(
+        is_on=bool(payload[8] & 0x0F),
+        ch1=payload[9],
+        ch2=payload[10] if len(payload) >= 11 else 0,
+        timestamp=int.from_bytes(payload[3:7], "little"),
+    )
+
+
+def parse_device_state(payload: bytes) -> tuple[bool, int, int] | None:
+    """Undated view of `parse_device_record`, for callers that ignore the clock.
+
+    Returns (is_on, ch1, ch2); the meaning of the two channel bytes depends on
+    the lamp family:
+      * DW -> (is_on, level,      0)
+      * TW -> (is_on, cold_white, warm_white)
+    """
+    record = parse_device_record(payload)
+    if record is None:
+        return None
+    return record.is_on, record.ch1, record.ch2
+
+
+def local_time_seconds(now: datetime) -> int:
+    """The app's `getLocalTime()` — local wall clock, labelled as if it were UTC.
+
+    JS does `Math.round((Date.now() + -getTimezoneOffset() * 60000) / 1000)`,
+    i.e. it adds the local UTC offset *before* dividing, so a lamp in Vienna is
+    told 12:00 when it is 12:00 there rather than 10:00Z. Reproduced rather than
+    corrected: the lamp's records must be comparable with the ones the app
+    writes.
+
+    `now` must be timezone-aware -- a naive value has no offset to add and would
+    silently stamp the lamp with UTC.
+    """
+    offset = now.utcoffset()
+    if offset is None:
+        raise ValueError("local_time_seconds needs a timezone-aware datetime")
+    return round(now.timestamp() + offset.total_seconds())
+
+
+def _le32(value: int) -> tuple[int, int, int, int]:
+    """Split a 32-bit value into little-endian bytes, as the JS shifts do."""
+    v = value & 0xFFFFFFFF
+    return v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF
+
+
+def build_datetime_set_payload(local_secs: int) -> list[int]:
+    """Body of DATETIME_SET (JS `setModuleTime`).
+
+    `[5, 26, t0, t1, t2, t3]` -- the leading 5 counts the command byte plus its
+    four timestamp bytes. The app sends it as CMD_WITH_NO_ACK, PRIVATE,
+    SHORT-addressed, and never waits for a reply.
+    """
+    return [5, CMD_DATETIME_SET, *_le32(local_secs)]
 
 
 # ---------------------------------------------------------------------------

@@ -67,9 +67,14 @@ otherwise a NAK body gets parsed as if it were real data — which in the handsh
 payload as the lamp's private key.
 
 Both `MSG_STATUS` and `MSG_EVENT` carry lamp state, and both `LMP_EVENT_DEVICE_DATA` (146) and
-`LMP_STATUS_DEVICE_DATA` (147) mark it, with identical bodies. Accept all four combinations
-(`STATE_PUSH_TYPES`, `DEVICE_DATA_MARKERS`) — listening only for the unsolicited pair discards every
-solicited reply.
+`LMP_STATUS_DEVICE_DATA` (147) mark it, with identical bodies — so all four combinations must be *parsed*
+(`STATE_PUSH_TYPES`, `DEVICE_DATA_MARKERS`).
+
+**Identical bodies, opposite trust.** Only **146** may be applied to an entity: it is the lamp volunteering a
+change as it happens. **147** is the reply to `DEVICES_DATA_LIST_GET` (74) and is a *stored* record — on an
+H134 it reported the lamp off while it was lit. Nothing sends 74 any more, so a 147 should never arrive;
+`_dispatch_event` refuses it explicitly anyway, because "the bodies look the same, accept both" is precisely
+the mistake that pair of constants exists to prevent.
 
 ### Encryption
 
@@ -101,7 +106,8 @@ We use `cryptography` for this, not pycryptodome. See [TECH-STACK.md](../tech/TE
 | `CMD_DEVICE_INFO_GET` | 50 | Optional info, response ignored |
 | `CMD_DEVICE_DATA_SET` | 65 (`0x41`) | **Set the light** |
 | `CMD_DEVICE_DATA_GET` | 66 | Read lamp state — refused by the H134 with error `18`, cause unknown; **not sent**, see Dead ends |
-| `CMD_DEVICES_DATA_LIST_GET` | 74 (`0x4A`) | The app's real state read — accepted by the H134, but returns a frozen record; **not sent**, see Dead ends |
+| `CMD_DATETIME_SET` | 26 (`0x1A`) | Set the lamp's own clock (JS `setModuleTime`). Sent at the end of pairing and on every connection, as the app does |
+| `CMD_DEVICES_DATA_LIST_GET` | 74 (`0x4A`) | A state read the app *builds and never sends* — accepted by the H134, but returns a frozen record; **not sent**, see Dead ends |
 
 The app's full command enum runs to 60-odd entries; the ones above are what this integration sends. The
 complete table is in the APK analysis. Two worth knowing about because they are the only route to data we
@@ -248,8 +254,10 @@ skew as a specified behaviour.
 
 ## Inbound state
 
-`protocol.parse_device_state` handles both solicited and unsolicited state — `DEVICE_DATA_GET` responses and
-device-data pushes, identified by `payload[1]` being either marker in `DEVICE_DATA_MARKERS` (146 or 147):
+`protocol.parse_device_record` reads a device-data push, identified by `payload[1]` being either marker in
+`DEVICE_DATA_MARKERS` (146 or 147). `parse_device_state` is the same thing without the timestamp, for callers
+that do not care. Whether a parsed record is *believed* is decided by the marker, in `_dispatch_event` — see
+Message types above.
 
 ```
 payload[1]        146 = LMP_EVENT_DEVICE_DATA, 147 = LMP_STATUS_DEVICE_DATA (identical bodies)
@@ -269,11 +277,16 @@ which lamp it is talking to.
 **Bytes 11–14 are confirmed empty.** Every device parser in the app — dimmable white, tunable white, RGBW,
 temperature and the generic fallback — stops at byte 10. Nothing is hiding past `warm_white`.
 
-**The timestamp at 3–6 is a stale-frame guard, and we deliberately do not use it yet.** The app drops any
-state frame whose timestamp is older than the last one it saw. We could copy that, but the clock it compares
-against is set by `LMP_COMMAND_DATETIME_SET` (26) — which we never send. Against an unset or free-running
-lamp clock, a guard like that risks silently freezing state updates forever, which is far worse than the
-stale frame it would prevent. Revisit once we have observed what the H134 actually puts in those bytes.
+**The timestamp at 3–6 is logged and nothing more.** The app uses it as a stale-frame guard, dropping any
+frame older than the last it saw. We do not, and should not: the trust decision is the marker, and a
+timestamp comparison against a lamp clock we cannot verify risks silently freezing state updates forever —
+far worse than the stale frame it would prevent. It is carried on `DeviceRecord` purely as diagnostics,
+because it is the only outside evidence that `DATETIME_SET` reached the lamp. An H134 that had never been
+sent one stamped every record `37`.
+
+A date guard was tried, in the form of a `STATE_RECORD_MIN_TIME` floor below which a record was not believed.
+It was removed: it was a proxy for the marker check, which is exact, and it would have silently discarded
+legitimate pushes from a lamp whose clock had not been set.
 
 ## Dead ends — do not re-litigate these
 
@@ -287,12 +300,16 @@ stale frame it would prevent. Revisit once we have observed what the H134 actual
 
   **But the record it returns is frozen, which is why nothing sends it.** Eight reads across ~5 minutes and three on/off cycles came back byte-identical — `0a9300250000000010191900ffffff` → `is_on=False, ch1=25, ch2=25` — *including* reads taken while the lamp was lit, and including the bytes at 3–6 that the app treats as a timestamp. The channel values never track what we actually commanded either (adaptive lighting varies them continuously; the record says 25/25 forever).
 
-  **The best remaining hypothesis is that the lamp's clock never started, and it is testable.** Those timestamp bytes read `0x25` = **37**, where `getLocalTime()` produces a Unix-scale seconds value. The lamp stamps records from its own clock — `DEVICE_DATA_SET` carries no timestamp — and that clock is set by `LMP_COMMAND_DATETIME_SET` (26), payload `[5, 26, <local time, LE uint32>]` as `CMD_WITH_NO_ACK` + SHORT + PRIVATE. The app sends it at pairing **and again in the success handler of every state read**; this integration has never sent it. Worth trying: send 26, then 74, then toggle the lamp and re-read.
+  **The clock hypothesis was tested, and it is wrong.** Those timestamp bytes read `0x25` = **37**, where `getLocalTime()` produces a Unix-scale seconds value, so the lamp's clock plainly never started — it is set by `LMP_COMMAND_DATETIME_SET` (26), payload `[5, 26, <local time, LE uint32>]` as `CMD_WITH_NO_ACK` + SHORT + PRIVATE, which this integration never sent. Sending 26 before 74 was tried on hardware. The record stayed frozen. We still send 26, because the app does and the lamp keeps those records for it, but it buys us nothing.
 
   An earlier hypothesis — that the record only follows an *acknowledged, addressed* `DEVICE_DATA_SET` where we use `MSG_FIRE` — is **refuted**: the app's own `Module.sendCommand` sends `DEVICE_DATA_SET` as `CMD_WITH_NO_ACK`, exactly as we do. ACK-vs-FIRE is not the difference.
 
-  Wiring this to `on_state_change` is **worse than not reading at all**: during the probe it drove the HA entity to "off" while the lamp was on. If this is revisited, the open question is whether a *physical button press* updates the record — that was not tested, and it is the only case where a working read would buy anything.
-- **The lamp emits no EVENT after a plain BLE reconnect.** Only the post-`REGISTER_END` EVENT during first pairing arrives unsolicited. So there is no way to resync state on reconnect, and a button press outside the connected window is simply lost.
+  **And the whole question is moot, settled by a decrypted capture of the app's own BLE traffic (2026-08-04): the app never sends 74 at all.** `requestLatestsModuleStatuses` builds the command; nothing in the capture transmits it. The app reads no lamp state, ever. It holds the BLE link open and consumes the pushes the lamp volunteers — which is now what this integration does. Do not revive either read command.
+- **The lamp emits no EVENT after a plain BLE reconnect** — only the post-`REGISTER_END` EVENT during first pairing arrives unsolicited. This is *why* the link is held open rather than re-established on demand: there is no resync, so a link that was down during a button press has lost that press permanently.
+
+  **What the lamp does push, while connected, is everything we need** — confirmed in the same capture and then on hardware. Every physical button press produces an unsolicited `EVENT_DEVICE_DATA` (marker 146) carrying the correct on/off and both channels; every charger connect or disconnect produces a battery push (`0xC0`). A captured press decodes as `0a9200e868726a00110032` → on, cold 0, warm 50, and is pinned in [`tests/test_light.py`](../../tests/test_light.py) as the one piece of inbound evidence that is not a restatement of our own encoder.
+
+  Held-link cost, measured on an H134 over 7.6 h: about **0.1 %/h** of battery (least-squares −0.078 %/h; band-shift 0.14 %/h), roughly 2 %/day, with 5 h 20 min of continuous uptime and no disconnects, no reconnects and no errors. The real cost is a connection slot on the adapter or BLE proxy, which is what the on-demand connection mode exists to hand back.
 - **The post-`REGISTER_END` EVENT's state payload is useless to us.** Connections are only ever established *from* a command, so whatever state it reports is overwritten a few milliseconds later by the command that triggered the connection. The EVENT is still waited for — as a gateway-mode confirmation and settle gate — but its contents are only logged.
 - **The model is not in the advertisement.** It rotates and is encrypted, so `module_type` (401 dimmable / 404 tunable) cannot be sniffed *before* pairing — a branch that attempted this was removed as dead code. It **is** readable after connecting, from `MODULE_INFO_GET`; that is a different question and it is now answered.
 - **There is no battery level in the GATT table, and none in `DEVICE_INFO_GET`.** Both were checked on hardware — see the GATT table in [TECH-STACK.md](../tech/TECH-STACK.md#bluetooth). That part stands, and it was never the right place to look: **battery is a module-level command, `MODULES_BATTERY_LEVEL_GET` (44)**, documented under Commands above. Of the three candidates this entry used to list, "past byte 10" is now positively ruled out and "commands absent from our constant list" was the right one.

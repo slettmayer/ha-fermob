@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (957 tests, no Home Assistant needed)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (975 tests, no Home Assistant needed)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -73,7 +73,8 @@ channels whose sum is the total output, which is how colour temperature is expre
 
 - **Nothing is verified against the official Fermob app.** The protocol was reverse-engineered from its JS by others; our tests pin *our* layout and intent only. See [UPSTREAM.md](docs/tech/UPSTREAM.md).
 - **Lamp-family detection is a name heuristic** (`"hoop"` in the name → dimmable white, everything else → tunable white). It is wrong for a renamed Hoopik; the options flow is the escape hatch. The model cannot be read from the advertisement — it is rotating and encrypted.
-- **State drifts silently after the 30 s idle disconnect.** The lamp emits no EVENT on reconnect and stops answering `DEVICE_DATA_GET` in gateway mode, so a physical button press outside the connected window is unrecoverable. `FermobBLEConnection.get_state()` exists but is intentionally unused — see its docstring before wiring it in.
+- **There is no way to read the lamp's state, and holding the BLE link open is the only mechanism there is.** Settled by a vendor-app packet capture (2026-08-04) plus hardware tests: `DEVICE_DATA_GET` (66) is refused with error 18; `DEVICES_DATA_LIST_GET` (74) returns a stored record that never changes (it reported the lamp off while lit, and setting the lamp's clock first does not unfreeze it); and the app sends neither — it holds the link and listens to what the lamp volunteers. Hence the permanent hold, and everything about state freshness follows from it. Two things to know before touching this: only marker **146** may reach an entity (147 is the stale record), and the check-in is the **only** thing that reconnects after an unexpected drop, so lengthening its interval directly lengthens how long the entity can show confidently stale state. See [LINKIO-PROTOCOL.md](docs/domain/LINKIO-PROTOCOL.md).
+- **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for exactly that reason; do not expose them as two independent numbers.
 - **The lamp limits its own light output on battery** — roughly half off the charger, worse at a low state of charge. Firmware behaviour with **no setting anywhere**: the official app has no lamp-configuration surface at all and never sends the config commands its own enum defines. Do not go looking for a command to send, and do not treat a "capped brightness" report as a mapping bug. See [OVERVIEW.md](docs/domain/OVERVIEW.md#what-the-official-app-can-configure--and-what-it-cannot).
 - **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA holds the link, and re-pairing from the app invalidates our stored keys. See [PAIRING.md](docs/domain/PAIRING.md).
 - **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them

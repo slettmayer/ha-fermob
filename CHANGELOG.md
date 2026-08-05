@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.0
+
+Home Assistant now notices when someone switches the lamp on at its own button.
+
+- **Physical button presses show up in Home Assistant**, in about a second, and
+  so do brightness and colour-temperature changes made at the lamp. The light
+  entity finally follows the lamp rather than only remembering the last command
+  Home Assistant sent. Taking the lamp on or off its charger is reported the same
+  way.
+- **This works by keeping the Bluetooth link open.** The lamp only reports
+  anything while something is connected to it, and reports nothing when a
+  connection is re-established — so the old behaviour of hanging up 30 seconds
+  after each command meant nearly every press went unseen. The manufacturer's own
+  app does exactly this: it never asks the lamp anything, it just stays connected
+  and listens.
+- **New option: Configure → Connection.** *Always connected* is the default and
+  the one that makes presses visible. *On demand* restores the old behaviour and
+  hands back a connection slot on your Bluetooth adapter or proxy — useful if it
+  is running near its limit, since proxies typically allow three devices. Presses
+  are not reported in that mode.
+- **The battery cost was measured, not guessed:** about 0.1 % per hour with the
+  link held open, roughly 2 % a day. A lamp left on its stand will not notice.
+- **The check-in now also repairs a dropped connection.** It runs every 30
+  minutes in *always connected* mode, because nothing else would notice if the
+  link went away — a Bluetooth proxy rebooting, say. It still never turns the
+  lamp on or off, and it still refreshes the battery level.
+- **New `fermob.check_in` service** — do that now, rather than waiting for the
+  timer.
+- **The lamp is told the time**, when it pairs and on every connection, which is
+  what the official app does and this integration never did.
+
+**Reading state back on demand is now known to be impossible**, rather than
+merely untried. Both candidate commands were tested on hardware and the official
+app sends neither: one is refused outright, and the other returns a stored record
+that never changes — on an H134 it reported the lamp off while it was lit.
+Holding the link open is not a workaround, it is the only mechanism there is.
+
 ## 0.7.0
 
 The battery level now refreshes on its own, instead of only when something

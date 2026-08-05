@@ -1,3 +1,14 @@
+check_in:
+  name: Check in with lamp
+  description: >
+    Contact the lamp now to reconnect if the link has dropped and refresh its
+    battery level, instead of waiting for the next scheduled check-in. Does not
+    turn the lamp on or off. A lamp that is out of range is left alone.
+  target:
+    entity:
+      domain: light
+      integration: fermob
+
 unpair:
   name: Unpair lamp
   description: >

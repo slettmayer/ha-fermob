@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components.light import ColorMode
@@ -33,6 +33,8 @@ from custom_components.fermob.light import (
 from custom_components.fermob.protocol import (
     LIGHT_TYPE_DW,
     LIGHT_TYPE_TW,
+    LMP_EVENT_DEVICE_DATA,
+    LMP_STATUS_DEVICE_DATA,
     MAX_KELVIN,
     MIN_KELVIN,
     MODULE_TYPE_DW,
@@ -121,11 +123,19 @@ def test_first_run_with_no_module_type_uses_the_name():
 # ---------------------------------------------------------------------------
 
 
-def _conn(hass: HomeAssistant) -> FermobBLEConnection:
+def _conn(
+    hass: HomeAssistant, idle_disconnect_delay: float | None = None
+) -> FermobBLEConnection:
     store = MagicMock()
     store.async_save = AsyncMock()
     store.async_load = AsyncMock(return_value=None)
-    return FermobBLEConnection(hass, ADDRESS, store, light_type=LIGHT_TYPE_TW)
+    return FermobBLEConnection(
+        hass,
+        ADDRESS,
+        store,
+        light_type=LIGHT_TYPE_TW,
+        idle_disconnect_delay=idle_disconnect_delay,
+    )
 
 
 async def test_store_module_info_records_and_announces(hass: HomeAssistant):
@@ -411,9 +421,105 @@ async def test_event_reporting_off_clears_is_on(hass: HomeAssistant):
 
 
 # ---------------------------------------------------------------------------
-# Scheduled battery check-in
+# Believing (or not) what the lamp pushes
 #
-# The point of the feature is that it refreshes the level *without* touching the
+# The two DEVICE_DATA markers carry byte-identical bodies, so nothing but the
+# marker separates a live push from a stored record -- and on an H134 the stored
+# record reported the lamp off while it was lit.
+# ---------------------------------------------------------------------------
+
+
+def _device_data(
+    timestamp: int,
+    *,
+    is_on: bool,
+    ch1: int = 40,
+    ch2: int = 60,
+    marker: int = LMP_EVENT_DEVICE_DATA,
+) -> bytes:
+    pl = bytearray(15)
+    pl[0] = 10
+    pl[1] = marker
+    pl[3:7] = timestamp.to_bytes(4, "little")
+    pl[7] = 0  # status OK
+    pl[8] = 0x11 if is_on else 0x10
+    pl[9] = ch1
+    pl[10] = ch2
+    return bytes(pl)
+
+
+def _dispatch(conn: FermobBLEConnection, payload: bytes) -> list[tuple]:
+    """Push one decoded payload through `_dispatch_event`, skipping the crypto."""
+    seen: list[tuple] = []
+    conn.on_state_change = lambda *args: seen.append(args)
+    with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
+        conn._dispatch_event(bytes(20), 2)
+    return seen
+
+
+async def test_an_unsolicited_push_reaches_the_entity(hass: HomeAssistant):
+    """Marker 146 is live state -- this is what a button press produces."""
+    conn = _conn(hass)
+    pushed = _device_data(1_785_882_856, is_on=True, marker=LMP_EVENT_DEVICE_DATA)
+    assert _dispatch(conn, pushed) == [(True, 40, 60)]
+
+
+async def test_a_solicited_record_is_dropped(hass: HomeAssistant):
+    """Marker 147 is a stored record, and applying it drove the entity wrong.
+
+    Nothing sends the query that produces one any more, so this guards against
+    reintroducing it rather than against a live code path.
+    """
+    conn = _conn(hass)
+    stale = _device_data(37, is_on=False, marker=LMP_STATUS_DEVICE_DATA)
+    assert _dispatch(conn, stale) == []
+
+
+async def test_the_captured_button_press_decodes(hass: HomeAssistant):
+    """Byte-for-byte from a vendor-app capture: 2026-08-04 22:34:16, lamp on.
+
+    Decrypted from the phone's own BLE traffic, so unlike most of this suite it
+    is real evidence rather than a restatement of our own encoder.
+    """
+    conn = _conn(hass)
+    real = bytes.fromhex("0a9200e868726a00110032")
+    assert _dispatch(conn, real) == [(True, 0, 50)]  # on, cold 0, warm 50
+
+
+# ---------------------------------------------------------------------------
+# Holding the link open
+# ---------------------------------------------------------------------------
+
+
+async def test_no_idle_timer_is_armed_when_the_link_is_held(hass: HomeAssistant):
+    """The default: the lamp only pushes while connected, so we stay connected."""
+    conn = _conn(hass)
+    assert conn._idle_disconnect_delay is None
+
+    conn._schedule_idle_disconnect()
+
+    assert conn._idle_task is None
+
+
+async def test_an_idle_timeout_arms_a_timer_and_defers_it(hass: HomeAssistant):
+    """On-demand mode still drops the link, and each command defers the drop."""
+    conn = _conn(hass, idle_disconnect_delay=30.0)
+
+    conn._schedule_idle_disconnect()
+    first = conn._idle_task
+    assert first is not None
+
+    conn._schedule_idle_disconnect()
+
+    assert first is not conn._idle_task
+    assert first.cancelled() or first.done() or first.cancelling()
+    conn._idle_task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Scheduled check-in
+#
+# It reconnects a dropped link and refreshes the battery *without* touching the
 # light, so the tests assert what it does not do as much as what it does.
 # ---------------------------------------------------------------------------
 
@@ -427,7 +533,7 @@ async def test_check_in_connects_and_lets_the_connect_path_read_battery(
     conn.ensure_connected = AsyncMock()
     conn.request_battery = AsyncMock()
 
-    await conn.async_poll_battery()
+    await conn.async_check_in()
 
     conn.ensure_connected.assert_awaited_once()
     # Not sent twice: ensure_connected already requests it on a fresh connect.
@@ -447,7 +553,7 @@ async def test_check_in_asks_explicitly_when_already_connected(hass: HomeAssista
     conn.ensure_connected = AsyncMock()
     conn.request_battery = AsyncMock()
 
-    await conn.async_poll_battery()
+    await conn.async_check_in()
 
     conn.request_battery.assert_awaited_once()
 
@@ -460,7 +566,7 @@ async def test_check_in_never_sends_a_light_command(hass: HomeAssistant):
     conn.request_battery = AsyncMock()
     conn.send_led = AsyncMock()
 
-    await conn.async_poll_battery()
+    await conn.async_check_in()
 
     conn.send_led.assert_not_called()
 
@@ -472,7 +578,7 @@ async def test_check_in_survives_an_unreachable_lamp(hass: HomeAssistant):
     conn.battery = Battery(percent=42, charging=False)
     conn.ensure_connected = AsyncMock(side_effect=RuntimeError("device not found"))
 
-    await conn.async_poll_battery()  # must not raise
+    await conn.async_check_in()  # must not raise
 
     # The last known level survives -- the reading is "as of last contact".
     assert conn.battery == Battery(percent=42, charging=False)
@@ -483,7 +589,7 @@ async def test_check_in_does_not_pair_an_unpaired_lamp(hass: HomeAssistant):
     conn = _conn(hass)  # store.async_load returns None -> no keys
     conn.ensure_connected = AsyncMock()
 
-    await conn.async_poll_battery()
+    await conn.async_check_in()
 
     conn.ensure_connected.assert_not_called()
 
@@ -495,7 +601,7 @@ async def test_check_in_holds_the_command_lock(hass: HomeAssistant):
     conn.ensure_connected = AsyncMock()
 
     async with conn.lock:
-        task = asyncio.ensure_future(conn.async_poll_battery())
+        task = asyncio.ensure_future(conn.async_check_in())
         await asyncio.sleep(0)
         conn.ensure_connected.assert_not_called()  # blocked on the lock
 

@@ -1,4 +1,4 @@
-"""Config flow for Fermob integration — BLE discovery + lamp-type options."""
+"""Config flow for Fermob integration — BLE discovery, lamp type, connection mode."""
 
 from __future__ import annotations
 
@@ -34,6 +34,14 @@ LIGHT_TYPE_AUTO = "auto"
 LIGHT_TYPE_DW = "dw"
 LIGHT_TYPE_TW = "tw"
 
+# How the BLE link is managed. `__init__.py` turns this into an idle timeout and
+# a check-in interval; the two are set together on purpose, because they
+# interact -- a check-in re-arms the idle timer, so a check-in shorter than the
+# timeout holds the link open no matter what the timeout says.
+CONF_CONNECTION_MODE = "connection_mode"
+CONNECTION_MODE_ALWAYS = "always"
+CONNECTION_MODE_ON_DEMAND = "on_demand"
+
 
 def _is_fermob_device(info: BluetoothServiceInfoBleak) -> bool:
     """Return True if the BLE advertisement is from a Fermob lamp."""
@@ -56,7 +64,7 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> FermobOptionsFlow:
-        """Return the options flow (lamp-type override)."""
+        """Return the options flow (lamp type + connection mode)."""
         return FermobOptionsFlow(config_entry)
 
     # ------------------------------------------------------------------
@@ -168,12 +176,22 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class FermobOptionsFlow(OptionsFlow):
-    """Let the user override the lamp type (dimmable vs tunable white).
+    """Lamp type, and how the BLE link is managed.
 
-    The Linkio advertisement is a rotating/encrypted payload, so the model
-    cannot be read from it. light.py auto-detects by name (only the Hoopik
-    string light is dimmable-white; everything else is tunable-white). This
-    flow is the manual escape hatch for any lamp the heuristic gets wrong.
+    **Lamp type.** The Linkio advertisement is a rotating/encrypted payload, so
+    the model cannot be read from it. light.py auto-detects by name (only the
+    Hoopik string light is dimmable-white; everything else is tunable-white).
+    This is the manual escape hatch for any lamp the heuristic gets wrong.
+
+    **Connection mode.** The lamp reports a physical button press only while the
+    link is held open, so holding it is what makes the light's state truthful --
+    at the price of one connection slot on whichever adapter or BLE proxy the
+    lamp reaches. Proxies are typically limited to three. On-demand hands that
+    slot back between commands, and gives up press detection to do it.
+
+    Deliberately a mode rather than two numbers: the idle timeout and the
+    check-in interval are not independent (a check-in re-arms the idle timer),
+    so exposing both invites settings whose combination does nothing.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -185,18 +203,36 @@ class FermobOptionsFlow(OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        current = self._entry.options.get(CONF_LIGHT_TYPE, LIGHT_TYPE_AUTO)
+        options = self._entry.options
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_LIGHT_TYPE, default=current): vol.In(
+                    vol.Required(
+                        CONF_LIGHT_TYPE,
+                        default=options.get(CONF_LIGHT_TYPE, LIGHT_TYPE_AUTO),
+                    ): vol.In(
                         {
                             LIGHT_TYPE_AUTO: "Auto-detect (by name)",
                             LIGHT_TYPE_TW: "Tunable white (MOOON / table lamps)",
                             LIGHT_TYPE_DW: "Dimmable white (Hoopik L1200)",
                         }
-                    )
+                    ),
+                    vol.Required(
+                        CONF_CONNECTION_MODE,
+                        default=options.get(
+                            CONF_CONNECTION_MODE, CONNECTION_MODE_ALWAYS
+                        ),
+                    ): vol.In(
+                        {
+                            CONNECTION_MODE_ALWAYS: (
+                                "Always connected — button presses show up"
+                            ),
+                            CONNECTION_MODE_ON_DEMAND: (
+                                "On demand — frees a Bluetooth connection slot"
+                            ),
+                        }
+                    ),
                 }
             ),
         )

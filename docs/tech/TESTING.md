@@ -2,7 +2,7 @@
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q          # 957 tests, ~10 s (most of it importing Home Assistant)
+python -m pytest tests/ -q          # 975 tests, ~10 s (most of it importing Home Assistant)
 ```
 
 CI runs the same suite with `-v` (`.github/workflows/validate.yml`), so a local `-q` run and the `Pytest` job
@@ -13,7 +13,8 @@ Two modules with deliberately different needs:
 | Module | Needs | Covers |
 |---|---|---|
 | `tests/test_protocol.py` | nothing but `pytest` + `cryptography` | frames, crypto, payloads, TLV parsing |
-| `tests/test_light.py` | a real `hass` (`pytest-homeassistant-custom-component`) | family resolution, module-info persistence, entity capabilities, the command path |
+| `tests/test_light.py` | a real `hass` (`pytest-homeassistant-custom-component`) | family resolution, module-info persistence, entity capabilities, the command path, which pushes are believed |
+| `tests/test_connection_profile.py` | the `fermob` package (no radio) | how the connection-mode option maps to an idle timeout and a check-in interval |
 
 `protocol.py` stays HA-free so the first of those keeps running on a bare install. `requirements_test.txt`
 installs everything for both, because CI runs them together.
@@ -73,7 +74,7 @@ a real lamp:
 
 - **The pairing handshake** — all ten steps, in order, including the nonce/authkey exchange and `REGISTER_END`.
 - **ACK matching and long-frame reassembly** in `_send_frames`: the message-type-2 + sequence-number rule, the EVENT-arrives-while-waiting case, fragment ordering, and the 3 s timeout.
-- **The idle disconnect's real timing** — the 30 s window and its interaction with the connection lock. `test_commands_are_serialised_by_the_connection_lock` covers the lock itself, not the timer.
+- **The idle disconnect's real timing** — whether the timer actually fires after its delay, and how that interacts with the connection lock. The tests cover which mode arms a timer at all and that each command defers it; `test_commands_are_serialised_by_the_connection_lock` covers the lock itself, not the timer.
 - **The options flow**, and `async_unpair`'s effect on the lamp.
 
 All of those need a faked `BleakClient` driving the notification callback, which is a bigger job than what is

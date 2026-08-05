@@ -38,22 +38,39 @@ There is **no `DataUpdateCoordinator`**, and the light itself is never polled �
 
 ```
 first command  ─→ ensure_connected() ─→ BLE connect + start_notify ─→ _pairing_handshake()
-                                                                       (keys saved, gateway mode)
-later commands ─→ ensure_connected() ─→ already connected?  ─→ reset the idle timer, return
+                                                                       (keys saved, gateway mode,
+                                                                        DATETIME_SET)
+later commands ─→ ensure_connected() ─→ already connected?  ─→ re-arm the idle timer, return
                                     └─→ BLE connect + start_notify (no handshake)
                                           └─→ MODULE_INFO_GET, but only until it answers once
-battery timer  ─→ async_poll_battery() ─→ paired? ─→ take the lock ─→ ensure_connected()
-                                                                     └─→ already up? request_battery()
-30 s idle      ─→ disconnect()
+                                          └─→ set_module_time → request_battery
+check-in timer ─→ async_check_in() ─→ paired? ─→ take the lock ─→ ensure_connected()
+                                                                  └─→ already up? ask both again
+lamp changes   ─→ EVENT push (marker 146) ─→ _dispatch_event() ─→ the light entity
+idle timeout   ─→ disconnect()          (on-demand mode only; there is no timer otherwise)
 entry unload   ─→ async_shutdown() ─→ cancel idle task, disconnect under the lock
 ```
 
-The one scheduled thing is the **battery check-in** (`BATTERY_POLL_INTERVAL`, 6 h, plus one run
-`BATTERY_POLL_STARTUP_DELAY` after setup). It exists because the lamp never reports unprompted: without it the
-level only refreshes when a light command happens to reach the lamp, so a lamp left off keeps a stale reading
-indefinitely. It reads battery **only** — it sends no light command and cannot change what the lamp is doing,
+**The link is held open by default, and that is the whole state mechanism.** The lamp pushes an unsolicited
+`EVENT_DEVICE_DATA` the moment it changes — a button press, a brightness change at the lamp — and a battery
+push whenever the charger goes on or off. It only does so while something is connected, and it pushes nothing
+when a connection is re-established. There is no query that returns usable state (see
+[LINKIO-PROTOCOL.md](../domain/LINKIO-PROTOCOL.md)), so a dropped link means a missed press, full stop.
+Measured cost of holding it: about 0.1 %/h of battery, and one connection slot on the adapter or BLE proxy.
+
+The **connection mode** option trades that slot back. `resolve_connection_profile` in `__init__.py` maps it to
+an idle timeout and a check-in interval — always-connected is `(None, 30 min)`, on-demand is `(30 s, 6 h)`.
+The two are derived from one option rather than exposed separately because they interact: a check-in calls
+`ensure_connected()`, which re-arms the idle timer, so an interval shorter than the timeout would hold the link
+open regardless of the timeout.
+
+The one scheduled thing is the **check-in** (plus one run `CHECK_IN_STARTUP_DELAY` after setup). It has two
+jobs. It reconnects — nothing else notices an unexpected disconnect, so its interval is the upper bound on how
+long the entity can show confidently stale state after, say, a BLE proxy reboots. And it refreshes the battery,
+which the lamp reports only when asked. It sends no light command and cannot change what the lamp is doing,
 which is also how the vendor app behaves (it polls the same command on a timer with every lamp dark, roughly
-every 40 s while its screen is open). Both timers are cancelled via `entry.async_on_unload`.
+every 40 s while its screen is open). `fermob.check_in` is the same routine on demand. Both timers are
+cancelled via `entry.async_on_unload`.
 
 It deliberately **refuses to run on an unpaired lamp**: `ensure_connected()` would otherwise start the pairing
 handshake, which makes the lamp flash, unattended and at an arbitrary hour. It also swallows every failure — an
