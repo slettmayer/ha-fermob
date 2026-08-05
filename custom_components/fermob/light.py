@@ -545,7 +545,7 @@ class FermobBLEConnection:
         """Release the BLE link and cancel the idle timer.
 
         Registered via entry.async_on_unload, so an entry unload *or reload*
-        (e.g. after changing the lamp-type option) closes the connection instead
+        (e.g. after changing an option) closes the connection instead
         of leaking an open BleakClient and a pending idle task.
         """
         if self._idle_task:

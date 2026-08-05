@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
+
+from .config_flow import (
+    CONF_CONNECTION_MODE,
+    CONNECTION_MODE_ALWAYS,
+    CONNECTION_MODE_ON_DEMAND,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,19 +25,38 @@ PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 _STORAGE_VERSION = 1
 
-# How often to reach the lamp to reconnect if needed and read its battery.
+
+class ConnectionProfile(NamedTuple):
+    """The two timings that follow from the user's connection mode.
+
+    They are chosen together because they interact: a check-in re-arms the idle
+    timer, so an interval shorter than the timeout holds the link open whatever
+    the timeout says. Deriving both from one choice is what keeps that
+    impossible to configure by accident.
+    """
+
+    idle_disconnect_delay: float | None
+    check_in_interval: timedelta
+
+
+# Always connected: the link is never dropped, so the lamp's unsolicited pushes
+# arrive and a button press shows up in Home Assistant. The check-in is then the
+# reconnect heartbeat -- nothing else notices a dropped link -- which is why it
+# runs far more often than the battery alone would justify. Thirty minutes
+# bounds how long the entity can show confidently stale state after, say, a BLE
+# proxy reboots. Cheap by the manufacturer's own standard: over a live link it
+# is one battery request, and the vendor app polls that same command roughly
+# every 40 s whenever its screen is open.
 #
-# This started life as a six-hourly battery poll, which was the right number
-# while the link was dropped after 30 s idle and the connection was expected to
-# be down. Now that the link is held open the job has changed: nothing else
-# notices an unexpected disconnect, so this is the only thing that brings the
-# link back, and at six hours the entity could show confidently stale state for
-# most of a day after a BLE proxy rebooted. Thirty minutes bounds that.
-#
-# Cheap by the manufacturer's own standard: over a live link this is one battery
-# request, and the vendor app polls the same command roughly every 40 s whenever
-# its screen is open.
-CHECK_IN_INTERVAL = timedelta(minutes=30)
+# On demand: the pre-0.8.0 behaviour. The link is dropped 30 s after the last
+# command, which hands the connection slot back to the adapter or proxy, and
+# nothing is listening in between -- so a check-in cannot be a heartbeat, only a
+# battery poll, and six hours gives a same-day figure with four chances to catch
+# the lamp in range.
+_CONNECTION_PROFILES = {
+    CONNECTION_MODE_ALWAYS: ConnectionProfile(None, timedelta(minutes=30)),
+    CONNECTION_MODE_ON_DEMAND: ConnectionProfile(30.0, timedelta(hours=6)),
+}
 
 # Also check in once shortly after startup, for two reasons. The interval timer
 # restarts from zero on every reload, so on a box that is restarted often the
@@ -38,6 +64,17 @@ CHECK_IN_INTERVAL = timedelta(minutes=30)
 # unavailable until the lamp has reported once, which would otherwise last until
 # something turns the light on. The delay lets the Bluetooth stack come up first.
 CHECK_IN_STARTUP_DELAY = timedelta(minutes=2)
+
+
+def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
+    """Map the connection-mode option onto its timings.
+
+    Defaults to always-connected, including for an unrecognised stored value:
+    it is the mode that makes the light report the truth, and the one cost --
+    a connection slot -- is the thing the option exists to give back.
+    """
+    mode = entry.options.get(CONF_CONNECTION_MODE, CONNECTION_MODE_ALWAYS)
+    return _CONNECTION_PROFILES.get(mode, _CONNECTION_PROFILES[CONNECTION_MODE_ALWAYS])
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -49,8 +86,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     address = entry.data[CONF_ADDRESS]
     store = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    profile = resolve_connection_profile(entry)
     conn = FermobBLEConnection(
-        hass, address, store, light_type=resolve_light_type(entry)
+        hass,
+        address,
+        store,
+        light_type=resolve_light_type(entry),
+        idle_disconnect_delay=profile.idle_disconnect_delay,
     )
 
     def _remember_module_info(module_type: int | None, model: str | None) -> None:
@@ -82,11 +124,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Both cancels are registered on the entry, so a reload or unload leaves no
     # timer firing against a connection that has already been shut down.
-    entry.async_on_unload(async_track_time_interval(hass, _check_in, CHECK_IN_INTERVAL))
+    entry.async_on_unload(
+        async_track_time_interval(hass, _check_in, profile.check_in_interval)
+    )
     entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    # Reload the entry when the user changes the lamp-type option.
+    # Reload the entry when the user changes an option. The connection mode
+    # takes effect that way too: the reload builds a fresh connection with the
+    # new idle timeout and re-registers the check-in timer at the new interval.
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
