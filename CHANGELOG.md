@@ -2,18 +2,25 @@
 
 ## 0.8.1
 
-- **Fixed: the battery level and charging sensor could silently stop updating.**
-  Both would keep showing whatever they last read — for hours, with no error
-  anywhere — while the light itself carried on working normally. Restarting Home
-  Assistant or reloading the integration cleared it, which is why it was easy to
-  miss. If the battery figure has ever struck you as oddly unchanging, this was
-  probably why.
+**Correction.** This entry originally said the release fixed a bug where the
+battery level and charging sensor could silently stop updating. **There was no
+such bug**, and nothing was broken before this release. The claim rested on a
+measurement mistake: Home Assistant's `last_reported` timestamp, read through its
+API, is not refreshed for an update that repeats the previous value, so an entity
+reporting an unchanged battery level looks frozen while working perfectly.
+Reading the timestamp directly showed both entities updating on every report, 74
+microseconds apart, exactly as they always had.
 
-  The cause was in how the two sensors listened for the lamp's battery reports.
-  They shared a single slot for it, and in some start-up orders both could end
-  up listening to something that was no longer attached to the lamp. Each now
-  holds its own subscription, released when the entity goes away, so neither can
-  be disconnected by the other or left behind.
+What the release actually contains:
+
+- **An internal change to how the two battery entities receive their updates.**
+  Each now holds its own subscription to the lamp's battery reports, released
+  when the entity goes away, instead of the two sharing one that had to be handed
+  along from whichever was set up first. The old arrangement worked; the new one
+  is the standard Home Assistant pattern, is easier to reason about, and is
+  covered by tests — which those two entities previously had none of at all.
+- **Nothing about how the lamp behaves is different.** No new entities, no
+  changed entity IDs, no settings to revisit, no reason to re-pair.
 
 ## 0.8.0
 
