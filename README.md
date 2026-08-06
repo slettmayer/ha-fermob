@@ -340,11 +340,25 @@ target:
   entity_id: light.fermob_hoopik
 ```
 
+It checks the lamp is listening before it releases anything, and **removes
+nothing if it is not** — otherwise the lamp would stay registered to a Home
+Assistant that had forgotten it, which only a factory reset clears. Three
+outcomes:
+
+| What the lamp says | What happens |
+|---|---|
+| It answers | Released and removed, keys and all |
+| Nothing comes back | Error, nothing removed — bring it in range and try again |
+| It rejects our keys | Error saying it is **already** unpaired (you factory-reset it). Nothing to release; delete the integration to clean up |
+
+An entry whose pairing never completed has nothing to release either, so it is
+removed without contacting the lamp at all.
+
 ## Factory reset
 
 If the lamp has stale keys from a previous client and won't pair:
 
-1. **Hold the lamp's physical reset button for 10 seconds** until it flashes — this clears all stored credentials
+1. **Hold the lamp's button for 10 seconds** until it flashes — this clears all stored credentials
 2. Delete `.storage/fermob_*` in your HA config directory
 3. Restart HA
 4. Power-cycle the lamp and retry setup
@@ -356,8 +370,8 @@ If the lamp has stale keys from a previous client and won't pair:
 | Lamp not discovered | Move HA closer, or use a [Bluetooth proxy](https://esphome.io/components/bluetooth_proxy.html) |
 | **Lamp shows as available but ignores every command, battery *unavailable*** | A dead session behind a link that still looks up. On 0.9.0+ this repairs itself — wait for the next check-in or call `fermob.check_in`. **On 0.8.0/0.8.1 it is permanent: upgrade to 0.9.0.** As a stopgap there, reload the integration |
 | Lamp unresponsive right after pairing | Fixed in 0.9.0, which reconnects after pairing. On earlier versions, reload the integration once |
-| *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold reset button 10 s), delete `.storage/fermob_*`, restart HA. On 0.9.0+ a lamp you factory-reset *while the integration is installed* is re-paired automatically, without any of that — but see the row below |
-| Re-added the integration and the lamp no longer works | Expected. Deleting the integration deletes its pairing keys, and the lamp stays registered to Home Assistant — so the re-add has nothing to talk to it with. Factory-reset the lamp (hold reset button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
+| *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold its button 10 s), delete `.storage/fermob_*`, restart HA. On 0.9.0+ a lamp you factory-reset *while the integration is installed* is re-paired automatically, without any of that — but see the row below |
+| Re-added the integration and the lamp no longer works | Expected. Deleting the integration deletes its pairing keys, and the lamp stays registered to Home Assistant — so the re-add has nothing to talk to it with. Factory-reset the lamp (hold its button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
 | Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |
