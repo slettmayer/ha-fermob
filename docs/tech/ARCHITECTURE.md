@@ -121,11 +121,18 @@ battery request. What happens next depends only on whether that request was answ
 | Pass outcome | Next |
 |---|---|
 | Battery answered (first try **or the retry**) | done |
-| Refused with `CRYPT_MSG` / `UNREGISTERED` | keys are wrong — **re-pair at once, no probe** |
+| **First** try refused with `CRYPT_MSG` / `UNREGISTERED`, keys stored, pairing allowed | keys are wrong — **re-pair, no probe** |
+| …same, but freshly paired (`not have_keys`) | **disconnect and raise** — the lamp rejected keys seconds old |
+| …same, but `allow_pairing=False` | **disconnect and raise** — only a user may pair |
 | Both unanswered, freshly paired (`not have_keys`) | **disconnect and raise** — no probe, no third pass |
 | Both unanswered, `allow_pairing=False` | **disconnect and raise** |
 | Both unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
 | Both unanswered, lamp answers in a non-`PRIVATE` mode | `_forget_keys_in_memory()`, second pass pairs |
+
+Note the crypto rejection is only read from the **first** battery request. The retry goes through
+`request_battery()`, whose bool collapses all three verdicts, so a rejection arriving only on the retry falls
+through to the silent path and the probe. That is harmless — the probe reaches the same conclusion — but it is
+why the row above says "first try" rather than "ever".
 
 That `raise` is the point of the whole exercise. Returning a link nobody could get an answer over hands
 `_async_send_led` something it will write into and mark *available*, because `send_led` cannot fail — so

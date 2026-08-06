@@ -181,6 +181,9 @@ class FermobBLEConnection:
         self._addr_b3 = 0
         self._keys_loaded = False
         self._have_keys = False  # True after successful pairing
+        # Whether MODULE_INFO_GET has answered on this object, regardless of
+        # what it said -- see `_fetch_module_info_once`.
+        self._module_info_read = False
 
         # What the lamp says it is (MODULE_INFO_GET). None until read once.
         self.module_type: int | None = None
@@ -1024,7 +1027,9 @@ class FermobBLEConnection:
             if not allow_pairing:
                 await self.disconnect()
                 raise LampNotAnswering(
-                    f"Fermob {self._address}: connected, but the lamp is not answering"
+                    f"Fermob {self._address}: silent on a link that just came "
+                    "up, and this caller may not send the pairing probe that "
+                    "would say why"
                 )
 
             _LOGGER.warning(
@@ -1041,7 +1046,8 @@ class FermobBLEConnection:
                 # lamp sits dark. The check-in retries on its own schedule.
                 await self.disconnect()
                 raise LampNotAnswering(
-                    f"Fermob {self._address}: connected, but the lamp is not answering"
+                    f"Fermob {self._address}: still holds our keys and is still "
+                    "not answering -- connected, but nothing gets through"
                 )
 
             _LOGGER.warning(
@@ -1094,9 +1100,13 @@ class FermobBLEConnection:
 
         Diagnostic only -- a failure must never stop the light from working.
         """
-        # "Once" means once it has told us both things it carries. A lamp whose
-        # family is known but whose short address is still 0 has not, and every
-        # addressed frame is misdirected until it does.
+        # "Once" means once the lamp has actually answered this session, or once
+        # the stored record already carries both things it returns. Latching on
+        # the address being non-zero alone would never be satisfied by a lamp
+        # whose short address genuinely is 0x0000: it would re-read, and re-write
+        # the key store, on every single reconnect.
+        if self._module_info_read:
+            return
         if self.module_type is not None and (self._addr_b2 or self._addr_b3):
             return
         try:
@@ -1108,6 +1118,7 @@ class FermobBLEConnection:
         if not pl:
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET not answered", self._address)
             return
+        self._module_info_read = True
         info = parse_module_info(pl)
         # The short address too, not just the family. Only the handshake's step 7
         # ever set it, so a pairing whose MODULE_INFO_GET went unanswered left it

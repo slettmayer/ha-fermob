@@ -78,7 +78,17 @@ def _conn(hass: HomeAssistant, keys: dict | None = None) -> FermobBLEConnection:
     conn._open_link = AsyncMock(
         side_effect=lambda: setattr(conn, "_client", MagicMock())
     )
-    conn.disconnect = AsyncMock(side_effect=lambda: setattr(conn, "_connected", False))
+
+    def _teardown() -> None:
+        # Mirrors the real `disconnect()`. A stub that only cleared `_connected`
+        # made the teardown invariant unassertable: a raise path that left
+        # `_ready` set would dispatch undecodable frames to entities, and one
+        # that left `_client` set would leak a proxy connection slot.
+        conn._connected = False
+        conn._ready = False
+        conn._client = None
+
+    conn.disconnect = AsyncMock(side_effect=_teardown)
     conn._pairing_handshake = AsyncMock()
     conn._fetch_module_info_once = AsyncMock()
     conn.set_module_time = AsyncMock()
@@ -358,11 +368,16 @@ async def test_an_unanswered_probe_never_repairs(hass: HomeAssistant):
     hour and, worse, would throw away keys that were still good.
     """
     conn = _deaf(hass)
-    conn._send = AsyncMock(return_value=(None, 0))
+    # `_send_frames`, not `_send`: the probe calls the former, and stubbing the
+    # latter leaves the real one to raise -- which quietly turned this into a
+    # duplicate of the exception test below and left the silence branch, the
+    # actual guard against an unattended re-pair, with no coverage at all.
+    conn._send_frames = AsyncMock(return_value=Ack(None, 0, False, None))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(LampNotAnswering):
         await conn.ensure_connected()
 
+    conn._send_frames.assert_awaited_once()  # the probe really was sent
     conn._pairing_handshake.assert_not_called()
     conn._store.async_remove.assert_not_called()
 
@@ -418,6 +433,8 @@ async def test_a_deaf_lamp_that_is_still_ours_fails_the_connect(hass: HomeAssist
 
     conn.disconnect.assert_awaited()
     assert conn._connected is False
+    assert conn._ready is False
+    assert conn._client is None
 
 
 async def test_a_fresh_pairing_is_not_trusted_without_an_answer(
@@ -543,14 +560,16 @@ async def test_check_in_never_pairs(hass: HomeAssistant):
     overnight, flashing through the handshake unattended.
     """
     conn = _deaf(hass)
-    conn._send_frames = AsyncMock(
-        return_value=(b"\x01", ENCRYPT_NONE, True)
-    )  # says "reset"
+    # No `_send_frames` stub: `allow_pairing=False` refuses before the probe is
+    # ever sent, and a stub here would assert against a path that cannot run.
+    # The crypto-rejection route into pairing has its own test above.
+    conn._send_frames = AsyncMock()
 
     await conn.async_check_in()  # must not raise
 
     conn._pairing_handshake.assert_not_called()
     conn._store.async_remove.assert_not_called()
+    conn._send_frames.assert_not_called()  # not even the probe
 
 
 async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
