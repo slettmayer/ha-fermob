@@ -34,6 +34,7 @@ from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 import custom_components.fermob as fermob
+import custom_components.fermob.light as light_mod
 from custom_components.fermob import _key_store
 from custom_components.fermob.light import (
     Ack,
@@ -80,8 +81,10 @@ def _conn(hass: HomeAssistant, keys: dict | None = None) -> FermobBLEConnection:
     # one does too -- otherwise a test that reaches an unstubbed write path
     # "passes" on the TypeError from awaiting a MagicMock rather than on the
     # behaviour it names.
+    # Takes the connect budget `ensure_connected` passes down, so a caller that
+    # forgets to forward it fails here rather than silently losing it.
     conn._open_link = AsyncMock(
-        side_effect=lambda: setattr(
+        side_effect=lambda *_args: setattr(
             conn, "_client", MagicMock(write_gatt_char=AsyncMock())
         )
     )
@@ -1326,7 +1329,7 @@ async def test_unpair_never_pairs(hass: HomeAssistant):
     with patch.object(hass.config_entries, "async_remove", AsyncMock()):
         await light.async_unpair()
 
-    assert conn.ensure_connected.await_args.kwargs == {"allow_pairing": False}
+    assert conn.ensure_connected.await_args.kwargs["allow_pairing"] is False
 
 
 async def test_unpair_broadcasts_when_the_session_answers(hass: HomeAssistant):
@@ -1365,3 +1368,82 @@ def test_the_key_store_is_named_after_the_lamp():
     """`fermob.unpair` and setup must agree on which file holds the keys."""
     hass = MagicMock()
     assert _key_store(hass, ADDRESS).key == "fermob_d6_86_76_e8_7e_75"
+
+
+# ---------------------------------------------------------------------------
+# The connect budget: how long a failure is allowed to take
+# ---------------------------------------------------------------------------
+#
+# `bleak_retry_connector` hardcodes 20 s per attempt at its `client.connect()`
+# call site, out of reach of `**kwargs`, so `max_attempts` is the only lever on
+# how long a doomed connect runs. Four attempts -- its default -- is 80 s, which
+# on a command reads as a hang. These pin who gets which budget, because the
+# distinction is invisible at the call site and easy to drop in a refactor.
+
+
+async def test_a_command_gives_up_sooner_than_the_background_does(
+    hass: HomeAssistant,
+):
+    """A user is watching a command; nobody is watching a check-in."""
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock()
+    conn.send_led = AsyncMock()
+    light = _light(hass, conn)
+
+    await light._async_send_led("turn_on", True, 50, 0.5)
+
+    assert (
+        conn.ensure_connected.await_args.kwargs["max_attempts"]
+        == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+        < light_mod.CONNECT_ATTEMPTS_BACKGROUND
+    )
+
+
+async def test_unpair_uses_the_interactive_budget_too(hass: HomeAssistant):
+    """It is a service a user just invoked and is waiting on."""
+    conn = _conn(hass, keys=_KEYS)
+    conn.unpair = AsyncMock(return_value=BatteryVerdict.ANSWERED)
+    conn.ensure_connected = AsyncMock()
+    light = _light(hass, conn)
+
+    with patch.object(hass.config_entries, "async_remove", AsyncMock()):
+        await light.async_unpair()
+
+    assert (
+        conn.ensure_connected.await_args.kwargs["max_attempts"]
+        == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+    )
+
+
+async def test_the_check_in_keeps_the_full_budget(hass: HomeAssistant):
+    """Nothing is waiting on it, and giving up early costs a missed heartbeat.
+
+    Asserted through the default rather than an explicit argument: the check-in
+    passes none, so this pins that the default is the *background* one. A
+    caller who forgets the argument must wait longer, never give up sooner.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
+
+    await conn.ensure_connected()
+
+    assert conn._open_link.await_args.args[0] == light_mod.CONNECT_ATTEMPTS_BACKGROUND
+
+
+async def test_the_reconnect_after_pairing_keeps_the_callers_budget(
+    hass: HomeAssistant,
+):
+    """Pairing opens the link twice, and the second one must not silently
+    revert to the default -- that is how an interactive path grows an 80 s tail
+    nobody put there."""
+    conn = _conn(hass)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
+    conn._pair = AsyncMock()
+    conn.set_module_time = AsyncMock()
+
+    await conn.ensure_connected(max_attempts=light_mod.CONNECT_ATTEMPTS_INTERACTIVE)
+
+    assert conn._open_link.await_count == 2
+    assert [c.args[0] for c in conn._open_link.await_args_list] == [
+        light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+    ] * 2

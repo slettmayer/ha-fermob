@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.2
+
+**Responsiveness, and one service that did not work when you needed it.** No
+protocol or pairing changes; nothing here requires re-pairing a lamp.
+
+- **`fermob.check_in` now works on a greyed-out lamp.** It was an *entity*
+  service, and Home Assistant silently discards service calls aimed at an
+  unavailable entity — the call reports success and does nothing. So the one
+  manual recovery the integration offers was unavailable in precisely the
+  situation it exists for. It is now a **domain** service.
+
+  Existing automations keep working unchanged. Calling it with no target at all
+  now checks in with every Fermob lamp, rather than being an error.
+
+  `fermob.unpair` is still an entity service and still has the limitation. It is
+  destructive and refuses on an unreachable lamp anyway, so this is a much
+  narrower problem.
+
+- **A command that cannot reach the lamp gives up in ~40 s instead of ~80 s.**
+  Bluetooth allows 20 s per connect attempt and the retry count was the library
+  default of four, so an out-of-range lamp left the UI unresponsive for over a
+  minute — which reads as a hang. Commands and `fermob.unpair` now take two
+  attempts, keeping one retry for the transient failures that are common through
+  a Bluetooth proxy. Background check-ins keep all four, since nothing is waiting
+  on them.
+
+- **The battery entities populate 30 seconds after a restart, not 2 minutes.**
+  The first check-in is what fills them in and what opens the link that makes
+  button presses visible, and two minutes of that was longer than it needed to
+  be. Commands were never affected — the lamp is controllable as soon as setup
+  finishes.
+
+- **Docs:** the `UNREGISTER` broadcast is now confirmed on hardware to actually
+  release the lamp — a lamp unpaired with `fermob.unpair` re-adds and pairs with
+  **no factory reset**. Only *deleting* the integration leaves the lamp
+  registered and needs the ten-second reset.
+
 ## 0.9.1
 
 **Fixes a dead end in 0.9.0.** If you factory-reset your lamp and the scheduled

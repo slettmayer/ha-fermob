@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID, CONF_ADDRESS, Platform
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
 
@@ -22,6 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "fermob"
 PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
+
+SERVICE_CHECK_IN = "check_in"
 
 _STORAGE_VERSION = 1
 
@@ -63,7 +66,16 @@ _CONNECTION_PROFILES = {
 # tick could otherwise be missed repeatedly; and both battery entities read as
 # unavailable until the lamp has reported once, which would otherwise last until
 # something turns the light on. The delay lets the Bluetooth stack come up first.
-CHECK_IN_STARTUP_DELAY = timedelta(minutes=2)
+#
+# Thirty seconds, down from two minutes in 0.9.1. What the delay costs is not
+# the ability to command the lamp -- `_async_send_led` calls `ensure_connected`
+# itself and never waits on this timer -- but the time before the link is held
+# open, during which a button press goes unseen and both battery entities read
+# unavailable. Firing too early is cheap: the check-in swallows its failures, so
+# a Bluetooth stack that is not ready yet costs one silent attempt. Firing late
+# costs a window of exactly the blindness the always-connected mode exists to
+# remove.
+CHECK_IN_STARTUP_DELAY = timedelta(seconds=30)
 
 
 def _key_store(hass: HomeAssistant, address: str) -> Store:
@@ -134,6 +146,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
 
+    _async_register_check_in_service(hass)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload the entry when the user changes an option. The connection mode
     # takes effect that way too: the reload builds a fresh connection with the
@@ -142,10 +156,75 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+def _async_register_check_in_service(hass: HomeAssistant) -> None:
+    """Register `fermob.check_in` on the domain, not on the light platform.
+
+    **It has to be a domain service, and that is the whole point of it.** Home
+    Assistant filters an entity service's targets by availability before the
+    handler ever runs -- `async_extract_entities` in `homeassistant/helpers/
+    service.py` drops the entity from the match set *before* testing
+    `entity.available`, so it is not even logged as missing and the call returns
+    success having done nothing. As an entity service, `fermob.check_in` was
+    therefore unreachable exactly when someone would reach for it: on a lamp
+    whose entity had gone unavailable after a failed command. Confirmed on
+    hardware, 2026-08-06.
+
+    Registered on the domain the filter does not apply, so the service reaches
+    the connection whatever the entity looks like.
+
+    Targeting is honoured when given and defaults to every configured lamp. That
+    keeps existing `target: {entity_id: ...}` automations working -- Home
+    Assistant merges `target:` into `call.data` for plain services too -- while
+    making an untargeted call meaningful rather than an error.
+    """
+    if hass.services.has_service(DOMAIN, SERVICE_CHECK_IN):
+        return
+
+    async def _handle_check_in(call: ServiceCall) -> None:
+        for conn in _targeted_connections(hass, call):
+            await conn.async_check_in()
+
+    hass.services.async_register(DOMAIN, SERVICE_CHECK_IN, _handle_check_in)
+
+
+def _targeted_connections(hass: HomeAssistant, call: ServiceCall) -> list:
+    """The connections a service call is aimed at, or all of them if untargeted.
+
+    Resolved by hand because a domain service gets no target expansion: what
+    arrives is whatever the caller put under `target:`, unexpanded.
+    """
+    connections = hass.data.get(DOMAIN, {})
+    entry_ids: set[str] = set()
+
+    entity_ids = cv.ensure_list(call.data.get(ATTR_ENTITY_ID, []))
+    device_ids = cv.ensure_list(call.data.get(ATTR_DEVICE_ID, []))
+
+    if entity_ids:
+        registry = er.async_get(hass)
+        for entity_id in entity_ids:
+            if (entry := registry.async_get(entity_id)) and entry.config_entry_id:
+                entry_ids.add(entry.config_entry_id)
+    if device_ids:
+        registry = er.async_get(hass)
+        for device_id in device_ids:
+            for entity in er.async_entries_for_device(registry, device_id, True):
+                if entity.config_entry_id:
+                    entry_ids.add(entity.config_entry_id)
+
+    if not entity_ids and not device_ids:
+        return list(connections.values())
+    return [conn for entry_id, conn in connections.items() if entry_id in entry_ids]
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        # The service is registered on the domain, so it outlives any single
+        # entry and must go when the last one does -- otherwise it survives as a
+        # call that silently reaches nothing.
+        if not hass.data.get(DOMAIN):
+            hass.services.async_remove(DOMAIN, SERVICE_CHECK_IN)
     return unloaded
 
 

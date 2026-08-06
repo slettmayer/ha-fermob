@@ -85,6 +85,25 @@ DEFAULT_KELVIN = 4000
 
 _STORAGE_VERSION = 1
 
+# How many times `establish_connection` may try before giving up, and the one
+# thing about the connect budget we can actually set.
+#
+# `bleak_retry_connector` hardcodes its 20 s per-attempt timeout at the
+# `client.connect()` call site -- it is not reachable through `**kwargs`, which
+# go to the client constructor -- so attempts x 20 s is the whole worst case.
+# Its own default is 4, i.e. 80 s.
+#
+# The right number differs by who is waiting, which is why there are two. A lamp
+# in range connects in one to two seconds, so the retries only ever cost time
+# when it is genuinely absent: out of range, asleep, or off. On a background
+# check-in that costs nothing and the full budget is worth having, because the
+# alternative is a missed heartbeat and up to another interval of stale state.
+# On a command a human is watching the UI, and 80 s of nothing reads as a hang
+# -- so that path gives up after two, keeping one retry for the transient BLE
+# flakes that are common through an ESPHome proxy.
+CONNECT_ATTEMPTS_BACKGROUND = 4
+CONNECT_ATTEMPTS_INTERACTIVE = 2
+
 # How long the BLE link is held open after the last command, in seconds --
 # or None to hold it open indefinitely, which is now the default.
 #
@@ -824,7 +843,7 @@ class FermobBLEConnection:
 
         self._idle_task = asyncio.ensure_future(_idle())
 
-    async def _open_link(self) -> None:
+    async def _open_link(self, max_attempts: int = CONNECT_ATTEMPTS_BACKGROUND) -> None:
         """Open a raw BLE link and start notifications. No crypto, no state.
 
         Split out of `ensure_connected` because pairing now needs to do it
@@ -844,7 +863,9 @@ class FermobBLEConnection:
             raise RuntimeError(f"Fermob BLE device not found: {self._address}")
 
         _LOGGER.debug("Fermob %s: connecting…", self._address)
-        self._client = await establish_connection(BleakClient, device, self._address)
+        self._client = await establish_connection(
+            BleakClient, device, self._address, max_attempts=max_attempts
+        )
 
         try:
             # Flush any stale frames
@@ -968,7 +989,11 @@ class FermobBLEConnection:
         self._module_info_read = False
         self._module_info_attempts = 0
 
-    async def ensure_connected(self, allow_pairing: bool = True) -> None:
+    async def ensure_connected(
+        self,
+        allow_pairing: bool = True,
+        max_attempts: int = CONNECT_ATTEMPTS_BACKGROUND,
+    ) -> None:
         """Ensure an authenticated BLE connection is up.
 
         Runs the full pairing handshake on first use and a plain BLE reconnect
@@ -987,6 +1012,11 @@ class FermobBLEConnection:
         something the user just did -- `async_check_in` passes False, because a
         3 a.m. timer must not re-register a lamp its owner deliberately reset to
         hand back to the Fermob app.
+
+        `max_attempts` is the connect budget, and defaults to the background one
+        because that is the safe direction to be wrong in: a caller who forgets
+        it waits longer, rather than giving up on a lamp that was there. Callers
+        a user is waiting on pass `CONNECT_ATTEMPTS_INTERACTIVE`.
         """
         have_keys = await self._load_keys()
 
@@ -1010,7 +1040,7 @@ class FermobBLEConnection:
             # rather than dispatched to entities that cannot decode them.
             self._ready = False
             self._connected = False
-            await self._open_link()
+            await self._open_link(max_attempts)
 
             if have_keys:
                 # The lamp retains GATEWAY+PRIVATE state across BLE disconnects,
@@ -1036,7 +1066,7 @@ class FermobBLEConnection:
                     self._address,
                 )
                 await self.disconnect()
-                await self._open_link()
+                await self._open_link(max_attempts)
 
             self._ready = True
             self._connected = True
@@ -1670,7 +1700,11 @@ async def async_setup_entry(
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service("unpair", {}, "async_unpair")
-    platform.async_register_entity_service("check_in", {}, "async_check_in")
+    # `check_in` is deliberately NOT here. Home Assistant filters an entity
+    # service's targets by availability before the handler runs, so an entity
+    # service cannot be called on an unavailable entity -- which is precisely
+    # when a user reaches for a check-in. It is registered on the domain in
+    # `__init__.py` instead; see the note there.
 
 
 class FermobLight(LightEntity):
@@ -1792,7 +1826,11 @@ class FermobLight(LightEntity):
         """
         async with self._conn.lock:
             try:
-                await self._conn.ensure_connected()
+                # A user is watching this one, so it gives up sooner -- see
+                # CONNECT_ATTEMPTS_INTERACTIVE.
+                await self._conn.ensure_connected(
+                    max_attempts=CONNECT_ATTEMPTS_INTERACTIVE
+                )
                 await self._conn.send_led(on, brightness_pct, warm_ratio)
             except Exception as exc:  # reported to the user via the log
                 _LOGGER.error(
@@ -1905,7 +1943,10 @@ class FermobLight(LightEntity):
                     # run the re-pair branch -- flashing it, re-registering it to
                     # Home Assistant -- and only then broadcast UNREGISTER, which
                     # is the exact opposite of what was asked for.
-                    await self._conn.ensure_connected(allow_pairing=False)
+                    await self._conn.ensure_connected(
+                        allow_pairing=False,
+                        max_attempts=CONNECT_ATTEMPTS_INTERACTIVE,
+                    )
                     verdict = await self._conn.unpair()
                 except LampNotAnswering as err:
                     # `ensure_connected` refuses a link it could not get an

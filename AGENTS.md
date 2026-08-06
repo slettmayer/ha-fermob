@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1050 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1063 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other five use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -123,6 +123,18 @@ channels whose sum is the total output, which is how colour temperature is expre
   our back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose
   effect on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the
   happy path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
+- **An entity service cannot be called on an unavailable entity, and Home Assistant does not say so.**
+  `async_extract_entities` drops the entity from the match set *before* testing `entity.available`, so the call
+  reports success having done nothing. That is what made the 0.9.0 bug unrecoverable, and it is why
+  `fermob.check_in` is registered on the **domain** in `__init__.py` rather than on the light platform.
+  `fermob.unpair` is still an entity service and still carries the limitation. Never make a recovery path an
+  entity service. See
+  [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md#an-entity-service-cannot-be-called-on-an-unavailable-entity--which-is-why-check_in-is-not-one).
+- **The connect budget is deliberately asymmetric, and `ensure_connected` defaults to the slow one.**
+  `bleak_retry_connector` hardcodes 20 s per attempt, so `max_attempts` is the only lever: interactive paths
+  pass `CONNECT_ATTEMPTS_INTERACTIVE` (2, ~40 s) because a human is watching, and the check-in keeps 4 because
+  nothing is. The default is the background value so that forgetting the argument costs latency, never a lamp
+  given up on too early.
 - **Only a user action may pair.** `async_check_in` passes `ensure_connected(allow_pairing=False)`; a
   key-presence guard is *not* sufficient, because a factory-reset lamp leaves our keys on disk. Pairing flashes
   the lamp and takes ownership of it, and the owner may have reset it on purpose to free it for the vendor app.

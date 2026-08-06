@@ -324,6 +324,12 @@ target:
   entity_id: light.fermob_moon
 ```
 
+**It works even when the light entity is greyed out**, which is the case you are
+most likely to want it in. Before 0.9.2 it did not: Home Assistant silently
+discards service calls aimed at an unavailable entity, so the call reported
+success and did nothing. Leave the target off entirely to check in with every
+Fermob lamp you have.
+
 ### Unpair service
 
 To remove the lamp from HA and reset it for use with the Fermob app:
@@ -372,9 +378,12 @@ If the lamp has stale keys from a previous client and won't pair:
 | Lamp unresponsive right after pairing | Fixed in 0.9.0, which reconnects after pairing. On earlier versions, reload the integration once |
 | *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold its button 10 s), delete `.storage/fermob_*`, restart HA. On 0.9.0+ a lamp you factory-reset *while the integration is installed* is re-paired automatically, without any of that — but see the row below |
 | Lamp you factory-reset is greyed out and nothing works | Fixed in 0.9.1. On 0.9.0 the check-in correctly spotted the reset, marked the light unavailable, and Home Assistant then discarded every service call to it — including the `light.turn_on` that would have re-paired it. Reload the integration (**Settings → Devices & Services → Fermob → ⋮ → Reload**), then turn the light on |
-| Re-added the integration and the lamp no longer works | Expected. Deleting the integration deletes its pairing keys, and the lamp stays registered to Home Assistant — so the re-add has nothing to talk to it with. Factory-reset the lamp (hold its button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
+| Re-added the integration and the lamp no longer works | Expected — but only if you *deleted* it. Deleting the integration deletes its pairing keys while the lamp stays registered to Home Assistant, so the re-add has nothing to talk to it with. Factory-reset the lamp (hold its button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
+| Re-adding a lamp released with `fermob.unpair` | Just add it again — **no factory reset needed.** The unpair told the lamp, so it is back in `NONE` and free. Pairing happens on the first toggle, so switch the light on once after adding it (confirmed on hardware, 2026-08-06) |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
+| Turning the lamp on takes ages before failing | Expected when it is out of range or asleep. Bluetooth allows 20 s per connect attempt, so a command that cannot reach the lamp takes ~40 s to give up (it was ~80 s before 0.9.2). Background check-ins still use the full four attempts, where nothing is waiting on them |
+| Battery entities unavailable for a while after restarting HA | The lamp reports its battery only when asked, and the first check-in runs 30 s after startup (2 minutes before 0.9.2) to let the Bluetooth stack come up. Commands are **not** affected — the lamp is controllable straight away |
 | Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |
 | Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
 | Battery percentage looks too high | Expected on and just off the charger — see [Entities](#entities). Read it once the lamp has been off the charger a while |

@@ -15,7 +15,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.fermob import resolve_connection_profile
+from custom_components.fermob import (
+    CHECK_IN_STARTUP_DELAY,
+    resolve_connection_profile,
+)
 from custom_components.fermob.config_flow import (
     CONF_CONNECTION_MODE,
     CONNECTION_MODE_ALWAYS,
@@ -76,3 +79,29 @@ def test_an_unrecognised_stored_mode_falls_back_to_always_connected():
     """A downgrade, or a hand-edited entry, must not leave the lamp unmanaged."""
     profile = resolve_connection_profile(_entry(**{CONF_CONNECTION_MODE: "sometimes"}))
     assert profile == resolve_connection_profile(_entry())
+
+
+def test_the_startup_check_in_does_not_make_the_user_wait():
+    """What this delay costs is blindness, not the ability to command the lamp.
+
+    `_async_send_led` calls `ensure_connected` itself and never waits on this
+    timer, so it has never gated a command. What it does gate, in
+    always-connected mode, is the link being held open -- and until it is, a
+    button press goes unseen and both battery entities read unavailable.
+
+    Firing early is cheap (the check-in swallows its failures, so a Bluetooth
+    stack that is not up yet costs one silent attempt); firing late costs a
+    window of exactly the blindness that mode exists to remove. Two minutes was
+    the wrong side of that trade. The bound, rather than the number, is what
+    matters: it must stay well inside the shortest check-in interval, or the
+    startup tick stops being a distinct thing at all.
+    """
+    shortest = min(
+        resolve_connection_profile(
+            _entry(**{CONF_CONNECTION_MODE: mode})
+        ).check_in_interval
+        for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
+    )
+
+    assert timedelta(seconds=30) >= CHECK_IN_STARTUP_DELAY
+    assert shortest / 10 > CHECK_IN_STARTUP_DELAY

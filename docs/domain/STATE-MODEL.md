@@ -62,10 +62,17 @@ refresh the battery, which the lamp reports only when asked. It sends no light c
 the lamp is doing — which is also how the vendor app behaves, polling the same battery command on a timer with
 every lamp dark.
 
-It also runs once `CHECK_IN_STARTUP_DELAY` (2 minutes) after setup, for two reasons: the interval timer
+It also runs once `CHECK_IN_STARTUP_DELAY` (30 seconds) after setup, for two reasons: the interval timer
 restarts from zero on every reload, so on a box that is restarted often the tick could otherwise be missed
 repeatedly; and both battery entities read unavailable until the lamp has reported once, which would otherwise
 last until something turned the light on. The delay lets the Bluetooth stack come up first.
+
+**It has never gated commands, and the 2 minutes it was until 0.9.2 were the wrong side of the trade.**
+`_async_send_led` calls `ensure_connected()` itself and waits on no timer, so the lamp is commandable from the
+moment setup finishes. What the delay does gate, under *always connected*, is the link being held open — and
+until it is, a button press goes unseen and both battery entities read unavailable. Firing too early costs one
+silent attempt, because the check-in swallows its failures; firing late costs a window of exactly the blindness
+that mode exists to remove.
 
 Two deliberate refusals:
 
@@ -129,7 +136,26 @@ The check-in interval is therefore also the **upper bound on how long that state
 reason not to lengthen it.
 
 `fermob.check_in` is the same routine on demand — see
-[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services).
+[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services). It is a **domain** service rather than an entity
+service precisely so that it still works on a lamp whose entity has gone unavailable, which is when a user
+would call it; the scheduled check-in never had that problem, because it calls the connection directly.
+
+### How long a failed connect is allowed to take
+
+`bleak_retry_connector` hardcodes a 20 s timeout per attempt, so `max_attempts` is the only lever on the
+duration of a doomed connect. The integration sets two, because the right answer depends on who is waiting:
+
+| Path | Attempts | Worst case |
+|---|---|---|
+| A command the user just issued, and `fermob.unpair` | 2 | ~40 s |
+| The scheduled check-in | 4 (the library default) | ~80 s |
+
+A lamp in range connects in one to two seconds, so the retries only cost time when it is genuinely absent. On a
+background check-in that is free and the full budget is worth having, since giving up early means a missed
+heartbeat and up to another interval of stale state. On a command it is 80 s of an unresponsive UI, which reads
+as a hang — so that path keeps one retry, for the transient BLE failures that are common through a proxy, and
+no more. `ensure_connected` defaults to the *background* budget: a caller who forgets the argument waits
+longer rather than giving up on a lamp that was there.
 
 ## What holding the link costs
 
