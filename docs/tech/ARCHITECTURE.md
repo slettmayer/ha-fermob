@@ -112,6 +112,34 @@ availability untouched, because it is routine and because the next check-in may 
 the dedicated exception type is for: `RuntimeError` alone would have conflated "cannot reach it" with "it is
 ignoring me".
 
+### …and one exception inside the exception: a reset lamp stays available
+
+`LampNotAnswering` carries the `BatteryVerdict` that produced it, and a **`KEYS_REJECTED`** one does *not* take
+the entity unavailable. This looks backwards and is not.
+
+*Unavailable* means "commands will not work". For a factory-reset lamp exactly one command will, and it is the
+documented recovery: turning the light on runs `ensure_connected(allow_pairing=True)`, which re-pairs. Marking
+it unavailable does not merely overstate the problem — **it removes the cure**, because Home Assistant drops
+every entity-service call to an unavailable entity:
+
+```python
+# homeassistant/helpers/service.py
+if not entity.available:
+    continue
+```
+
+Silently, with the call still reporting success. So `light.turn_on` never arrives, `fermob.unpair` never
+arrives, and `async_check_in` may not pair — leaving the lamp stuck until someone reloads the integration,
+which nothing tells them to do. Reproduced on an H134 (2026-08-06) and fixed in 0.9.1.
+
+It is *reported* available, not merely left alone. Suppressing the `False` is not enough, because the entity is
+usually unavailable already by the time this runs: the command path writes that on any failure, and so does the
+`proven_dead` branch. The realistic order is exactly that -- the lamp goes quiet, the entity greys out, and only
+*then* does the owner factory-reset it, which the README suggests for several symptoms. From that point every
+check-in returns `KEYS_REJECTED` against an entity nothing can lift.
+
+`SILENT` still greys the entity out, because nothing the user does will fix that one.
+
 Its third job is **liveness**. `request_battery()` returns whether the lamp acknowledged, and that ACK is the
 only one the integration ever gets on a live link — every other frame is a write-without-response. When the
 check-in finds the link already up and the request goes unanswered, it disconnects and reconnects. That is what

@@ -108,6 +108,10 @@ Two things make that signal trustworthy enough to act on:
   decrypt us, so a session that gets one is not alive at all: our keys are wrong. Verified on hardware
   (2026-08-06) — a factory-reset H134 answers `CRYPT_MSG` rather than going silent, and for one release counting
   that as "listening" made the reset undetectable. The three-way split lives in `BatteryVerdict`.
+
+  It is also the one failure the user can fix, so it must **not** take the entity unavailable — an unavailable
+  entity cannot be sent the `light.turn_on` that re-pairs it. See
+  [ARCHITECTURE.md](../tech/ARCHITECTURE.md#and-one-exception-inside-the-exception-a-reset-lamp-stays-available).
 - **One miss is not a diagnosis.** A `SILENT` request is retried once before anything acts on the failure —
   and the retry returns a `BatteryVerdict` too, so a rejection that only shows up on the second attempt is
   still read as a rejection. Anywhere that flattens the three verdicts into a bool loses exactly that case;

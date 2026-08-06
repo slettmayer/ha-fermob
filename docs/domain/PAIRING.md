@@ -173,6 +173,13 @@ factory-reset their lamp to bring it in range and retry a service that could nev
 still not done for them: it is the one-way door, and the rejection could in principle be our key store rather
 than the lamp.
 
+**The verdict has to be read off the exception too, not only out of `unpair()`.** `ensure_connected()` refuses a
+link it could not get an answer over, so on a reset lamp it raises `LampNotAnswering` *before* `unpair()` runs —
+which made the `KEYS_REJECTED` row above unreachable from the service. What the user actually saw was *"Could
+not reach the Fermob lamp … to unpair it: … turn the light on in Home Assistant to re-pair it"*: the wrong
+diagnosis for a lamp that had just answered, followed by the opposite of what they asked for. Found on hardware
+(2026-08-06); the unit tests missed it because they mock `ensure_connected` into succeeding.
+
 An entry with **no stored keys at all** never had a pairing to release, so the service removes it without
 touching the radio. Sending it down the connect path raised *"not paired, and pairing is not allowed here"*
 wrapped in *"could not reach the lamp"* — blaming range for something unrelated to it, and leaving an entry

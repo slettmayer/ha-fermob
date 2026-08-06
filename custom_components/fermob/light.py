@@ -137,15 +137,51 @@ class BatteryVerdict(StrEnum):
 
 
 class LampNotAnswering(RuntimeError):
-    """The BLE link came up and the lamp said nothing on it.
+    """The BLE link came up and the lamp is not usable over it.
 
     Distinct from every other connect failure on purpose. "Could not reach the
     lamp at all" -- out of range, taken indoors, adapter busy, no advertisement
     yet -- is the normal condition of a balcony lamp and must leave the entity
-    alone. This one means we *did* reach it, twice, and it is not honouring the
-    session: that is the failure worth telling the user about, because the lamp
-    will not respond to anything until it is repaired.
+    alone. This one means we *did* reach it and it will not do as it is told.
+
+    It carries the `BatteryVerdict` that produced it, because the two kinds need
+    opposite handling and the message alone cannot be branched on:
+
+    * `SILENT` -- the lamp is not talking on this link. Nothing the user does
+      fixes it *directly*, and only one of the three raise sites offers any
+      advice at all ("retry the command rather than resetting it"). It is not
+      necessarily terminal -- a marginal link recovers on its own -- but what it
+      never is, is grounds to re-pair.
+    * `KEYS_REJECTED` -- the lamp was factory-reset. Turning the light on
+      re-pairs it, so this one is recoverable, by exactly one gesture.
+
+    Callers that treat the second as the first take the entity unavailable, and
+    an unavailable entity cannot be told to turn on -- see `async_check_in`.
+
+    The verdict is **required**. Defaulting it would let a forgotten argument
+    read as `SILENT`, which is the wrong answer in both places that branch on it:
+    `fermob.unpair` would blame range, and the check-in would grey out a lamp it
+    should have left alone -- silently, with nothing pointing at the omission.
     """
+
+    def __init__(self, message: str, verdict: BatteryVerdict) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+
+    def __reduce__(self) -> tuple:
+        """Keep `copy` and `pickle` able to rebuild this.
+
+        They reconstruct from `args`, which holds the message alone -- so with
+        `verdict` required they would call the one-argument form and raise
+        `TypeError`. Making the argument required is what introduced that, and
+        it is worth keeping.
+
+        `args` deliberately stays one long rather than carrying the verdict:
+        `BaseException.__str__` returns `repr(args)` once there is more than
+        one, which would turn every `"%s" % err` log line -- and the
+        `HomeAssistantError` text `async_unpair` builds from it -- into a tuple.
+        """
+        return (self.__class__, (str(self), self.verdict))
 
 
 # ---------------------------------------------------------------------------
@@ -1041,13 +1077,15 @@ class FermobBLEConnection:
                     await self.disconnect()
                     raise LampNotAnswering(
                         f"Fermob {self._address}: paired, and the lamp then "
-                        "rejected the keys it had just been given"
+                        "rejected the keys it had just been given",
+                        BatteryVerdict.KEYS_REJECTED,
                     )
                 if not allow_pairing:
                     await self.disconnect()
                     raise LampNotAnswering(
                         f"Fermob {self._address}: lamp no longer holds our keys "
-                        "-- turn the light on in Home Assistant to re-pair it"
+                        "-- turn the light on in Home Assistant to re-pair it",
+                        BatteryVerdict.KEYS_REJECTED,
                     )
                 _LOGGER.warning(
                     "Fermob %s: lamp is no longer paired with us (factory "
@@ -1081,7 +1119,8 @@ class FermobBLEConnection:
                 raise LampNotAnswering(
                     f"Fermob {self._address}: paired, but the lamp did not "
                     "acknowledge on the new link -- it is registered to Home "
-                    "Assistant, so retry the command rather than resetting it"
+                    "Assistant, so retry the command rather than resetting it",
+                    BatteryVerdict.SILENT,
                 )
 
             if not allow_pairing:
@@ -1089,7 +1128,8 @@ class FermobBLEConnection:
                 raise LampNotAnswering(
                     f"Fermob {self._address}: silent on a link that just came "
                     "up, and this caller may not send the pairing probe that "
-                    "would say why"
+                    "would say why",
+                    BatteryVerdict.SILENT,
                 )
 
             _LOGGER.warning(
@@ -1107,7 +1147,8 @@ class FermobBLEConnection:
                 await self.disconnect()
                 raise LampNotAnswering(
                     f"Fermob {self._address}: still holds our keys and is still "
-                    "not answering -- connected, but nothing gets through"
+                    "not answering -- connected, but nothing gets through",
+                    BatteryVerdict.SILENT,
                 )
 
             _LOGGER.warning(
@@ -1283,12 +1324,49 @@ class FermobBLEConnection:
                         proven_dead = True
                         await self.disconnect()
                         await self.ensure_connected(allow_pairing=False)
-            except LampNotAnswering:
-                # Reached it, twice, and it is ignoring us. This is the one
-                # outcome worth reporting: nothing the user does will work until
-                # the session is repaired.
-                _LOGGER.warning("Fermob %s: reachable but not answering", self._address)
-                self._notify(self._availability_listeners, "availability", False)
+            except LampNotAnswering as err:
+                # Reached it, and it is not usable. This is the one outcome worth
+                # reporting.
+                #
+                # Log the exception, not a summary of it. Two of
+                # `ensure_connected`'s five messages reach this path -- the
+                # `not allow_pairing` pair, the rest needing `have_keys` false or
+                # pairing allowed -- and one of the two is the only place the
+                # user is ever told how to recover ("turn the light on in Home
+                # Assistant to re-pair it"). Flattening both to "reachable but
+                # not answering" threw that away, and described a lamp that had
+                # answered `CRYPT_MSG`, clearly and usefully, as not answering.
+                # No address prefix: every `LampNotAnswering` message already
+                # carries one.
+                _LOGGER.warning("%s", err)
+
+                # And a factory-reset lamp must be reported *available*, which
+                # looks backwards and is not. Unavailable means "commands will
+                # not work". Here exactly one command will, and it is the
+                # documented recovery: turning the light on re-pairs the lamp.
+                #
+                # Reported, not merely left alone. Suppressing the `False` is not
+                # enough, because the entity may already be unavailable -- the
+                # command path writes that on any failure, and so does the
+                # `proven_dead` branch above. The realistic order is exactly
+                # that: the lamp goes quiet, the entity greys out, the owner
+                # reacts by factory-resetting it (which the README suggests for
+                # several symptoms), and from then on every check-in returns
+                # KEYS_REJECTED against an entity nothing can lift. Same dead
+                # end, reached the long way round.
+                #
+                # Reporting it unavailable does not merely overstate the problem,
+                # it removes the cure. Home Assistant silently drops every
+                # entity-service call to an unavailable entity
+                # (`helpers/service.py`: `if not entity.available: continue`), so
+                # neither `light.turn_on` nor `fermob.unpair` ever arrives -- and
+                # the check-in may not pair. The lamp is then stuck until someone
+                # reloads the integration, which nothing tells them to do.
+                # Observed on an H134, 2026-08-06.
+                #
+                # Every other verdict is genuinely unusable, and still greys out.
+                reachable = err.verdict is BatteryVerdict.KEYS_REJECTED
+                self._notify(self._availability_listeners, "availability", reachable)
                 return
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
@@ -1829,6 +1907,26 @@ class FermobLight(LightEntity):
                     # is the exact opposite of what was asked for.
                     await self._conn.ensure_connected(allow_pairing=False)
                     verdict = await self._conn.unpair()
+                except LampNotAnswering as err:
+                    # `ensure_connected` refuses a link it could not get an
+                    # answer over, so on a factory-reset lamp it raises *before*
+                    # `unpair()` runs -- which means the verdict has to be read
+                    # off the exception here as well as out of `unpair()`.
+                    # Without this the generic handler below produced "Could not
+                    # reach the Fermob lamp at ... to unpair it: ... turn the
+                    # light on in Home Assistant to re-pair it": the wrong
+                    # diagnosis for a lamp that had answered, followed by the
+                    # exact opposite of what was asked for. Seen on an H134,
+                    # 2026-08-06; the unit tests missed it because they mock
+                    # `ensure_connected`.
+                    #
+                    # Logged, because the `HomeAssistantError` built below is
+                    # generic by verdict and drops the specific message -- "silent
+                    # on a link that just came up" and "still holds our keys and
+                    # is still not answering" are different problems that both
+                    # surface to the user as "did not answer".
+                    _LOGGER.warning("%s", err)
+                    verdict = err.verdict
                 except Exception as exc:
                     _LOGGER.error(
                         "Fermob %s unpair error: %s", address, exc, exc_info=True
