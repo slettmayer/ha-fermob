@@ -324,12 +324,36 @@ target:
   entity_id: light.fermob_moon
 ```
 
-**It cannot be called on a light that is greyed out.** Home Assistant drops
-service calls aimed at an unavailable entity and still reports success, so
-nothing happens. You do not need it in that case: a greyed-out lamp is contacted
-again by the *scheduled* check-in and comes back on its own, within 30 minutes on
-the default setting. To force it sooner, reload the integration
-(**Settings → Devices & Services → Fermob → ⋮ → Reload**).
+One limitation worth knowing: **it cannot be called on a light that is already
+greyed out** — see below.
+
+### If the light goes unavailable
+
+The light entity greys out when a command to the lamp actually failed — it was
+out of range, asleep, or switched off at the globe. That is the entity telling
+you the truth rather than showing a state it can no longer vouch for.
+
+**It repairs itself.** The scheduled check-in contacts the lamp on a timer and
+does not go through the entity, so it reaches the lamp whatever the entity looks
+like — and it restores the light as soon as the lamp answers again. On the
+default *Always connected* setting that is **within 30 minutes**; on *On demand*
+it can be up to 6 hours.
+
+**To recover it immediately, reload the integration:**
+
+> **Settings → Devices & Services → Fermob → ⋮ → Reload**
+
+That rebuilds the connection and contacts the lamp straight away. Turning the
+light on in Home Assistant works too, and is what re-pairs a lamp you have
+factory-reset.
+
+`fermob.check_in` is *not* the way out of this, even though it looks like it
+should be. Home Assistant discards service calls aimed at an unavailable entity
+and still reports success, so the call appears to work and does nothing. Reload
+instead.
+
+If the lamp is genuinely out of range or switched off, none of the above will
+help until it is back — that is the entity being right, not a fault.
 
 ### Unpair service
 
@@ -370,6 +394,15 @@ If the lamp has stale keys from a previous client and won't pair:
 3. Restart HA
 4. Power-cycle the lamp and retry setup
 
+**You do not need this after `fermob.unpair`.** That service tells the lamp it is
+released, so it is already free — just add it again and switch the light on to
+pair. The reset is only for a lamp still registered to a controller whose keys
+are gone, which is what *deleting* the integration leaves behind (confirmed on
+hardware, 2026-08-06).
+
+A lamp you reset **while the integration is still installed** needs none of these
+steps either: it is detected and re-paired the next time you turn the light on.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -385,7 +418,7 @@ If the lamp has stale keys from a previous client and won't pair:
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
 | Turning the lamp on takes ages before failing | Expected when it is out of range or asleep. Bluetooth allows 20 s per connect attempt and 0.9.2 halved the attempts a command makes, from four to two — but there is no fixed ceiling: some Bluetooth errors retry on their own separate budget, and a command also has to wait for any check-in already in progress. Bring the lamp into range rather than timing it |
 | Battery entities unavailable for a while after restarting HA | The lamp reports its battery only when asked, and the first check-in runs one minute after startup (two minutes before 0.9.2) to let the Bluetooth stack come up. Commands are **not** affected — the lamp is controllable straight away |
-| Light greyed out and `fermob.check_in` does nothing | Home Assistant discards service calls to an unavailable entity and still reports success. Wait for the next scheduled check-in, which contacts the lamp regardless and restores it (30 minutes on the default setting), or reload the integration to force it now |
+| Light greyed out (unavailable) | A command to the lamp failed, so the entity stopped claiming a state it could not vouch for. It repairs itself at the next scheduled check-in — 30 minutes on the default setting — or immediately if you reload the integration. `fermob.check_in` will *not* help: HA discards service calls to an unavailable entity and still reports success. See [If the light goes unavailable](#if-the-light-goes-unavailable) |
 | Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |
 | Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
 | Battery percentage looks too high | Expected on and just off the charger — see [Entities](#entities). Read it once the lamp has been off the charger a while |
