@@ -2,24 +2,8 @@
 
 ## 0.9.2
 
-**Responsiveness, and one service that did not work when you needed it.** No
-protocol or pairing changes; nothing here requires re-pairing a lamp.
-
-- **`fermob.check_in` now works on a greyed-out lamp.** It was an *entity*
-  service, and Home Assistant silently discards service calls aimed at an
-  unavailable entity — the call reports success and does nothing. So the one
-  manual recovery the integration offers was unavailable in precisely the
-  situation it exists for. It is now a **domain** service.
-
-  Existing automations keep working unchanged — entity, device, area, floor and
-  label targets are all resolved through the same Home Assistant helpers the
-  entity service used, so `entity_id: all` and group entities behave as before
-  too. Calling it with no target at all now checks in with every Fermob lamp,
-  rather than being an error, and several lamps are contacted concurrently.
-
-  `fermob.unpair` is still an entity service and still has the limitation. It is
-  destructive and refuses on an unreachable lamp anyway, so this is a much
-  narrower problem.
+**Two responsiveness fixes and a documentation correction.** No protocol or
+pairing changes; nothing here requires re-pairing a lamp.
 
 - **A command that cannot reach the lamp gives up roughly twice as fast.**
   Bluetooth allows 20 s per connect attempt and the retry count was the library
@@ -30,16 +14,30 @@ protocol or pairing changes; nothing here requires re-pairing a lamp.
   Bluetooth errors retry on their own separate budget, and a command still waits
   for any check-in already in progress.
 
-- **The battery entities populate 30 seconds after a restart, not 2 minutes.**
-  The first check-in is what fills them in and what opens the link that makes
-  button presses visible, and two minutes of that was longer than it needed to
-  be. Commands were never affected — the lamp is controllable as soon as setup
-  finishes.
+- **The battery entities populate one minute after a restart, not two.** The
+  first check-in is what fills them in and what opens the link that makes button
+  presses visible. Commands were never affected — the lamp is controllable as
+  soon as setup finishes.
 
-- **Docs:** the `UNREGISTER` broadcast is now confirmed on hardware to actually
-  release the lamp — a lamp unpaired with `fermob.unpair` re-adds and pairs with
-  **no factory reset**. Only *deleting* the integration leaves the lamp
-  registered and needs the ten-second reset.
+- **`fermob.unpair` really does release the lamp**, now confirmed on hardware: a
+  lamp unpaired with the service re-adds and pairs again with **no factory
+  reset**. Only *deleting* the integration leaves the lamp registered and needs
+  the ten-second reset. The README and the pairing guide now say so explicitly,
+  because the two paths were easy to confuse.
+
+- **Documented honestly: neither service can be called on a light that is
+  greyed out.** Home Assistant discards service calls to an unavailable entity
+  and still reports success. You do not need `fermob.check_in` in that case —
+  the *scheduled* check-in contacts the lamp regardless of entity state and
+  restores it on its own, within 30 minutes on the default setting; reloading
+  the integration forces it immediately.
+
+  This release briefly moved `check_in` off the entity platform to lift that
+  limitation, and the change was **reverted before release**. Leaving the
+  platform means reimplementing target expansion, concurrent dispatch,
+  registration lifetime and per-entity permission checks — Home Assistant does
+  all four for free — and the only thing gained was not waiting for a recovery
+  that already happens by itself.
 
 ## 0.9.1
 

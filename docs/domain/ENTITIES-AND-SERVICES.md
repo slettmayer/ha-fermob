@@ -1,7 +1,7 @@
 # Entities and Services
 
 > What one paired lamp becomes in Home Assistant: one light entity, two diagnostic battery entities, two
-> services and two options.
+> entity services and two options.
 
 **Scope.** The user-facing surface. How fresh any of it is — and why — is in
 [STATE-MODEL.md](STATE-MODEL.md). Which lamps get a colour-temperature slider at all is in
@@ -44,12 +44,12 @@ There are no switches and no other platforms.
 
 ## Services
 
-`fermob.unpair` is an **entity service** on the light platform; `fermob.check_in` is a **domain service**
-registered in `__init__.py`, for the reason in the section below. Neither takes a schema.
+Both are **entity services**, registered on the light platform — not `hass.services` registrations. Neither
+takes a schema.
 
 | Service | What it does |
 |---|---|
-| `fermob.check_in` | Contacts the lamp now — reconnecting a dropped link and refreshing the battery — rather than waiting for the scheduled check-in. Never touches the light. Works on an unavailable entity, and with no target given checks in with every configured lamp |
+| `fermob.check_in` | Contacts the lamp now — reconnecting a dropped link and refreshing the battery — rather than waiting for the scheduled check-in. Never touches the light. Cannot be called on an *unavailable* entity; see below |
 | `fermob.unpair` | Checks the session is alive, then broadcasts `UNREGISTER` (best-effort — the broadcast itself is never acknowledged) and removes the config entry, which deletes the stored keys with it. The lamp flashes 3× and resets its crypto state, so the Fermob app can claim it again. **Raises if the lamp was not answering** — the broadcast is not sent and nothing is removed. Also raises, with a different message, if the lamp *answered* that it no longer holds our keys: it is already free, so there is nothing to release. An entry with no stored keys is removed without touching the radio. For a lamp that is gone for good, delete the integration instead |
 
 `fermob.check_in` is the scheduled check-in routine on demand — see
@@ -57,56 +57,45 @@ registered in `__init__.py`, for the reason in the section below. Neither takes 
 for the reason given in [CONVENTIONS.md](../tech/CONVENTIONS.md#entity-and-connection-code); what it does to
 the lamp is in [PAIRING.md](PAIRING.md#unpairing).
 
-### An entity service cannot be called on an unavailable entity — which is why `check_in` is not one
+### Neither can be called on an unavailable entity, and that is accepted
 
-Home Assistant filters an entity service's targets by availability before the handler runs, and does it
-silently. `async_extract_entities` in `homeassistant/helpers/service.py` removes the entity from the match set
-*before* testing `entity.available`, so it is not even reported as missing, and the call returns **success**
-having done nothing (read from HA 2026.8.0):
+Home Assistant filters an entity service's targets by availability **before the handler runs**. The path is
+`entity_service_call` → `_resolve_entity_service_call_entities` in `homeassistant/helpers/service.py` (read
+from HA 2026.8.0):
 
 ```python
-combined.remove(entity.entity_id)  # removed first…
-if not entity.available:
-    continue  # …then silently dropped
+entity_candidates = [e for e in entity_candidates if e.available]
+missing = referenced.referenced.copy()
+for entity in entity_candidates:
+    missing.discard(entity.entity_id)
+referenced.log_missing(missing, _LOGGER)
 ```
 
-That is the mechanism behind the 0.9.0 failure: the check-in marked a factory-reset lamp unavailable, and Home
-Assistant discarded the `light.turn_on` that would have re-paired it. But it applied just as much to
-`fermob.check_in` itself, which was an entity service through 0.9.1 — **unreachable exactly when a user would
-reach for it.** Confirmed on hardware (2026-08-06): with the light unavailable after a failed command,
-`fermob.check_in` reported success and never ran.
+So a call aimed at an unavailable entity does nothing and still **reports success**. It is not completely
+silent — HA logs *"Referenced entities … are missing or not currently available"* under
+`homeassistant.helpers.service`, not under this integration, which is why it is easy to miss when grepping a
+log for `fermob`.
 
-Since 0.9.2 `check_in` is registered on the **domain** (`__init__.py`), not on the light platform, so no
-availability filter applies and it reaches the connection whatever the entity looks like. Three consequences
-follow from being a domain service, and each is handled deliberately:
+That is the mechanism behind the 0.9.0 dead end: the check-in marked a factory-reset lamp unavailable, and Home
+Assistant then discarded the `light.turn_on` that would have re-paired it. **0.9.1 fixed the dead end at the
+source** by keeping a `KEYS_REJECTED` lamp *available*, because a command genuinely does work on one.
 
-- **No target expansion.** `call.data` is whatever the caller put under `target:`, verbatim. So the handler
-  runs `TargetSelection` + `async_extract_referenced_entity_ids` — the same helpers the entity-service path
-  uses — and maps the resulting entity ids back to config entries. A first attempt read only `entity_id` and
-  `device_id`, which silently checked in with *every* lamp whenever the target was an area, floor or label,
-  and matched *no* lamp for `entity_id: all`. Do not hand-roll this; the helpers cover all five forms plus
-  group expansion. `ENTITY_MATCH_ALL` is special-cased above them, because HA special-cases it too.
-- **No implicit concurrency.** The entity service gathered its per-entity calls; a plain loop would make an
-  untargeted call on N unreachable lamps take N times the connect budget with the caller blocked. The handler
-  uses `asyncio.gather(..., return_exceptions=True)`, so one lamp with an unreadable key store cannot stop the
-  others — `async_check_in` swallows its own failures, but that contract does not extend to its lock
-  acquisition or `_load_keys()`.
-- **No entity lifecycle to hang the registration on.** It is registered from `async_setup`, once, and never
-  removed. Tying it to entry setup means an options change — which reloads the entry — de-registers the
-  service, and a call landing in that window fails with `ServiceNotFound` and aborts the whole automation:
-  strictly worse than the no-op it replaced.
+It still means `fermob.check_in` cannot be used on a greyed-out lamp, and that is a real limitation rather than
+a bug to route around:
 
-An untargeted call means *every* lamp rather than none; a target that resolves to no Fermob lamp logs a
-warning rather than passing silently.
+- **The scheduled check-in is unaffected**, because the timer in `__init__.py` calls `conn.async_check_in()` on
+  the connection directly and never goes through the service layer. A lamp whose entity went unavailable is
+  therefore recovered **with no user action at all**, within one check-in interval. Verified on hardware
+  (2026-08-06): an entity unavailable for 26 minutes was restored by the scheduled check-in alone, and the same
+  run confirmed the service being dropped.
+- **Reloading the entry forces it immediately** — Settings → Devices & Services → Fermob → ⋮ → Reload.
 
-`fermob.unpair` **is still an entity service** and still carries the limitation. That is a much narrower
-problem: it is destructive, so it should be aimed at something explicitly, and on an unreachable lamp it would
-refuse anyway. Worth revisiting, not urgent.
-
-**The scheduled check-in was never affected.** The timer in `__init__.py` calls `conn.async_check_in()` on the
-connection directly, never through the service layer, so it runs regardless of entity state — which is why
-recovery is guaranteed within one check-in interval with no user action at all. Verified on hardware the same
-day: an entity unavailable for 26 minutes was restored by the scheduled check-in alone.
+0.9.2 briefly moved `check_in` to a domain service to lift the limitation. It was reverted: leaving the entity
+platform means reimplementing target expansion, concurrent dispatch, registration lifetime **and** per-entity
+permission checks, all of which HA does for free, and two review rounds found defects in each. The whole
+benefit was not waiting up to one check-in interval for something that already recovers by itself. **If you are
+tempted to try again, that is the trade to beat** — and note that a domain service also lets a non-admin user
+who is denied the light entities contact every lamp over BLE.
 
 ## Options
 

@@ -62,17 +62,23 @@ refresh the battery, which the lamp reports only when asked. It sends no light c
 the lamp is doing — which is also how the vendor app behaves, polling the same battery command on a timer with
 every lamp dark.
 
-It also runs once `CHECK_IN_STARTUP_DELAY` (30 seconds) after setup, for two reasons: the interval timer
+It also runs once `CHECK_IN_STARTUP_DELAY` (one minute) after setup, for two reasons: the interval timer
 restarts from zero on every reload, so on a box that is restarted often the tick could otherwise be missed
 repeatedly; and both battery entities read unavailable until the lamp has reported once, which would otherwise
 last until something turned the light on. The delay lets the Bluetooth stack come up first.
 
-**It has never gated commands, and the 2 minutes it was until 0.9.2 were the wrong side of the trade.**
-`_async_send_led` calls `ensure_connected()` itself and waits on no timer, so the lamp is commandable from the
-moment setup finishes. What the delay does gate, under *always connected*, is the link being held open — and
-until it is, a button press goes unseen and both battery entities read unavailable. Firing too early costs one
-silent attempt, because the check-in swallows its failures; firing late costs a window of exactly the blindness
-that mode exists to remove.
+**It has never gated commands.** `_async_send_led` calls `ensure_connected()` itself and waits on no timer, so
+the lamp is commandable from the moment setup finishes. What the delay does gate, under *always connected*, is
+the link being held open — and until it is, a button press goes unseen and both battery entities read
+unavailable.
+
+**One shot, and one minute, both deliberately.** Firing late costs a window of exactly the blindness that mode
+exists to remove; firing early is worse than it looks, because the check-in swallows its failures — an adapter
+or proxy still coming up consumes the single attempt in silence and the next is a whole interval away. 0.9.2
+briefly tried 30 s plus a retry chain, but the chain re-armed its timer *after* an await, so a reload landing
+mid-check-in left a timer nothing could cancel, firing later against a discarded connection and opening a
+second BLE link to a lamp that accepts one controller. One minute needs no retry, and the single timer is
+registered synchronously so a reload can always cancel it.
 
 Two deliberate refusals:
 
@@ -136,9 +142,9 @@ The check-in interval is therefore also the **upper bound on how long that state
 reason not to lengthen it.
 
 `fermob.check_in` is the same routine on demand — see
-[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services). It is a **domain** service rather than an entity
-service precisely so that it still works on a lamp whose entity has gone unavailable, which is when a user
-would call it; the scheduled check-in never had that problem, because it calls the connection directly.
+[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services). Being an entity service it cannot be called on
+a lamp whose entity has gone *unavailable*; the scheduled check-in has never had that problem, because it calls
+the connection directly, and it is what recovers such a lamp without anyone asking.
 
 ### How long a failed connect is allowed to take
 

@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1073 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1055 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -123,16 +123,16 @@ channels whose sum is the total output, which is how colour temperature is expre
   our back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose
   effect on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the
   happy path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
-- **An entity service cannot be called on an unavailable entity, and Home Assistant does not say so.**
-  `async_extract_entities` drops the entity from the match set *before* testing `entity.available`, so the call
-  reports success having done nothing. That is what made the 0.9.0 bug unrecoverable, and it is why
-  `fermob.check_in` is registered on the **domain** in `__init__.py` rather than on the light platform.
-  `fermob.unpair` is still an entity service and still carries the limitation. Never make a recovery path an
-  entity service. **A domain service gives up three things the platform provided, and all three must be
-  replaced by hand:** target expansion (use `TargetSelection` + `async_extract_referenced_entity_ids`, never
-  read `entity_id`/`device_id` yourself), concurrent dispatch (`asyncio.gather`, results isolated), and a
-  registration that must live in `async_setup` so a reload cannot remove it. See
-  [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md#an-entity-service-cannot-be-called-on-an-unavailable-entity--which-is-why-check_in-is-not-one).
+- **An entity service cannot be called on an unavailable entity, and the call still reports success.**
+  `entity_service_call` -> `_resolve_entity_service_call_entities` filters on `entity.available` before the
+  handler runs (it does log *"Referenced entities ... are missing or not currently available"*, but under
+  `homeassistant.helpers.service`, so a log grepped for `fermob` shows nothing). That is what made the 0.9.0 bug
+  unrecoverable, and **0.9.1 fixed it at the source** by keeping a `KEYS_REJECTED` lamp *available*. Both
+  services still carry the limitation, deliberately: 0.9.2 moved `check_in` to a domain service to lift it and
+  **reverted**, because leaving the platform means reimplementing target expansion, concurrent dispatch,
+  registration lifetime and per-entity permissions, and the only gain was not waiting for a recovery that
+  already happens by itself. The scheduled check-in calls the connection directly and is unaffected. See
+  [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md#neither-can-be-called-on-an-unavailable-entity-and-that-is-accepted).
 - **The connect budget is deliberately asymmetric, and `ensure_connected` defaults to the slow one.**
   `bleak_retry_connector` hardcodes 20 s per attempt, so `max_attempts` is the only lever: interactive paths
   pass `CONNECT_ATTEMPTS_INTERACTIVE` (2) because a human is watching, and the check-in keeps 4 because nothing

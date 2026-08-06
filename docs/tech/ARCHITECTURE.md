@@ -265,12 +265,13 @@ acquires it, and `ensure_connected()`/`send_led()` assume it is already held.
   [CONVENTIONS.md](CONVENTIONS.md#entity-and-connection-code).
 - **Availability is tracked explicitly** — optimistic at startup, `False` after a failed command, `True` after a successful one or an inbound EVENT. It is not derived from the Bluetooth stack's presence cache, which would flap for a lamp that stops advertising while connected.
 - **`unique_id`** is `fermob_<mac_with_underscores>`; the device identifier is `("fermob", address)`.
-- **The two services are registered in different places, and that is deliberate.** `"unpair"` is an entity
-  service on the platform (`entity_platform.async_get_current_platform().async_register_entity_service(...)` →
-  `async_unpair`). `"check_in"` is a **domain** service registered by `__init__.py` against `hass.services`,
-  because Home Assistant filters an entity service's targets by availability before the handler runs — so as an
-  entity service it could not be called on the one lamp anybody would call it on. Neither takes a schema. See
-  [ENTITIES-AND-SERVICES.md](../domain/ENTITIES-AND-SERVICES.md#an-entity-service-cannot-be-called-on-an-unavailable-entity--which-is-why-check_in-is-not-one)
-  for the mechanism, and [PAIRING.md](../domain/PAIRING.md#unpairing) for what unpairing does to the lamp.
+- **Both services are entity services**, registered in the platform's `async_setup_entry` via
+  `entity_platform.async_get_current_platform().async_register_entity_service(...)` — not plain methods and not
+  `hass.services` registrations. Neither takes a schema: `"unpair"` → `async_unpair`, `"check_in"` →
+  `async_check_in`. That means **neither can be called on an unavailable entity**, which is a known and
+  accepted limitation rather than an oversight — 0.9.2 tried moving `check_in` to the domain and reverted it.
+  See
+  [ENTITIES-AND-SERVICES.md](../domain/ENTITIES-AND-SERVICES.md#neither-can-be-called-on-an-unavailable-entity-and-that-is-accepted)
+  for the mechanism and why, and [PAIRING.md](../domain/PAIRING.md#unpairing) for what unpairing does to the lamp.
 
 See [STATE-MODEL.md](../domain/STATE-MODEL.md) for why there is no state resync.

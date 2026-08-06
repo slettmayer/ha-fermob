@@ -308,16 +308,6 @@ class FermobBLEConnection:
     # `docs/tech/ARCHITECTURE.md`.
     # ------------------------------------------------------------------
 
-    @property
-    def address(self) -> str:
-        """The lamp's BLE address, for callers that only need to name it.
-
-        Read-only: the address identifies the key store and every frame's short
-        address is derived from it, so nothing outside construction may change
-        it.
-        """
-        return self._address
-
     def add_battery_listener(
         self, listener: Callable[[Battery], None]
     ) -> Callable[[], None]:
@@ -1726,11 +1716,7 @@ async def async_setup_entry(
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service("unpair", {}, "async_unpair")
-    # `check_in` is deliberately NOT here. Home Assistant filters an entity
-    # service's targets by availability before the handler runs, so an entity
-    # service cannot be called on an unavailable entity -- which is precisely
-    # when a user reaches for a check-in. It is registered on the domain in
-    # `__init__.py` instead; see the note there.
+    platform.async_register_entity_service("check_in", {}, "async_check_in")
 
 
 class FermobLight(LightEntity):
@@ -1910,11 +1896,23 @@ class FermobLight(LightEntity):
         self._attr_is_on = False
         self.async_write_ha_state()
 
-    # No `async_check_in` here on purpose. `fermob.check_in` is a domain service
-    # registered in `__init__.py` and dispatches to the *connection*, because an
-    # entity service cannot be called on an unavailable entity -- which is the
-    # one case it exists for. Re-adding an entity-side delegation would invite
-    # re-adding the platform registration with it.
+    async def async_check_in(self) -> None:
+        """Reconnect and refresh the battery now, rather than on the timer.
+
+        The entity-service face of `FermobBLEConnection.async_check_in`, which
+        already takes the lock and swallows its own failures -- so this is a
+        plain delegation, and calling it on an out-of-range lamp is a no-op
+        rather than an error.
+
+        **Being an entity service, it cannot be called on an unavailable
+        entity** -- Home Assistant filters the target out before this runs, and
+        the call still reports success. That is a real limitation and it is
+        accepted rather than worked around: the *scheduled* check-in calls the
+        connection directly, so a lamp whose entity has gone unavailable is
+        recovered without anyone asking, within one check-in interval. See
+        `docs/domain/ENTITIES-AND-SERVICES.md`.
+        """
+        await self._conn.async_check_in()
 
     async def async_unpair(self) -> None:
         """Unpair the lamp and remove this config entry.

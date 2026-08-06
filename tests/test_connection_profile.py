@@ -89,12 +89,15 @@ def test_the_startup_check_in_does_not_make_the_user_wait():
     always-connected mode, is the link being held open -- and until it is, a
     button press goes unseen and both battery entities read unavailable.
 
-    Firing early is cheap (the check-in swallows its failures, so a Bluetooth
-    stack that is not up yet costs one silent attempt); firing late costs a
-    window of exactly the blindness that mode exists to remove. Two minutes was
-    the wrong side of that trade. The bound, rather than the number, is what
-    matters: it must stay well inside the shortest check-in interval, or the
-    startup tick stops being a distinct thing at all.
+    Both directions cost something, which is why the value is a middle one.
+    Firing late is a window of exactly that blindness; firing *early* is worse
+    than it looks, because the check-in swallows its failures, so a Bluetooth
+    stack that is not up yet consumes the single attempt in silence and the next
+    is a whole interval away. There is deliberately no retry -- see the constant.
+
+    The bound, rather than the number, is what matters: it must stay well inside
+    the shortest check-in interval, or the startup tick stops being a distinct
+    thing at all.
     """
     shortest = min(
         resolve_connection_profile(
@@ -103,5 +106,5 @@ def test_the_startup_check_in_does_not_make_the_user_wait():
         for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
     )
 
-    assert timedelta(seconds=30) >= CHECK_IN_STARTUP_DELAY
+    assert timedelta(minutes=1) >= CHECK_IN_STARTUP_DELAY
     assert shortest / 10 > CHECK_IN_STARTUP_DELAY

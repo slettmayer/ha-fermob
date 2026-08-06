@@ -3,9 +3,10 @@ check_in:
   description: >
     Contact the lamp now to reconnect if the link has dropped and refresh its
     battery level, instead of waiting for the next scheduled check-in. Does not
-    turn the lamp on or off. A lamp that is out of range is left alone. Works
-    even when the light entity is unavailable; leave the target empty to check
-    in with every Fermob lamp.
+    turn the lamp on or off. A lamp that is out of range is left alone. Cannot
+    be called on a light that is showing as unavailable — that recovers on its
+    own at the next scheduled check-in, or immediately if you reload the
+    integration.
   target:
     entity:
       domain: light
