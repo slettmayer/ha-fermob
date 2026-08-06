@@ -5,14 +5,21 @@
 **Two responsiveness fixes and a documentation correction.** No protocol or
 pairing changes; nothing here requires re-pairing a lamp.
 
-- **A command that cannot reach the lamp gives up roughly twice as fast.**
+- **A light command that cannot reach the lamp gives up roughly twice as fast.**
   Bluetooth allows 20 s per connect attempt and the retry count was the library
   default of four, so an out-of-range lamp left the UI unresponsive for over a
-  minute — which reads as a hang. Commands and `fermob.unpair` now take two
-  attempts; background check-ins keep all four, since nothing is waiting on them.
-  This halves the ordinary out-of-range failure. It is not a hard ceiling: some
-  Bluetooth errors retry on their own separate budget, and a command still waits
-  for any check-in already in progress.
+  minute — which reads as a hang. Light commands and `fermob.check_in` now take
+  two attempts. This halves the ordinary out-of-range failure. It is not a hard
+  ceiling: some Bluetooth errors retry on their own separate budget, and a
+  command still waits for any check-in already in progress.
+
+  Three paths deliberately keep all four attempts, because for them giving up
+  early costs more than waiting does: the scheduled check-in (nothing is waiting
+  on it), anything that pairs (including the automatic re-pair after a factory
+  reset — reporting "pairing failed" on a lamp that would have paired is the
+  worse outcome), and `fermob.unpair` (an unpair that gives up releases nothing,
+  and the obvious next move is deleting the integration, which leaves the lamp
+  needing a ten-second factory reset).
 
 - **The battery entities populate one minute after a restart, not two.** The
   first check-in is what fills them in and what opens the link that makes button
