@@ -61,6 +61,13 @@ re-pair, no settings to revisit.
   unpair command — it reports an error and changes nothing. Bring the lamp in
   range and try again.
 
+  Two cases where that error used to be simply wrong now say what is actually
+  going on. A lamp you already factory-reset is not unreachable — it is answering,
+  and what it is answering is that it is no longer yours; the service now tells
+  you there is nothing left to release and to delete the integration. And an entry
+  whose pairing never completed has nothing to release either, so it is removed
+  without touching the radio, instead of failing with a message about range.
+
 - **The background check-in can no longer pair a lamp.** It was only ever
   supposed to reconnect and read the battery, but the new re-pairing above could
   be reached from it, which meant a lamp you had reset to hand back to the Fermob

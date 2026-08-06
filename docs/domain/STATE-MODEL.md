@@ -108,7 +108,11 @@ Two things make that signal trustworthy enough to act on:
   decrypt us, so a session that gets one is not alive at all: our keys are wrong. Verified on hardware
   (2026-08-06) — a factory-reset H134 answers `CRYPT_MSG` rather than going silent, and for one release counting
   that as "listening" made the reset undetectable. The three-way split lives in `BatteryVerdict`.
-- **One miss is not a diagnosis.** The request is retried once before anything acts on the failure.
+- **One miss is not a diagnosis.** A `SILENT` request is retried once before anything acts on the failure —
+  and the retry returns a `BatteryVerdict` too, so a rejection that only shows up on the second attempt is
+  still read as a rejection. Anywhere that flattens the three verdicts into a bool loses exactly that case;
+  `request_battery()` is the bool wrapper and is only for callers that genuinely mean "can I talk to this
+  lamp".
 
 This is what replaces the 30 s idle disconnect. Before 0.8.0 that timer dropped the link after every command,
 so a session the lamp had stopped honouring was repaired within half a minute — invisibly, and by accident.

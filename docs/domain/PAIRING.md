@@ -51,6 +51,25 @@ Storage is `.storage/fermob_<mac_with_underscores>` in the HA config directory �
 grep for it in lower case during recovery. It holds five keys: `pub`, `priv` and `nonce` as hex strings, plus
 `addr_b2` and `addr_b3` (the short address) as plain integers, not hex.
 
+### The short address is not key material, and must never be overwritten with zero
+
+Step 7 is the only place the handshake learns it, and it is unacknowledged like everything else — a dropped
+reply leaves the address at 0 while `_save_keys()` runs anyway. So three separate guards keep a zero out of the
+record:
+
+- **Step 7 only assigns a non-zero address.** A reply without the `0xb1` TLV, or no reply at all, leaves what
+  was already there.
+- **`_forget_keys_in_memory()` does not clear it.** It is derived from the lamp's MAC and a factory reset does
+  not change it, so a re-pair has no reason to throw it away — and if it did, a single dropped step-7 reply
+  would persist `0x0000` over a good record.
+- **`_fetch_module_info_once()` re-reads until it gets one**, bounded by `_MODULE_INFO_MAX_READS` so a lamp
+  whose address genuinely *is* `0x0000` does not re-read on every reconnect forever. `_forget_keys_in_memory()`
+  clears that latch, because the re-pair is exactly when the recovery is needed.
+
+The consequence of getting this wrong is total and permanent: every addressed frame — `send_led`,
+`DATETIME_SET`, and the battery request that is the only liveness signal there is — goes to `0x0000`, the ACK
+never comes back, and `ensure_connected()` correctly refuses a link that will never work.
+
 ## Reconnects
 
 Reconnecting is **a BLE connect plus `start_notify`** — no `REGISTER_END`, no key exchange. The lamp keeps its
@@ -136,7 +155,28 @@ silently, which is why that is a one-way door; see below.
 as the app sends it, so it can never be acknowledged. What *can* be checked is the session carrying it, with a
 battery request one command earlier — retried once, because a single dropped ACK is a marginal link and not a
 verdict. If both go unanswered, **the broadcast is not sent at all** and `async_unpair` raises
-`HomeAssistantError`, removing nothing.
+`HomeAssistantError`, removing nothing. When the connect just ran, its own battery request supplies that
+verdict and no second round trip is made (`_connect_verdict`); the probe is repeated only when
+`ensure_connected()` returned early on an already-open link, having asked nothing.
+
+`unpair()` returns a `BatteryVerdict`, not a bool, because there are **three** outcomes and only one of them is
+"could not reach it":
+
+| Verdict | What it means | What the service does |
+|---|---|---|
+| `ANSWERED` | The session was alive one command ago | Broadcast, discard keys, remove the entry |
+| `SILENT` | Nothing came back — out of range, asleep, or deaf | Raise; remove nothing; "bring it in range and try again" |
+| `KEYS_REJECTED` | The lamp answered `CRYPT_MSG`/`UNREGISTERED`: it is **already free** | Raise, saying there is nothing to release and to delete the integration |
+
+Flattening `KEYS_REJECTED` into `SILENT` — which a bare `request_battery()` does — told a user who had just
+factory-reset their lamp to bring it in range and retry a service that could never succeed. The removal is
+still not done for them: it is the one-way door, and the rejection could in principle be our key store rather
+than the lamp.
+
+An entry with **no stored keys at all** never had a pairing to release, so the service removes it without
+touching the radio. Sending it down the connect path raised *"not paired, and pairing is not allowed here"*
+wrapped in *"could not reach the lamp"* — blaming range for something unrelated to it, and leaving an entry
+`fermob.unpair` could never clean up.
 
 It also **never pairs**: `ensure_connected(allow_pairing=False)`. On a lamp the user reset behind Home
 Assistant's back, the default would run the re-pair branch — flashing the lamp, re-registering it — and only

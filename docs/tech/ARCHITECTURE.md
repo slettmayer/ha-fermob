@@ -59,9 +59,9 @@ first command  ─→ ensure_connected() ─→ BLE connect + start_notify ─�
                                                                         DATETIME_SET)
 later commands ─→ ensure_connected() ─→ already connected?  ─→ re-arm the idle timer, return
                                     └─→ BLE connect + start_notify (no handshake)
-                                          └─→ MODULE_INFO_GET, but only until it answers once
+                                          └─→ MODULE_INFO_GET, until it yields a short address
                                           └─→ set_module_time → request_battery
-check-in timer ─→ async_check_in() ─→ paired? ─→ take the lock ─→ ensure_connected()
+check-in timer ─→ async_check_in() ─→ take the lock ─→ paired? ─→ ensure_connected()
                                                                   └─→ already up? ask both again
 lamp changes   ─→ EVENT push (marker 146) ─→ _dispatch_event() ─→ the light entity
 idle timeout   ─→ disconnect()          (on-demand mode only; there is no timer otherwise)
@@ -89,8 +89,14 @@ which is also how the vendor app behaves (it polls the same command on a timer w
 every 40 s while its screen is open). `fermob.check_in` is the same routine on demand. Both timers are
 cancelled via `entry.async_on_unload`.
 
+**The key-presence check is inside the lock, and has to be.** It used to be a no-op — nothing ever cleared
+`_keys_loaded` once set — but the re-pair path clears it and then spends seconds inside the handshake. A
+check-in firing in that window would re-read the dead pre-reset record straight over the keys being negotiated,
+`_save_keys()` would persist the mixture, and the lamp would end up registered to a key Home Assistant cannot
+reproduce: recoverable only by a 10-second factory reset.
+
 It **never pairs**, and the guard for that is `ensure_connected(allow_pairing=False)`, not the key-presence
-check at the top. That check alone was not enough: a lamp someone factory-reset leaves our keys on disk, so it
+check. That check alone was not enough: a lamp someone factory-reset leaves our keys on disk, so it
 passes, and the re-pair branch would then flash the lamp through a full handshake at an arbitrary hour and
 silently re-register a lamp its owner had deliberately freed. It also swallows every failure — an out-of-range
 balcony lamp is the normal case, and a missed check-in must leave the last known level in place rather than
@@ -121,18 +127,23 @@ battery request. What happens next depends only on whether that request was answ
 | Pass outcome | Next |
 |---|---|
 | Battery answered (first try **or the retry**) | done |
-| **First** try refused with `CRYPT_MSG` / `UNREGISTERED`, keys stored, pairing allowed | keys are wrong — **re-pair, no probe** |
+| Refused with `CRYPT_MSG` / `UNREGISTERED`, keys stored, pairing allowed | keys are wrong — **re-pair, no probe** |
 | …same, but freshly paired (`not have_keys`) | **disconnect and raise** — the lamp rejected keys seconds old |
 | …same, but `allow_pairing=False` | **disconnect and raise** — only a user may pair |
-| Both unanswered, freshly paired (`not have_keys`) | **disconnect and raise** — no probe, no third pass |
-| Both unanswered, `allow_pairing=False` | **disconnect and raise** |
-| Both unanswered, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
-| Both unanswered, lamp answers in a non-`PRIVATE` mode | `_forget_keys_in_memory()`, second pass pairs |
+| Silent twice, freshly paired (`not have_keys`) | **disconnect and raise** — no probe, no third pass |
+| Silent twice, `allow_pairing=False` | **disconnect and raise** |
+| Silent twice, `_lamp_still_paired()` says yes or stays silent | **disconnect and raise** |
+| Silent twice, lamp answers in a non-`PRIVATE` mode | `_forget_keys_in_memory()`, second pass pairs |
 
-Note the crypto rejection is only read from the **first** battery request. The retry goes through
-`request_battery()`, whose bool collapses all three verdicts, so a rejection arriving only on the retry falls
-through to the silent path and the probe. That is harmless — the probe reaches the same conclusion — but it is
-why the row above says "first try" rather than "ever".
+**The retry yields a verdict, not a bool, and that matters.** Only `SILENT` is retried — a refusal has already
+answered the question — and the retry calls `_request_battery_verdict()` so its answer lands in the same
+three-way branch as the first. It used to call `request_battery()`, whose bool flattens `KEYS_REJECTED` into
+`False`: a rejection arriving only on the retry then fell through to the silent path and sent `REGISTER(0)`, the
+one pairing frame the `KEYS_REJECTED` branch exists to avoid, at a lamp that had already stated the answer.
+
+The verdict is also kept in `_connect_verdict` for the length of the link (cleared by `disconnect()`, and by the
+already-connected early return, which probes nothing). `unpair()` reuses it instead of paying for its own round
+trip.
 
 That `raise` is the point of the whole exercise. Returning a link nobody could get an answer over hands
 `_async_send_led` something it will write into and mark *available*, because `send_led` cannot fail — so

@@ -75,8 +75,14 @@ def _conn(hass: HomeAssistant, keys: dict | None = None) -> FermobBLEConnection:
     conn = FermobBLEConnection(
         hass, ADDRESS, store, light_type=LIGHT_TYPE_TW, idle_disconnect_delay=None
     )
+    # The client a real `_open_link` hands back has an awaitable write, so this
+    # one does too -- otherwise a test that reaches an unstubbed write path
+    # "passes" on the TypeError from awaiting a MagicMock rather than on the
+    # behaviour it names.
     conn._open_link = AsyncMock(
-        side_effect=lambda: setattr(conn, "_client", MagicMock())
+        side_effect=lambda: setattr(
+            conn, "_client", MagicMock(write_gatt_char=AsyncMock())
+        )
     )
 
     def _teardown() -> None:
@@ -273,6 +279,89 @@ async def test_a_crypt_msg_refusal_re_pairs_without_a_probe(hass: HomeAssistant)
     conn._store.async_remove.assert_not_called()  # in memory only
 
 
+async def test_a_rejection_on_the_retry_still_skips_the_probe(hass: HomeAssistant):
+    """The retry has to yield a verdict, not a bool.
+
+    A marginal link drops the first ACK and the second comes back `CRYPT_MSG`.
+    The retry used to call `request_battery()`, which flattens KEYS_REJECTED into
+    False -- so this landed in the silent branch and sent `REGISTER(0)`, the one
+    pairing frame the whole KEYS_REJECTED path exists to avoid, at a lamp whose
+    answer had already settled the question.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._request_battery_verdict = AsyncMock(
+        side_effect=[
+            BatteryVerdict.SILENT,  # dropped
+            BatteryVerdict.KEYS_REJECTED,  # the lamp says it is not ours
+            BatteryVerdict.ANSWERED,  # after re-pairing
+        ]
+    )
+    conn._send_frames = AsyncMock()
+
+    await conn.ensure_connected()
+
+    conn._send_frames.assert_not_called()  # no REGISTER(0)
+    conn._pairing_handshake.assert_awaited_once()
+
+
+async def test_forgetting_the_keys_keeps_the_short_address(hass: HomeAssistant):
+    """The address is derived from the MAC; a factory reset does not change it.
+
+    Zeroing it here meant a re-pair whose step-7 MODULE_INFO_GET went unanswered
+    let `_save_keys()` persist 0x0000 over a good record. Every addressed frame
+    after that -- including the battery request that is the only liveness signal
+    there is -- went to the wrong place, and the light never came back.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    await conn._load_keys()
+    conn._module_info_read = True
+
+    conn._forget_keys_in_memory()
+
+    assert (conn._addr_b2, conn._addr_b3) == (0x75, 0x7E)
+    assert conn._pub == bytes(16)  # the key material does go
+    # Re-armed: the lamp is about to be paired again, and the latch would stop
+    # `_fetch_module_info_once` recovering an address the handshake failed to get.
+    assert conn._module_info_read is False
+
+
+async def test_module_info_is_re_read_until_it_yields_an_address(
+    hass: HomeAssistant,
+):
+    """Latching on any answer at all disarmed the address recovery.
+
+    A reply carrying the module type but no 0xb1 TLV left the address at 0 *and*
+    stopped anything from asking again -- so every addressed frame went to
+    0x0000 for the life of the connection object. Bounded, because a lamp whose
+    address genuinely is 0x0000 must not re-read on every reconnect forever.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    del conn._fetch_module_info_once
+    conn._have_keys = False  # skip the key write; not what this is about
+    no_address = bytes([3, 0xB4, 0x94, 0x01, 0])  # module_type 404, no 0xb1
+    conn._send = AsyncMock(return_value=(no_address, ENCRYPT_PRIVATE))
+
+    for _ in range(5):
+        await conn._fetch_module_info_once()
+
+    assert conn.module_type == 404
+    assert (conn._addr_b2, conn._addr_b3) == (0, 0)
+    assert conn._send.await_count == 3  # bounded, not once and not forever
+
+    # And an answer that *does* carry one latches immediately.
+    conn = _conn(hass, keys=_KEYS)
+    del conn._fetch_module_info_once
+    conn._have_keys = False
+    with_address = bytes([3, 0xB1, 0x75, 0x7E, 0])
+    conn._send = AsyncMock(return_value=(with_address, ENCRYPT_PRIVATE))
+
+    await conn._fetch_module_info_once()
+    await conn._fetch_module_info_once()
+
+    assert (conn._addr_b2, conn._addr_b3) == (0x75, 0x7E)
+    conn._send.assert_awaited_once()
+
+
 async def test_an_unregistered_refusal_re_pairs_too(hass: HomeAssistant):
     """UNREGISTERED says the same thing in different words."""
     conn = _conn(hass, keys=_KEYS)
@@ -402,13 +491,21 @@ async def test_a_refused_probe_is_read_as_reset_not_as_silence(
 
 
 async def test_a_probe_that_raises_never_repairs(hass: HomeAssistant):
-    conn = _deaf(hass)
-    conn._send = AsyncMock(side_effect=RuntimeError("link dropped"))
+    """A transport failure says nothing about pairing, so it must not re-pair.
 
-    with pytest.raises(RuntimeError):
+    `_send_frames`, not `_send`: stubbing the latter left the real one to await a
+    MagicMock and raise, which made this an accidental duplicate of the silence
+    test above and left the `except -> still paired` guard uncovered.
+    """
+    conn = _deaf(hass)
+    conn._send_frames = AsyncMock(side_effect=RuntimeError("link dropped"))
+
+    with pytest.raises(LampNotAnswering):
         await conn.ensure_connected()
 
+    conn._send_frames.assert_awaited_once()  # the probe really was attempted
     conn._pairing_handshake.assert_not_called()
+    conn._store.async_remove.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +667,33 @@ async def test_check_in_never_pairs(hass: HomeAssistant):
     conn._pairing_handshake.assert_not_called()
     conn._store.async_remove.assert_not_called()
     conn._send_frames.assert_not_called()  # not even the probe
+
+
+async def test_check_in_reads_the_keys_under_the_lock(hass: HomeAssistant):
+    """The re-pair path clears `_keys_loaded`, which made the unlocked read live.
+
+    It used to be a no-op -- nothing ever cleared the flag once set. Now the
+    re-pair clears it and then spends seconds inside the handshake, so a check-in
+    firing in that window would re-read the dead pre-reset record straight over
+    the keys being negotiated. `_save_keys()` would then persist the mixture and
+    the lamp would be registered to a key Home Assistant cannot reproduce: only a
+    10-second factory reset gets it back.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock()
+    held: list[bool] = []
+
+    real_load = conn._load_keys
+
+    async def _watched() -> bool:
+        held.append(conn.lock.locked())
+        return await real_load()
+
+    conn._load_keys = _watched
+
+    await conn.async_check_in()
+
+    assert held == [True]
 
 
 async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
@@ -829,7 +953,7 @@ async def test_unpair_keeps_the_keys_when_the_lamp_did_not_answer(
     go with it.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.unpair = AsyncMock(return_value=False)
+    conn.unpair = AsyncMock(return_value=BatteryVerdict.SILENT)
     light = _light(hass, conn)
     conn.ensure_connected = AsyncMock()
 
@@ -852,7 +976,7 @@ async def test_unpair_removes_entry_and_keys_when_the_lamp_answered(
     not, so if this stopped doing it nothing would.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.unpair = AsyncMock(return_value=True)
+    conn.unpair = AsyncMock(return_value=BatteryVerdict.ANSWERED)
     light = _light(hass, conn)
     conn.ensure_connected = AsyncMock()
 
@@ -862,6 +986,52 @@ async def test_unpair_removes_entry_and_keys_when_the_lamp_answered(
     remove.assert_awaited_once_with("abc123")
     conn._store.async_remove.assert_awaited_once()
     assert conn._have_keys is False
+
+
+async def test_unpair_on_a_lamp_that_rejected_our_keys_says_so(hass: HomeAssistant):
+    """ "Bring it in range and try again" is false twice over here.
+
+    The lamp answered -- it is in range -- and what it answered is that it cannot
+    decrypt us, so it is already free and no retry can ever succeed. Reporting
+    that as "did not answer" sent the user to a service that would fail forever
+    instead of to the one action that cleans up: delete the integration.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.unpair = AsyncMock(return_value=BatteryVerdict.KEYS_REJECTED)
+    conn.ensure_connected = AsyncMock()
+    light = _light(hass, conn)
+
+    with (
+        patch.object(hass.config_entries, "async_remove", AsyncMock()) as remove,
+        pytest.raises(HomeAssistantError, match="no longer paired"),
+    ):
+        await light.async_unpair()
+
+    # Still the one-way door, so it is still the user's to open.
+    remove.assert_not_called()
+    conn._store.async_remove.assert_not_called()
+
+
+async def test_unpair_removes_an_entry_that_never_had_keys(hass: HomeAssistant):
+    """A pairing that died before `_save_keys()` leaves an entry with no keys.
+
+    There is nothing registered to release, so the radio is not touched at all.
+    Sending this down the connect path raised "not paired, and pairing is not
+    allowed here" wrapped in "could not reach the lamp" -- blaming range for a
+    state that has nothing to do with it, and leaving an entry `fermob.unpair`
+    could never clean up.
+    """
+    conn = _conn(hass, keys=None)  # no stored keys
+    conn.ensure_connected = AsyncMock()
+    conn.unpair = AsyncMock()
+    light = _light(hass, conn)
+
+    with patch.object(hass.config_entries, "async_remove", AsyncMock()) as remove:
+        await light.async_unpair()
+
+    remove.assert_awaited_once_with("abc123")
+    conn.ensure_connected.assert_not_called()
+    conn.unpair.assert_not_called()
 
 
 async def test_unpair_does_not_broadcast_when_the_session_is_dead(
@@ -877,23 +1047,62 @@ async def test_unpair_does_not_broadcast_when_the_session_is_dead(
     Fermob app.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(return_value=False)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.SILENT)
     conn._client = MagicMock()
     conn._client.write_gatt_char = AsyncMock()
 
-    assert await conn.unpair() is False
+    assert await conn.unpair() is BatteryVerdict.SILENT
     # Retried, like every other place that acts on an unanswered request.
-    assert conn.request_battery.await_count == 2
+    assert conn._request_battery_verdict.await_count == 2
+    conn._client.write_gatt_char.assert_not_called()
+
+
+async def test_unpair_reports_a_rejection_rather_than_silence(hass: HomeAssistant):
+    """`request_battery()` flattened this to False, so the caller could not tell.
+
+    A lamp that says `CRYPT_MSG` has answered, and has said it is not ours any
+    more. Retrying is pointless -- and one retry is all the old bool bought.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.KEYS_REJECTED)
+    conn._client = MagicMock(write_gatt_char=AsyncMock())
+
+    assert await conn.unpair() is BatteryVerdict.KEYS_REJECTED
+    # Not retried: the lamp already gave a definite answer.
+    conn._request_battery_verdict.assert_awaited_once()
     conn._client.write_gatt_char.assert_not_called()
 
 
 async def test_unpair_survives_one_dropped_ack(hass: HomeAssistant):
     """One missed reply must not abort the service and blame the user."""
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(side_effect=[False, True])
+    conn._request_battery_verdict = AsyncMock(
+        side_effect=[BatteryVerdict.SILENT, BatteryVerdict.ANSWERED]
+    )
     conn._client = MagicMock(write_gatt_char=AsyncMock())
 
-    assert await conn.unpair() is True
+    assert await conn.unpair() is BatteryVerdict.ANSWERED
+    conn._client.write_gatt_char.assert_awaited_once()
+
+
+async def test_unpair_reuses_the_verdict_the_connect_just_established(
+    hass: HomeAssistant,
+):
+    """A connect that just proved the session works has already answered this.
+
+    `ensure_connected()` records what its battery request found, so the common
+    path -- unpair a lamp that was not already connected -- costs no extra round
+    trip. It re-asks only when `ensure_connected` returned early on an
+    already-open link, having probed nothing.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._client = MagicMock(write_gatt_char=AsyncMock())
+
+    await conn.ensure_connected()
+    conn._request_battery_verdict.reset_mock()
+
+    assert await conn.unpair() is BatteryVerdict.ANSWERED
+    conn._request_battery_verdict.assert_not_called()
     conn._client.write_gatt_char.assert_awaited_once()
 
 
@@ -905,7 +1114,7 @@ async def test_unpair_never_pairs(hass: HomeAssistant):
     broadcast UNREGISTER.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.unpair = AsyncMock(return_value=True)
+    conn.unpair = AsyncMock(return_value=BatteryVerdict.ANSWERED)
     conn.ensure_connected = AsyncMock()
     light = _light(hass, conn)
 
@@ -917,11 +1126,10 @@ async def test_unpair_never_pairs(hass: HomeAssistant):
 
 async def test_unpair_broadcasts_when_the_session_answers(hass: HomeAssistant):
     conn = _conn(hass, keys=_KEYS)
-    conn.request_battery = AsyncMock(return_value=True)
     conn._client = MagicMock()
     conn._client.write_gatt_char = AsyncMock()
 
-    assert await conn.unpair() is True
+    assert await conn.unpair() is BatteryVerdict.ANSWERED
     conn._client.write_gatt_char.assert_awaited_once()
 
 
