@@ -2,13 +2,33 @@
 
 ## 0.9.1
 
-- **A factory-reset lamp now says so in the log.** 0.9.0 detects the reset
-  correctly and takes the light unavailable, which is right — the lamp cannot be
-  commanded until you re-pair it. But the log said only *"reachable but not
-  answering"*, which was wrong twice over: the lamp had answered, clearly, and
-  the one instruction that gets you out of the state — *turn the light on in Home
-  Assistant to re-pair it* — was being discarded. The check-in now logs the real
-  reason, whichever of the four it is.
+**Fixes a dead end in 0.9.0.** If you factory-reset your lamp and the scheduled
+check-in noticed before you touched the light, the lamp became unrecoverable
+without reloading the integration. Upgrade if you use 0.9.0.
+
+- **A factory-reset lamp can be re-paired again.** 0.9.0 detected the reset
+  correctly and then took the light *unavailable* — and Home Assistant silently
+  discards every service call to an unavailable entity. So the one action that
+  fixes it, turning the light on, never arrived; neither did `fermob.unpair`; and
+  the check-in is not allowed to pair. The lamp sat greyed out with no way back
+  except reloading the integration, which nothing told you to do.
+
+  A reset lamp now stays **available**, because that is the truthful state: a
+  command *will* work on it — it re-pairs. A lamp that is genuinely unreachable
+  or deaf still goes unavailable, exactly as before.
+
+- **`fermob.unpair` on a reset lamp says the right thing.** It reported *"Could
+  not reach the Fermob lamp … to unpair it"* and then advised turning the light
+  on to **re**-pair — the wrong diagnosis for a lamp that had just answered,
+  followed by the opposite of what you asked for. It now tells you the lamp is
+  already unpaired and that deleting the integration is the cleanup.
+
+- **The check-in log now names the actual problem** instead of a fixed
+  *"reachable but not answering"* summary, which discarded the only recovery
+  instruction the integration ever gives — and described a lamp that had answered
+  as not answering.
+
+With thanks again to the hardware, which found all three.
 
 ## 0.9.0
 

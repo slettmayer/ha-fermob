@@ -738,6 +738,77 @@ async def test_the_check_in_logs_why_the_lamp_is_unusable(hass: HomeAssistant, c
     assert caplog.text.count(ADDRESS) == 1
 
 
+async def test_a_reset_lamp_stays_available_so_it_can_be_re_paired(
+    hass: HomeAssistant,
+):
+    """Unavailable would remove the cure, not just report the illness.
+
+    Home Assistant silently drops every entity-service call to an unavailable
+    entity (`helpers/service.py`: `if not entity.available: continue`). So an
+    entity taken unavailable here can no longer be sent `light.turn_on` -- which
+    is the documented way to re-pair a factory-reset lamp -- nor
+    `fermob.unpair`, and the check-in may not pair. Observed on an H134
+    (2026-08-06): the lamp was unrecoverable until the integration was reloaded,
+    and nothing anywhere told the owner to do that.
+
+    "Unavailable" means commands will not work. Here exactly one will.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering("reset", BatteryVerdict.KEYS_REJECTED)
+    )
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen == []
+
+
+async def test_a_deaf_lamp_is_still_reported_unavailable(hass: HomeAssistant):
+    """The exemption above is for the recoverable verdict only.
+
+    A lamp that holds our keys and answers nothing cannot be fixed by any user
+    action, so it must still grey out -- that is the failure this release exists
+    to surface.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering("deaf", BatteryVerdict.SILENT)
+    )
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen == [False]
+
+
+@pytest.mark.parametrize(
+    ("verdicts", "expected"),
+    [
+        ([BatteryVerdict.KEYS_REJECTED], BatteryVerdict.KEYS_REJECTED),
+        ([BatteryVerdict.SILENT, BatteryVerdict.SILENT], BatteryVerdict.SILENT),
+    ],
+)
+async def test_ensure_connected_tags_its_refusal_with_the_verdict(
+    hass: HomeAssistant, verdicts, expected
+):
+    """Callers branch on the verdict, and the message cannot be branched on.
+
+    `async_check_in` decides availability from it and `async_unpair` decides
+    which error to raise; both were reading a fixed summary before.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._request_battery_verdict = AsyncMock(side_effect=verdicts)
+    conn._send_frames = AsyncMock(return_value=Ack(None, 0, False, None))
+
+    with pytest.raises(LampNotAnswering) as excinfo:
+        await conn.ensure_connected(allow_pairing=False)
+
+    assert excinfo.value.verdict is expected
+
+
 async def test_an_out_of_range_lamp_is_not_reported_unavailable(
     hass: HomeAssistant,
 ):
@@ -1036,6 +1107,60 @@ async def test_unpair_on_a_lamp_that_rejected_our_keys_says_so(hass: HomeAssista
     # Still the one-way door, so it is still the user's to open.
     remove.assert_not_called()
     conn._store.async_remove.assert_not_called()
+
+
+async def test_unpair_reads_the_verdict_off_a_refused_connect(hass: HomeAssistant):
+    """`ensure_connected` raises before `unpair()` ever runs.
+
+    So the `KEYS_REJECTED` branch below was unreachable from the service: on a
+    factory-reset lamp the generic handler produced "Could not reach the Fermob
+    lamp at ... to unpair it: ... turn the light on in Home Assistant to re-pair
+    it" -- the wrong diagnosis for a lamp that had just answered, followed by
+    the opposite of what the user asked for. Found on an H134 (2026-08-06); the
+    other unpair tests miss it because they mock `ensure_connected` into
+    succeeding.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering(
+            f"Fermob {ADDRESS}: lamp no longer holds our keys",
+            BatteryVerdict.KEYS_REJECTED,
+        )
+    )
+    conn.unpair = AsyncMock()
+    light = _light(hass, conn)
+
+    with (
+        patch.object(hass.config_entries, "async_remove", AsyncMock()) as remove,
+        pytest.raises(HomeAssistantError, match="no longer paired"),
+    ):
+        await light.async_unpair()
+
+    conn.unpair.assert_not_called()  # never got that far
+    remove.assert_not_called()
+    conn._store.async_remove.assert_not_called()
+
+
+async def test_unpair_still_blames_range_when_the_lamp_is_silent(
+    hass: HomeAssistant,
+):
+    """The exemption above must not swallow the genuine out-of-range case."""
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering(
+            f"Fermob {ADDRESS}: silent on a link that just came up",
+            BatteryVerdict.SILENT,
+        )
+    )
+    light = _light(hass, conn)
+
+    with (
+        patch.object(hass.config_entries, "async_remove", AsyncMock()) as remove,
+        pytest.raises(HomeAssistantError, match="did not answer"),
+    ):
+        await light.async_unpair()
+
+    remove.assert_not_called()
 
 
 async def test_unpair_removes_an_entry_that_never_had_keys(hass: HomeAssistant):
