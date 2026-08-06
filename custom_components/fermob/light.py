@@ -148,9 +148,10 @@ class LampNotAnswering(RuntimeError):
     opposite handling and the message alone cannot be branched on:
 
     * `SILENT` -- the lamp is not talking on this link. Nothing the user does
-      fixes it *directly*, but it is not necessarily terminal either: two of the
-      three raise sites are about a link that may simply be marginal, and their
-      messages say to retry. What it never is, is grounds to re-pair.
+      fixes it *directly*, and only one of the three raise sites offers any
+      advice at all ("retry the command rather than resetting it"). It is not
+      necessarily terminal -- a marginal link recovers on its own -- but what it
+      never is, is grounds to re-pair.
     * `KEYS_REJECTED` -- the lamp was factory-reset. Turning the light on
       re-pairs it, so this one is recoverable, by exactly one gesture.
 
@@ -166,6 +167,21 @@ class LampNotAnswering(RuntimeError):
     def __init__(self, message: str, verdict: BatteryVerdict) -> None:
         super().__init__(message)
         self.verdict = verdict
+
+    def __reduce__(self) -> tuple:
+        """Keep `copy` and `pickle` able to rebuild this.
+
+        They reconstruct from `args`, which holds the message alone -- so with
+        `verdict` required they would call the one-argument form and raise
+        `TypeError`. Making the argument required is what introduced that, and
+        it is worth keeping.
+
+        `args` deliberately stays one long rather than carrying the verdict:
+        `BaseException.__str__` returns `repr(args)` once there is more than
+        one, which would turn every `"%s" % err` log line -- and the
+        `HomeAssistantError` text `async_unpair` builds from it -- into a tuple.
+        """
+        return (self.__class__, (str(self), self.verdict))
 
 
 # ---------------------------------------------------------------------------
@@ -1310,16 +1326,16 @@ class FermobBLEConnection:
                         await self.ensure_connected(allow_pairing=False)
             except LampNotAnswering as err:
                 # Reached it, and it is not usable. This is the one outcome worth
-                # reporting: nothing the user does will work until the session is
-                # repaired.
+                # reporting.
                 #
-                # Log the exception, not a summary of it. `ensure_connected`
-                # raises four distinct messages here, and one of them -- the
-                # factory-reset case -- is the only place the user is told how to
-                # recover ("turn the light on in Home Assistant to re-pair it").
-                # Flattening them all to "reachable but not answering" threw that
-                # away, and described a lamp that had answered `CRYPT_MSG`,
-                # clearly and usefully, as not answering.
+                # Log the exception, not a summary of it. Two of
+                # `ensure_connected`'s five messages reach this path -- the
+                # `not allow_pairing` pair, the rest needing `have_keys` false or
+                # pairing allowed -- and one of the two is the only place the
+                # user is ever told how to recover ("turn the light on in Home
+                # Assistant to re-pair it"). Flattening both to "reachable but
+                # not answering" threw that away, and described a lamp that had
+                # answered `CRYPT_MSG`, clearly and usefully, as not answering.
                 # No address prefix: every `LampNotAnswering` message already
                 # carries one.
                 _LOGGER.warning("%s", err)
@@ -1903,6 +1919,13 @@ class FermobLight(LightEntity):
                     # exact opposite of what was asked for. Seen on an H134,
                     # 2026-08-06; the unit tests missed it because they mock
                     # `ensure_connected`.
+                    #
+                    # Logged, because the `HomeAssistantError` built below is
+                    # generic by verdict and drops the specific message -- "silent
+                    # on a link that just came up" and "still holds our keys and
+                    # is still not answering" are different problems that both
+                    # surface to the user as "did not answer".
+                    _LOGGER.warning("%s", err)
                     verdict = err.verdict
                 except Exception as exc:
                     _LOGGER.error(

@@ -23,6 +23,7 @@ mechanisms that replace it:
 
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -739,6 +740,25 @@ async def test_the_check_in_logs_why_the_lamp_is_unusable(hass: HomeAssistant, c
     assert "turn the light on in Home Assistant to re-pair it" in caplog.text
     # And the address is not doubled: every raise site already prefixes it.
     assert caplog.text.count(ADDRESS) == 1
+
+
+def test_lamp_not_answering_survives_a_copy_with_its_message_intact():
+    """Two ways to get this wrong, and they pull in opposite directions.
+
+    `copy` and `pickle` rebuild an exception from `args`, which holds the message
+    alone -- so a *required* `verdict` makes the default reconstruction raise
+    `TypeError`. The obvious fix, passing both to `super().__init__`, breaks
+    something worse: `BaseException.__str__` returns `repr(args)` once there is
+    more than one, so every `"%s" % err` log line and the `HomeAssistantError`
+    that `async_unpair` builds would render as a tuple. Hence `__reduce__`.
+    """
+    err = LampNotAnswering("Fermob: no keys", BatteryVerdict.KEYS_REJECTED)
+
+    assert str(err) == "Fermob: no keys"  # not a tuple repr
+
+    clone = copy.copy(err)
+    assert str(clone) == "Fermob: no keys"
+    assert clone.verdict is BatteryVerdict.KEYS_REJECTED
 
 
 async def test_a_reset_lamp_stays_available_so_it_can_be_re_paired(
