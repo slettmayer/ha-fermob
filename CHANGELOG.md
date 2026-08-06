@@ -29,8 +29,11 @@ pairing changes; nothing here requires re-pairing a lamp.
   greyed out.** Home Assistant discards service calls to an unavailable entity
   and still reports success. You do not need `fermob.check_in` in that case —
   the *scheduled* check-in contacts the lamp regardless of entity state and
-  restores it on its own, within 30 minutes on the default setting; reloading
-  the integration forces it immediately.
+  restores it on its own, within 30 minutes on the default setting. Reloading
+  the integration clears the greyed-out state at once if you would rather not
+  wait — though note that a reload rebuilds the entity without contacting the
+  lamp, so on a lamp still out of range it will simply fail again on the next
+  command.
 
   This release briefly moved `check_in` off the entity platform to lift that
   limitation, and the change was **reverted before release**. Leaving the

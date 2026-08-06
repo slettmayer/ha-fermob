@@ -88,7 +88,11 @@ a bug to route around:
   therefore recovered **with no user action at all**, within one check-in interval. Verified on hardware
   (2026-08-06): an entity unavailable for 26 minutes was restored by the scheduled check-in alone, and the same
   run confirmed the service being dropped.
-- **Reloading the entry forces it immediately** — Settings → Devices & Services → Fermob → ⋮ → Reload.
+- **Reloading the entry clears the grey at once** — Settings → Devices & Services → Fermob → ⋮ → Reload. Be
+  precise about what that does, because it is easy to overstate: it rebuilds the entity, and a fresh
+  `FermobLight` starts out `available`. It does **not** contact the lamp — `async_setup_entry` opens no link.
+  First contact is the startup check-in a minute later, or the next command. So on a lamp that is still out of
+  range, reloading makes the entity look healthy and it will fail again on the next command.
 
 0.9.2 briefly moved `check_in` to a domain service to lift the limitation. It was reverted: leaving the entity
 platform means reimplementing target expansion, concurrent dispatch, registration lifetime **and** per-entity

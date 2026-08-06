@@ -152,10 +152,24 @@ the connection directly, and it is what recovers such a lamp without anyone aski
 20 s) out of reach of `**kwargs`, so `max_attempts` is the only lever the integration has. It sets two, because
 the right answer depends on who is waiting:
 
-| Path | Attempts |
-|---|---|
-| A command the user just issued, and `fermob.unpair` | 2 |
-| The scheduled check-in | 4 (the library default) |
+| Path | Attempts | Why |
+|---|---|---|
+| A light command | 2 | A human is watching the UI |
+| `fermob.check_in` (the service) | 2 | Same, and it holds the connection lock while it waits |
+| The scheduled check-in | 4 (the library default) | Nothing is waiting; giving up early costs a missed heartbeat |
+| The reconnect after pairing | 4, **always** | The most fragile connect there is — see below |
+| `fermob.unpair` | 4 | Failing costs more than waiting — see below |
+
+Two of those override the caller, and both are the interesting cases:
+
+- **The post-pairing reconnect never inherits a short budget.** The lamp stops honouring the link it was paired
+  on once `REGISTER_END` lands, so `ensure_connected` reopens — and the only caller that ever pairs is a light
+  command, which asks for 2. Letting it through would halve the retries on precisely the connect that needs
+  them, and a first toggle on a newly added lamp would report failure with the lamp already registered.
+- **`fermob.unpair` keeps the full budget even though a user is waiting.** It is the asymmetric one: an unpair
+  that gives up removes nothing, and the obvious next move is to delete the integration instead — which takes
+  the keys while the lamp stays registered, the one-way door needing a ten-second factory reset. Waiting longer
+  is much the cheaper mistake.
 
 **There is deliberately no "worst case" column, because the honest number is not `attempts × 20 s`.** An
 earlier draft of this table claimed one and was wrong twice over: each attempt also sits under

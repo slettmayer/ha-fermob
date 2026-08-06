@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1055 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1056 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -134,10 +134,13 @@ channels whose sum is the total output, which is how colour temperature is expre
   already happens by itself. The scheduled check-in calls the connection directly and is unaffected. See
   [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md#neither-can-be-called-on-an-unavailable-entity-and-that-is-accepted).
 - **The connect budget is deliberately asymmetric, and `ensure_connected` defaults to the slow one.**
-  `bleak_retry_connector` hardcodes 20 s per attempt, so `max_attempts` is the only lever: interactive paths
-  pass `CONNECT_ATTEMPTS_INTERACTIVE` (2) because a human is watching, and the check-in keeps 4 because nothing
-  is. The default is the background value so that forgetting the argument costs latency, never a lamp given up
-  on too early. **Do not quote `attempts x 20 s` as a worst case** -- transient errors retry on a separate
+  `bleak_retry_connector` hardcodes 20 s per attempt, so `max_attempts` is the only lever: a light command and
+  the `fermob.check_in` service pass `CONNECT_ATTEMPTS_INTERACTIVE` (2) because a human is watching, everything
+  else keeps 4. The default is the background value so forgetting the argument costs latency, never a lamp
+  given up on too early. **Two paths override the caller and must keep doing so** — the post-pairing reconnect
+  (the most fragile connect there is, and only ever reached from a light command asking for 2) and
+  `fermob.unpair` (giving up removes nothing, and the user's fallback is deleting the entry, which is the
+  one-way door). **Do not quote `attempts x 20 s` as a worst case** -- transient errors retry on a separate
   9-attempt budget, each attempt also sits under a 60 s safety timeout, and a command waits on the connection
   lock first. It bounds the ordinary out-of-range failure and nothing more.
 - **Only a user action may pair.** `async_check_in` passes `ensure_connected(allow_pairing=False)`; a

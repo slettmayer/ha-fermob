@@ -106,5 +106,9 @@ def test_the_startup_check_in_does_not_make_the_user_wait():
         for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
     )
 
-    assert timedelta(minutes=1) >= CHECK_IN_STARTUP_DELAY
+    # Two-sided on purpose. An upper bound alone is satisfied by *any* shorter
+    # value, including the 30 s that was tried and reverted -- so the assertion
+    # meant to stop the delay creeping up would have waved the regression
+    # through.
+    assert timedelta(seconds=45) <= CHECK_IN_STARTUP_DELAY <= timedelta(minutes=1)
     assert shortest / 10 > CHECK_IN_STARTUP_DELAY

@@ -1399,8 +1399,14 @@ async def test_a_command_gives_up_sooner_than_the_background_does(
     )
 
 
-async def test_unpair_uses_the_interactive_budget_too(hass: HomeAssistant):
-    """It is a service a user just invoked and is waiting on."""
+async def test_unpair_keeps_the_full_budget_despite_the_wait(hass: HomeAssistant):
+    """The asymmetric case: giving up early costs more than waiting does.
+
+    A user is watching, which usually argues for the short budget. But an
+    `unpair` that gives up removes nothing, and the obvious next move is to
+    delete the integration -- which takes the keys while the lamp stays
+    registered, the one-way door needing a 10 s factory reset.
+    """
     conn = _conn(hass, keys=_KEYS)
     conn.unpair = AsyncMock(return_value=BatteryVerdict.ANSWERED)
     conn.ensure_connected = AsyncMock()
@@ -1409,10 +1415,8 @@ async def test_unpair_uses_the_interactive_budget_too(hass: HomeAssistant):
     with patch.object(hass.config_entries, "async_remove", AsyncMock()):
         await light.async_unpair()
 
-    assert (
-        conn.ensure_connected.await_args.kwargs["max_attempts"]
-        == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
-    )
+    # No explicit budget: the default is the background one.
+    assert "max_attempts" not in conn.ensure_connected.await_args.kwargs
 
 
 async def test_the_check_in_keeps_the_full_budget(hass: HomeAssistant):
@@ -1430,20 +1434,44 @@ async def test_the_check_in_keeps_the_full_budget(hass: HomeAssistant):
     assert conn._open_link.await_args.args[0] == light_mod.CONNECT_ATTEMPTS_BACKGROUND
 
 
-async def test_the_reconnect_after_pairing_keeps_the_callers_budget(
+async def test_the_reconnect_after_pairing_always_gets_the_full_budget(
     hass: HomeAssistant,
 ):
-    """Pairing opens the link twice, and the second one must not silently
-    revert to the default -- that is how an interactive path grows an 80 s tail
-    nobody put there."""
-    conn = _conn(hass)
+    """The most fragile connect there is must not inherit a short budget.
+
+    The lamp stops honouring the link it was paired on the moment `REGISTER_END`
+    lands, so pairing reopens -- and the only caller that ever pairs is a light
+    command, which asks for the interactive budget. Inheriting it would halve
+    the retries on exactly the connect that needs them, and a first toggle on a
+    newly added lamp would report failure with the lamp already registered.
+    """
+    conn = _conn(hass)  # no stored keys -> pairing
     conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
-    conn._pair = AsyncMock()
-    conn.set_module_time = AsyncMock()
 
     await conn.ensure_connected(max_attempts=light_mod.CONNECT_ATTEMPTS_INTERACTIVE)
 
     assert conn._open_link.await_count == 2
-    assert [c.args[0] for c in conn._open_link.await_args_list] == [
-        light_mod.CONNECT_ATTEMPTS_INTERACTIVE
-    ] * 2
+    first, second = (c.args[0] for c in conn._open_link.await_args_list)
+    assert first == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+    assert second == light_mod.CONNECT_ATTEMPTS_BACKGROUND
+
+
+async def test_the_check_in_service_gives_up_sooner_than_the_timer(
+    hass: HomeAssistant,
+):
+    """Same routine, two callers, and only one of them has somebody waiting.
+
+    It also holds the connection lock for the whole connect, so a slow give-up
+    here delays whatever the user tries next.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.async_check_in = AsyncMock()
+    light = _light(hass, conn)
+
+    await light.async_check_in()
+
+    assert (
+        conn.async_check_in.await_args.kwargs["max_attempts"]
+        == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+        < light_mod.CONNECT_ATTEMPTS_BACKGROUND
+    )

@@ -146,7 +146,7 @@ when retrying the command takes the reconnect path and works if the link does.
 
 ## Unpairing
 
-`fermob.unpair` (an entity service, unlike `fermob.check_in`) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
+`fermob.unpair` (an entity service, as `fermob.check_in` also is) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
 entry. The lamp flashes 3× and resets its crypto state to `NONE`, so it can be paired with the app again. It is
 the only thing that deletes the keys **while telling the lamp** — removing the entry deletes them too, but
 silently, which is why that is a one-way door; see below.

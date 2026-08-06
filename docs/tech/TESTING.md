@@ -2,7 +2,7 @@
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q          # 1055 tests, ~11 s (most of it importing Home Assistant)
+python -m pytest tests/ -q          # 1056 tests, ~11 s (most of it importing Home Assistant)
 ```
 
 CI runs the same suite with `-v` (`.github/workflows/validate.yml`), so a local `-q` run and the `Pytest` job
