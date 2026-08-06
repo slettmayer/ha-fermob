@@ -2,7 +2,7 @@
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q          # 1063 tests, ~11 s (most of it importing Home Assistant)
+python -m pytest tests/ -q          # 1073 tests, ~11 s (most of it importing Home Assistant)
 ```
 
 CI runs the same suite with `-v` (`.github/workflows/validate.yml`), so a local `-q` run and the `Pytest` job
@@ -16,7 +16,8 @@ Two modules with deliberately different needs:
 | `tests/test_light.py` | a real `hass` (`pytest-homeassistant-custom-component`) | family resolution, module-info persistence, entity capabilities, the command path, which pushes are believed |
 | `tests/test_connection_profile.py` | the `fermob` package (no radio) | how the connection-mode option maps to an idle timeout and a check-in interval |
 | `tests/test_battery_entities.py` | a real `hass` | the two diagnostic entities: that both get every battery push, and that each subscription dies with its entity |
-| `tests/test_session_recovery.py` | a real `hass` | the mechanisms that recover a link the lamp has stopped honouring — the reconnect after pairing, the retried battery ACK as liveness signal, the gated factory-reset probe, the check-in that never pairs and reports its verdict, and the unpair that neither broadcasts nor removes when the lamp is silent |
+| `tests/test_session_recovery.py` | a real `hass` | the mechanisms that recover a link the lamp has stopped honouring — the reconnect after pairing, the retried battery ACK as liveness signal, the gated factory-reset probe, the check-in that never pairs and reports its verdict, the unpair that neither broadcasts nor removes when the lamp is silent, and which connect budget each caller gets |
+| `tests/test_check_in_service.py` | a real `hass` | `fermob.check_in` as a *domain* service: that it runs with no available entity, that all five target forms and `entity_id: all` resolve as they did under the entity service, that lamps are contacted concurrently and one failure cannot skip the rest, and that the registration outlives an entry reload |
 
 `protocol.py` stays HA-free so the first of those keeps running on a bare install. `requirements_test.txt`
 installs everything for both, because CI runs them together.

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
+from functools import partial
 from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_DEVICE_ID, ATTR_ENTITY_ID, CONF_ADDRESS, Platform
+from homeassistant.const import ATTR_ENTITY_ID, CONF_ADDRESS, ENTITY_MATCH_ALL, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.target import (
+    TargetSelection,
+    async_extract_referenced_entity_ids,
+)
+from homeassistant.helpers.typing import ConfigType
 
 from .config_flow import (
     CONF_CONNECTION_MODE,
@@ -25,6 +32,11 @@ DOMAIN = "fermob"
 PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
 
 SERVICE_CHECK_IN = "check_in"
+
+# There is an `async_setup` below purely to register the domain service, and
+# defining one is otherwise how an integration announces that it accepts YAML.
+# This says it does not: config entries only.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _STORAGE_VERSION = 1
 
@@ -71,11 +83,25 @@ _CONNECTION_PROFILES = {
 # the ability to command the lamp -- `_async_send_led` calls `ensure_connected`
 # itself and never waits on this timer -- but the time before the link is held
 # open, during which a button press goes unseen and both battery entities read
-# unavailable. Firing too early is cheap: the check-in swallows its failures, so
-# a Bluetooth stack that is not ready yet costs one silent attempt. Firing late
-# costs a window of exactly the blindness the always-connected mode exists to
-# remove.
+# unavailable. Firing late costs a window of exactly the blindness the
+# always-connected mode exists to remove.
+#
+# Firing *early* is only cheap because of the retries below. On its own the
+# short delay would be a gamble on the Bluetooth stack: the check-in swallows
+# its failures, so a proxy still coming up at 30 s would consume the single
+# attempt in silence and leave the next one a full interval away.
 CHECK_IN_STARTUP_DELAY = timedelta(seconds=30)
+
+# When the startup check-in reaches nothing, try again -- at 30 s, then 1 min,
+# then 2 min after that. Bounded on purpose: out of range is the *normal* state
+# of a balcony lamp, not an error to retry at length, and the regular interval
+# takes over either way. Only the gap before the stack is ready is worth
+# covering, and it is short.
+_STARTUP_RETRY_DELAYS = (
+    CHECK_IN_STARTUP_DELAY,
+    timedelta(minutes=1),
+    timedelta(minutes=2),
+)
 
 
 def _key_store(hass: HomeAssistant, address: str) -> Store:
@@ -92,6 +118,17 @@ def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
     """
     mode = entry.options.get(CONF_CONNECTION_MODE, CONNECTION_MODE_ALWAYS)
     return _CONNECTION_PROFILES.get(mode, _CONNECTION_PROFILES[CONNECTION_MODE_ALWAYS])
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the domain service once, before any entry is set up.
+
+    Deliberately here rather than in `async_setup_entry`: the service must
+    outlive individual entries, because every options change reloads one and a
+    single-lamp install would otherwise lose `fermob.check_in` for the duration.
+    """
+    _async_register_check_in_service(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -144,8 +181,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(
         async_track_time_interval(hass, _check_in, profile.check_in_interval)
     )
-    entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
 
+    async def _startup_check_in(_now: datetime, attempt: int = 0) -> None:
+        """The post-startup check-in, retried a few times if it finds nothing.
+
+        The retry is what makes the short `CHECK_IN_STARTUP_DELAY` safe. As a
+        single shot it was a gamble on the Bluetooth stack -- an adapter or an
+        ESPHome proxy that had not finished coming up 30 s in meant the one
+        attempt failed silently (the check-in swallows its failures) and the
+        next was a whole interval away: half an hour of unseen button presses,
+        or six hours of `unavailable` battery entities under *on demand*.
+
+        `conn.battery` is the success signal, because it is the one thing a
+        check-in is guaranteed to set when it reaches the lamp. Retries stop the
+        moment it is set, and are bounded: a lamp that is simply out of range --
+        the normal state of a balcony lamp -- must not be retried at length, and
+        the regular interval takes over regardless.
+        """
+        await conn.async_check_in()
+        if conn.battery is not None or attempt + 1 >= len(_STARTUP_RETRY_DELAYS):
+            return
+        delay = _STARTUP_RETRY_DELAYS[attempt + 1]
+        entry.async_on_unload(
+            async_call_later(
+                hass,
+                delay,
+                partial(_startup_check_in, attempt=attempt + 1),
+            )
+        )
+
+    entry.async_on_unload(
+        async_call_later(hass, _STARTUP_RETRY_DELAYS[0], _startup_check_in)
+    )
+
+    # Also here, not only in `async_setup`: a custom integration reloaded from
+    # the UI can reach entry setup without `async_setup` running again, and the
+    # guard inside makes the second call free.
     _async_register_check_in_service(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -169,20 +240,43 @@ def _async_register_check_in_service(hass: HomeAssistant) -> None:
     whose entity had gone unavailable after a failed command. Confirmed on
     hardware, 2026-08-06.
 
-    Registered on the domain the filter does not apply, so the service reaches
-    the connection whatever the entity looks like.
+    On the domain that filter does not apply, so the service reaches the
+    connection whatever the entity looks like.
 
-    Targeting is honoured when given and defaults to every configured lamp. That
-    keeps existing `target: {entity_id: ...}` automations working -- Home
-    Assistant merges `target:` into `call.data` for plain services too -- while
-    making an untargeted call meaningful rather than an error.
+    **Registered from `async_setup`, once, and never removed.** Tying it to entry
+    setup looks tidier and is wrong: unloading the last entry -- which every
+    options change does, via a reload -- would take the service with it, and a
+    call landing in that window fails with `ServiceNotFound` and aborts the whole
+    automation. That is strictly worse than the no-op it replaced. The service
+    outlives entries and reports honestly when there are none.
     """
     if hass.services.has_service(DOMAIN, SERVICE_CHECK_IN):
         return
 
     async def _handle_check_in(call: ServiceCall) -> None:
-        for conn in _targeted_connections(hass, call):
-            await conn.async_check_in()
+        connections = _targeted_connections(hass, call)
+        if not connections:
+            _LOGGER.warning("fermob.check_in matched no configured lamp; nothing to do")
+            return
+
+        # Concurrently, and each failure isolated. The entity service this
+        # replaced gathered its per-entity calls, so a serial loop would have
+        # made an untargeted call on N unreachable lamps take N times the connect
+        # budget -- minutes, with the caller blocked. `async_check_in` swallows
+        # its own failures by contract, but that contract does not cover its lock
+        # acquisition or `_load_keys()`, and one lamp with an unreadable key store
+        # must not stop the others being checked in.
+        results = await asyncio.gather(
+            *(conn.async_check_in() for conn in connections),
+            return_exceptions=True,
+        )
+        for conn, result in zip(connections, results, strict=True):
+            if isinstance(result, BaseException):
+                _LOGGER.error(
+                    "Fermob %s: check-in failed",
+                    conn.address,
+                    exc_info=result,
+                )
 
     hass.services.async_register(DOMAIN, SERVICE_CHECK_IN, _handle_check_in)
 
@@ -190,29 +284,40 @@ def _async_register_check_in_service(hass: HomeAssistant) -> None:
 def _targeted_connections(hass: HomeAssistant, call: ServiceCall) -> list:
     """The connections a service call is aimed at, or all of them if untargeted.
 
-    Resolved by hand because a domain service gets no target expansion: what
-    arrives is whatever the caller put under `target:`, unexpanded.
+    **Resolved through Home Assistant's own target extraction, not by hand.** A
+    domain service gets no expansion -- `call.data` is whatever the caller put
+    under `target:`, verbatim -- and a first attempt at this read only
+    `entity_id` and `device_id`. That silently mis-resolved every other target
+    form the UI picker offers: an `area_id`/`floor_id`/`label_id` target matched
+    neither key, fell through to the untargeted branch and checked in with
+    *every* lamp. `TargetSelection` + `async_extract_referenced_entity_ids` are
+    the same helpers the entity-service path uses, so all five forms and group
+    expansion behave exactly as they did before 0.9.2.
+
+    `entity_id: all` is special-cased because HA special-cases it too, one layer
+    above the extraction (`async_extract_entities`); left to the extractor it
+    would be looked up as a literal entity id and match nothing.
     """
     connections = hass.data.get(DOMAIN, {})
-    entry_ids: set[str] = set()
+    if not connections:
+        return []
 
-    entity_ids = cv.ensure_list(call.data.get(ATTR_ENTITY_ID, []))
-    device_ids = cv.ensure_list(call.data.get(ATTR_DEVICE_ID, []))
-
-    if entity_ids:
-        registry = er.async_get(hass)
-        for entity_id in entity_ids:
-            if (entry := registry.async_get(entity_id)) and entry.config_entry_id:
-                entry_ids.add(entry.config_entry_id)
-    if device_ids:
-        registry = er.async_get(hass)
-        for device_id in device_ids:
-            for entity in er.async_entries_for_device(registry, device_id, True):
-                if entity.config_entry_id:
-                    entry_ids.add(entity.config_entry_id)
-
-    if not entity_ids and not device_ids:
+    if call.data.get(ATTR_ENTITY_ID) == ENTITY_MATCH_ALL:
         return list(connections.values())
+
+    selection = TargetSelection(call.data)
+    if not selection.has_any_target:
+        return list(connections.values())
+
+    selected = async_extract_referenced_entity_ids(hass, selection)
+    selected.log_missing(selected.referenced, _LOGGER)
+
+    registry = er.async_get(hass)
+    entry_ids = {
+        entity.config_entry_id
+        for entity_id in selected.referenced | selected.indirectly_referenced
+        if (entity := registry.async_get(entity_id)) and entity.config_entry_id
+    }
     return [conn for entry_id, conn in connections.items() if entry_id in entry_ids]
 
 
@@ -220,11 +325,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        # The service is registered on the domain, so it outlives any single
-        # entry and must go when the last one does -- otherwise it survives as a
-        # call that silently reaches nothing.
-        if not hass.data.get(DOMAIN):
-            hass.services.async_remove(DOMAIN, SERVICE_CHECK_IN)
     return unloaded
 
 

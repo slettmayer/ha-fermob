@@ -142,20 +142,32 @@ would call it; the scheduled check-in never had that problem, because it calls t
 
 ### How long a failed connect is allowed to take
 
-`bleak_retry_connector` hardcodes a 20 s timeout per attempt, so `max_attempts` is the only lever on the
-duration of a doomed connect. The integration sets two, because the right answer depends on who is waiting:
+`bleak_retry_connector` hardcodes its per-attempt timeout at the `client.connect()` call site (`BLEAK_TIMEOUT`,
+20 s) out of reach of `**kwargs`, so `max_attempts` is the only lever the integration has. It sets two, because
+the right answer depends on who is waiting:
 
-| Path | Attempts | Worst case |
-|---|---|---|
-| A command the user just issued, and `fermob.unpair` | 2 | ~40 s |
-| The scheduled check-in | 4 (the library default) | ~80 s |
+| Path | Attempts |
+|---|---|
+| A command the user just issued, and `fermob.unpair` | 2 |
+| The scheduled check-in | 4 (the library default) |
 
-A lamp in range connects in one to two seconds, so the retries only cost time when it is genuinely absent. On a
-background check-in that is free and the full budget is worth having, since giving up early means a missed
-heartbeat and up to another interval of stale state. On a command it is 80 s of an unresponsive UI, which reads
-as a hang — so that path keeps one retry, for the transient BLE failures that are common through a proxy, and
-no more. `ensure_connected` defaults to the *background* budget: a caller who forgets the argument waits
-longer rather than giving up on a lamp that was there.
+**There is deliberately no "worst case" column, because the honest number is not `attempts × 20 s`.** An
+earlier draft of this table claimed one and was wrong twice over: each attempt also sits under
+`BLEAK_SAFETY_TIMEOUT` (60 s), and `_raise_if_needed` counts only `timeouts + connect_errors` against
+`max_attempts` — anything in `TRANSIENT_ERRORS`, plus a device that goes missing, retries on a *separate*
+budget of `MAX_TRANSIENT_ERRORS` (9) with backoffs of up to 4 s. A command also waits on
+`FermobBLEConnection.lock` before its own budget applies at all, so a check-in already in progress is added to
+whatever the command then spends.
+
+What the setting does buy is bounded and worth having: it halves the ordinary out-of-range failure, which is a
+connect timeout or a hard error such as `ESP_GATT_ERROR` (a connect error, not a transient one). A lamp in
+range connects in one to two seconds, so the retries only cost time when it is genuinely absent. On a
+background check-in that is free, and giving up early would mean a missed heartbeat and up to another interval
+of stale state. On a command it is a minute or more of unresponsive UI, which reads as a hang.
+
+Cutting the interactive path to two does **not** cost the proxy flakes it might appear to: those are transient
+errors and retry on their own budget regardless. `ensure_connected` defaults to the *background* number, so a
+caller who forgets the argument waits longer rather than giving up on a lamp that was there.
 
 ## What holding the link costs
 

@@ -11,20 +11,24 @@ protocol or pairing changes; nothing here requires re-pairing a lamp.
   manual recovery the integration offers was unavailable in precisely the
   situation it exists for. It is now a **domain** service.
 
-  Existing automations keep working unchanged. Calling it with no target at all
-  now checks in with every Fermob lamp, rather than being an error.
+  Existing automations keep working unchanged — entity, device, area, floor and
+  label targets are all resolved through the same Home Assistant helpers the
+  entity service used, so `entity_id: all` and group entities behave as before
+  too. Calling it with no target at all now checks in with every Fermob lamp,
+  rather than being an error, and several lamps are contacted concurrently.
 
   `fermob.unpair` is still an entity service and still has the limitation. It is
   destructive and refuses on an unreachable lamp anyway, so this is a much
   narrower problem.
 
-- **A command that cannot reach the lamp gives up in ~40 s instead of ~80 s.**
+- **A command that cannot reach the lamp gives up roughly twice as fast.**
   Bluetooth allows 20 s per connect attempt and the retry count was the library
   default of four, so an out-of-range lamp left the UI unresponsive for over a
   minute — which reads as a hang. Commands and `fermob.unpair` now take two
-  attempts, keeping one retry for the transient failures that are common through
-  a Bluetooth proxy. Background check-ins keep all four, since nothing is waiting
-  on them.
+  attempts; background check-ins keep all four, since nothing is waiting on them.
+  This halves the ordinary out-of-range failure. It is not a hard ceiling: some
+  Bluetooth errors retry on their own separate budget, and a command still waits
+  for any check-in already in progress.
 
 - **The battery entities populate 30 seconds after a restart, not 2 minutes.**
   The first check-in is what fills them in and what opens the link that makes

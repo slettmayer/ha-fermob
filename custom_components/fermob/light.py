@@ -88,19 +88,35 @@ _STORAGE_VERSION = 1
 # How many times `establish_connection` may try before giving up, and the one
 # thing about the connect budget we can actually set.
 #
-# `bleak_retry_connector` hardcodes its 20 s per-attempt timeout at the
-# `client.connect()` call site -- it is not reachable through `**kwargs`, which
-# go to the client constructor -- so attempts x 20 s is the whole worst case.
-# Its own default is 4, i.e. 80 s.
+# `bleak_retry_connector` hardcodes its per-attempt timeout at the
+# `client.connect()` call site -- `BLEAK_TIMEOUT`, 20 s -- and it is not
+# reachable through `**kwargs`, which go to the client constructor. So
+# `max_attempts` is the only lever, and the library's own default is 4.
+#
+# **Do not read that as "attempts x 20 s".** Two things break the arithmetic, and
+# both were found by reading the pinned library rather than assuming:
+#
+#   - each attempt also sits under `BLEAK_SAFETY_TIMEOUT`, 60 s, which is what
+#     bounds an attempt whose own timeout does not fire; and
+#   - `_raise_if_needed` counts only `timeouts + connect_errors` against
+#     `max_attempts`. Errors in the `TRANSIENT_ERRORS` set -- and a device that
+#     goes missing -- get a *separate* budget of `MAX_TRANSIENT_ERRORS` (9),
+#     plus backoff sleeps of up to 4 s each.
+#
+# So this bounds the common failures (a connect timeout, and hard errors such as
+# `ESP_GATT_ERROR`, which counts as a connect error) and does not bound the
+# transient ones at all. Roughly: halving it halves a typical out-of-range
+# failure, and promises nothing about the worst case.
 #
 # The right number differs by who is waiting, which is why there are two. A lamp
 # in range connects in one to two seconds, so the retries only ever cost time
 # when it is genuinely absent: out of range, asleep, or off. On a background
 # check-in that costs nothing and the full budget is worth having, because the
 # alternative is a missed heartbeat and up to another interval of stale state.
-# On a command a human is watching the UI, and 80 s of nothing reads as a hang
-# -- so that path gives up after two, keeping one retry for the transient BLE
-# flakes that are common through an ESPHome proxy.
+# On a command a human is watching the UI, and a minute-plus of nothing reads as
+# a hang. Cutting the interactive path to two does not cost the proxy flakes it
+# might look like it does: those are transient errors, and they retry on their
+# own budget regardless of what this says.
 CONNECT_ATTEMPTS_BACKGROUND = 4
 CONNECT_ATTEMPTS_INTERACTIVE = 2
 
@@ -291,6 +307,16 @@ class FermobBLEConnection:
     # defensive change to the HA idiom, not a fix. See
     # `docs/tech/ARCHITECTURE.md`.
     # ------------------------------------------------------------------
+
+    @property
+    def address(self) -> str:
+        """The lamp's BLE address, for callers that only need to name it.
+
+        Read-only: the address identifies the key store and every frame's short
+        address is derived from it, so nothing outside construction may change
+        it.
+        """
+        return self._address
 
     def add_battery_listener(
         self, listener: Callable[[Battery], None]
@@ -1884,15 +1910,11 @@ class FermobLight(LightEntity):
         self._attr_is_on = False
         self.async_write_ha_state()
 
-    async def async_check_in(self) -> None:
-        """Reconnect and refresh the battery now, rather than on the timer.
-
-        The entity-service face of `FermobBLEConnection.async_check_in`, which
-        already takes the lock and swallows its own failures -- so this is a
-        plain delegation, and calling it on an out-of-range lamp is a no-op
-        rather than an error.
-        """
-        await self._conn.async_check_in()
+    # No `async_check_in` here on purpose. `fermob.check_in` is a domain service
+    # registered in `__init__.py` and dispatches to the *connection*, because an
+    # entity service cannot be called on an unavailable entity -- which is the
+    # one case it exists for. Re-adding an entity-side delegation would invite
+    # re-adding the platform registration with it.
 
     async def async_unpair(self) -> None:
         """Unpair the lamp and remove this config entry.

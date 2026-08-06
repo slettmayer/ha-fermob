@@ -77,10 +77,27 @@ reach for it.** Confirmed on hardware (2026-08-06): with the light unavailable a
 `fermob.check_in` reported success and never ran.
 
 Since 0.9.2 `check_in` is registered on the **domain** (`__init__.py`), not on the light platform, so no
-availability filter applies and it reaches the connection whatever the entity looks like. It resolves
-`entity_id`/`device_id` back to config entries by hand, because a domain service gets no target expansion —
-which keeps existing `target:`-style automations working — and an untargeted call means *every* lamp rather
-than none.
+availability filter applies and it reaches the connection whatever the entity looks like. Three consequences
+follow from being a domain service, and each is handled deliberately:
+
+- **No target expansion.** `call.data` is whatever the caller put under `target:`, verbatim. So the handler
+  runs `TargetSelection` + `async_extract_referenced_entity_ids` — the same helpers the entity-service path
+  uses — and maps the resulting entity ids back to config entries. A first attempt read only `entity_id` and
+  `device_id`, which silently checked in with *every* lamp whenever the target was an area, floor or label,
+  and matched *no* lamp for `entity_id: all`. Do not hand-roll this; the helpers cover all five forms plus
+  group expansion. `ENTITY_MATCH_ALL` is special-cased above them, because HA special-cases it too.
+- **No implicit concurrency.** The entity service gathered its per-entity calls; a plain loop would make an
+  untargeted call on N unreachable lamps take N times the connect budget with the caller blocked. The handler
+  uses `asyncio.gather(..., return_exceptions=True)`, so one lamp with an unreadable key store cannot stop the
+  others — `async_check_in` swallows its own failures, but that contract does not extend to its lock
+  acquisition or `_load_keys()`.
+- **No entity lifecycle to hang the registration on.** It is registered from `async_setup`, once, and never
+  removed. Tying it to entry setup means an options change — which reloads the entry — de-registers the
+  service, and a call landing in that window fails with `ServiceNotFound` and aborts the whole automation:
+  strictly worse than the no-op it replaced.
+
+An untargeted call means *every* lamp rather than none; a target that resolves to no Fermob lamp logs a
+warning rather than passing silently.
 
 `fermob.unpair` **is still an entity service** and still carries the limitation. That is a much narrower
 problem: it is destructive, so it should be aimed at something explicitly, and on an unreachable lamp it would
