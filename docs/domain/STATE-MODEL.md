@@ -157,15 +157,18 @@ the right answer depends on who is waiting:
 | A light command | 2 | A human is watching the UI |
 | `fermob.check_in` (the service) | 2 | Same, and it holds the connection lock while it waits |
 | The scheduled check-in | 4 (the library default) | Nothing is waiting; giving up early costs a missed heartbeat |
-| The reconnect after pairing | 4, **always** | The most fragile connect there is — see below |
+| Any connect on a pass that pairs | 4, **always** | Both of them; see below |
 | `fermob.unpair` | 4 | Failing costs more than waiting — see below |
 
 Two of those override the caller, and both are the interesting cases:
 
-- **The post-pairing reconnect never inherits a short budget.** The lamp stops honouring the link it was paired
-  on once `REGISTER_END` lands, so `ensure_connected` reopens — and the only caller that ever pairs is a light
-  command, which asks for 2. Letting it through would halve the retries on precisely the connect that needs
-  them, and a first toggle on a newly added lamp would report failure with the lamp already registered.
+- **A pass that pairs never inherits a short budget, on either of its two connects.** The only caller that ever
+  pairs is a light command, which asks for 2, so both would otherwise be halved: the *initial* open, where a
+  freshly added lamp at the edge of range would report "pairing failed" on a lamp that would have paired; and
+  the *reopen after `REGISTER_END`*, which exists because the lamp stops honouring the link it was paired on
+  (reproduced on an H134) and where failing reports an error with the lamp already registered. `have_keys` is
+  what marks such a pass — false on a first pairing, and cleared again before the `continue` that re-pairs a
+  factory-reset lamp, so automatic recovery keeps the full budget too.
 - **`fermob.unpair` keeps the full budget even though a user is waiting.** It is the asymmetric one: an unpair
   that gives up removes nothing, and the obvious next move is to delete the integration instead — which takes
   the keys while the lamp stays registered, the one-way door needing a ten-second factory reset. Waiting longer

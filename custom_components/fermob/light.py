@@ -1056,7 +1056,18 @@ class FermobBLEConnection:
             # rather than dispatched to entities that cannot decode them.
             self._ready = False
             self._connected = False
-            await self._open_link(max_attempts)
+            # A pass that is going to pair takes the full budget, whatever the
+            # caller asked for -- the same rule as the reconnect below, and for
+            # the same reason. `have_keys` is what distinguishes them: false on
+            # a first pairing, and set false again before the `continue` that
+            # re-pairs a factory-reset lamp. Both are reached only from a light
+            # command, which asks for the short budget, and both are worse
+            # places to give up early than an ordinary command is: one reads as
+            # "pairing failed" on a lamp that would have paired, the other is
+            # the automatic recovery from a reset.
+            await self._open_link(
+                max_attempts if have_keys else CONNECT_ATTEMPTS_BACKGROUND
+            )
 
             if have_keys:
                 # The lamp retains GATEWAY+PRIVATE state across BLE disconnects,

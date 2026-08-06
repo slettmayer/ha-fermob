@@ -81,8 +81,10 @@ def _conn(hass: HomeAssistant, keys: dict | None = None) -> FermobBLEConnection:
     # one does too -- otherwise a test that reaches an unstubbed write path
     # "passes" on the TypeError from awaiting a MagicMock rather than on the
     # behaviour it names.
-    # Takes the connect budget `ensure_connected` passes down, so a caller that
-    # forgets to forward it fails here rather than silently losing it.
+    # Accepts the connect budget `ensure_connected` passes down. It is tolerant
+    # of the argument being absent on purpose -- most tests do not care -- so it
+    # is the explicit `await_args` assertions in the budget tests below, not
+    # this stub, that catch a caller dropping it.
     conn._open_link = AsyncMock(
         side_effect=lambda *_args: setattr(
             conn, "_client", MagicMock(write_gatt_char=AsyncMock())
@@ -1419,41 +1421,67 @@ async def test_unpair_keeps_the_full_budget_despite_the_wait(hass: HomeAssistant
     assert "max_attempts" not in conn.ensure_connected.await_args.kwargs
 
 
-async def test_the_check_in_keeps_the_full_budget(hass: HomeAssistant):
+async def test_the_scheduled_check_in_keeps_the_full_budget(hass: HomeAssistant):
     """Nothing is waiting on it, and giving up early costs a missed heartbeat.
 
-    Asserted through the default rather than an explicit argument: the check-in
-    passes none, so this pins that the default is the *background* one. A
-    caller who forgets the argument must wait longer, never give up sooner.
+    Goes through `async_check_in` rather than `ensure_connected`, because the
+    default that matters is *its* one: the scheduled timer calls it with no
+    argument, while the entity service passes the interactive budget. Asserting
+    on `ensure_connected` instead would stay green if that default flipped.
     """
     conn = _conn(hass, keys=_KEYS)
     conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
 
-    await conn.ensure_connected()
+    await conn.async_check_in()
 
     assert conn._open_link.await_args.args[0] == light_mod.CONNECT_ATTEMPTS_BACKGROUND
 
 
-async def test_the_reconnect_after_pairing_always_gets_the_full_budget(
+async def test_every_connect_of_a_pairing_pass_gets_the_full_budget(
     hass: HomeAssistant,
 ):
-    """The most fragile connect there is must not inherit a short budget.
+    """Both of them, and the caller's short budget reaches both by default.
 
-    The lamp stops honouring the link it was paired on the moment `REGISTER_END`
-    lands, so pairing reopens -- and the only caller that ever pairs is a light
-    command, which asks for the interactive budget. Inheriting it would halve
-    the retries on exactly the connect that needs them, and a first toggle on a
-    newly added lamp would report failure with the lamp already registered.
+    The only caller that ever pairs is a light command, which asks for the
+    interactive budget, so without the override each connect of a pairing pass
+    would take two attempts:
+
+    * the **initial open** -- a freshly added lamp at the edge of range would
+      give up after two and report "pairing failed" on a lamp that would have
+      paired; and
+    * the **reopen after `REGISTER_END`** -- the most fragile connect in the
+      integration, which exists because the lamp stops honouring the link it
+      was paired on (reproduced on an H134). Failing here reports an error with
+      the lamp already registered to Home Assistant.
     """
     conn = _conn(hass)  # no stored keys -> pairing
-    conn._request_battery_verdict = AsyncMock(return_value=BatteryVerdict.ANSWERED)
 
     await conn.ensure_connected(max_attempts=light_mod.CONNECT_ATTEMPTS_INTERACTIVE)
 
     assert conn._open_link.await_count == 2
-    first, second = (c.args[0] for c in conn._open_link.await_args_list)
-    assert first == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
-    assert second == light_mod.CONNECT_ATTEMPTS_BACKGROUND
+    assert [c.args[0] for c in conn._open_link.await_args_list] == [
+        light_mod.CONNECT_ATTEMPTS_BACKGROUND
+    ] * 2
+
+
+async def test_the_re_pair_after_a_factory_reset_gets_the_full_budget(
+    hass: HomeAssistant,
+):
+    """The second pass is automatic recovery, not a command the user is timing.
+
+    `have_keys` is cleared before the `continue`, which is exactly what marks
+    the pass as a pairing one.
+    """
+    conn = _deaf_until_repaired(hass)
+    conn._send_frames = AsyncMock(return_value=Ack(b"\x01", ENCRYPT_NONE, True, None))
+
+    await conn.ensure_connected(max_attempts=light_mod.CONNECT_ATTEMPTS_INTERACTIVE)
+
+    budgets = [c.args[0] for c in conn._open_link.await_args_list]
+    # First pass is an ordinary reconnect and keeps the caller's budget; every
+    # connect from the re-pair onwards takes the full one.
+    assert budgets[0] == light_mod.CONNECT_ATTEMPTS_INTERACTIVE
+    assert set(budgets[1:]) == {light_mod.CONNECT_ATTEMPTS_BACKGROUND}
 
 
 async def test_the_check_in_service_gives_up_sooner_than_the_timer(
