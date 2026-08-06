@@ -156,7 +156,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(
         async_track_time_interval(hass, _check_in, profile.check_in_interval)
     )
-
     entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
