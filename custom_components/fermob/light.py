@@ -1283,11 +1283,21 @@ class FermobBLEConnection:
                         proven_dead = True
                         await self.disconnect()
                         await self.ensure_connected(allow_pairing=False)
-            except LampNotAnswering:
-                # Reached it, twice, and it is ignoring us. This is the one
-                # outcome worth reporting: nothing the user does will work until
-                # the session is repaired.
-                _LOGGER.warning("Fermob %s: reachable but not answering", self._address)
+            except LampNotAnswering as err:
+                # Reached it, and it is not usable. This is the one outcome worth
+                # reporting: nothing the user does will work until the session is
+                # repaired.
+                #
+                # Log the exception, not a summary of it. `ensure_connected`
+                # raises four distinct messages here, and one of them -- the
+                # factory-reset case -- is the only place the user is told how to
+                # recover ("turn the light on in Home Assistant to re-pair it").
+                # Flattening them all to "reachable but not answering" threw that
+                # away, and described a lamp that had answered `CRYPT_MSG`,
+                # clearly and usefully, as not answering.
+                # No address prefix: every `LampNotAnswering` message already
+                # carries one.
+                _LOGGER.warning("%s", err)
                 self._notify(self._availability_listeners, "availability", False)
                 return
             except Exception:

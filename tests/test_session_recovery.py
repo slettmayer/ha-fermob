@@ -712,6 +712,32 @@ async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
     assert seen == [False]
 
 
+async def test_the_check_in_logs_why_the_lamp_is_unusable(hass: HomeAssistant, caplog):
+    """The exception message is the only place the user is told what to do.
+
+    `ensure_connected` raises four different `LampNotAnswering` messages here,
+    and the factory-reset one carries the sole recovery instruction there is.
+    Logging a fixed "reachable but not answering" summary instead threw that
+    away -- and described a lamp that had answered `CRYPT_MSG`, clearly and
+    usefully, as not answering. Confirmed on an H134 (2026-08-06): the reset was
+    detected correctly and the log said nothing the owner could act on.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering(
+            f"Fermob {ADDRESS}: lamp no longer holds our keys "
+            "-- turn the light on in Home Assistant to re-pair it"
+        )
+    )
+
+    with caplog.at_level("WARNING", logger="custom_components.fermob.light"):
+        await conn.async_check_in()
+
+    assert "turn the light on in Home Assistant to re-pair it" in caplog.text
+    # And the address is not doubled: every raise site already prefixes it.
+    assert caplog.text.count(ADDRESS) == 1
+
+
 async def test_an_out_of_range_lamp_is_not_reported_unavailable(
     hass: HomeAssistant,
 ):

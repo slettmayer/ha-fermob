@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1
+
+- **A factory-reset lamp now says so in the log.** 0.9.0 detects the reset
+  correctly and takes the light unavailable, which is right — the lamp cannot be
+  commanded until you re-pair it. But the log said only *"reachable but not
+  answering"*, which was wrong twice over: the lamp had answered, clearly, and
+  the one instruction that gets you out of the state — *turn the light on in Home
+  Assistant to re-pair it* — was being discarded. The check-in now logs the real
+  reason, whichever of the four it is.
+
 ## 0.9.0
 
 **A lamp that stopped responding now recovers on its own.** If you are on 0.8.0
