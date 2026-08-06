@@ -1411,14 +1411,17 @@ async def test_unpair_keeps_the_full_budget_despite_the_wait(hass: HomeAssistant
     """
     conn = _conn(hass, keys=_KEYS)
     conn.unpair = AsyncMock(return_value=BatteryVerdict.ANSWERED)
-    conn.ensure_connected = AsyncMock()
     light = _light(hass, conn)
 
     with patch.object(hass.config_entries, "async_remove", AsyncMock()):
         await light.async_unpair()
 
-    # No explicit budget: the default is the background one.
-    assert "max_attempts" not in conn.ensure_connected.await_args.kwargs
+    # Through the real `ensure_connected`, asserting on what reached the radio.
+    # Asserting that no `max_attempts` kwarg was passed would pin the absence of
+    # an argument rather than the budget, and would stay green if the default
+    # were ever flipped to the interactive value -- which is precisely the
+    # change this test exists to survive.
+    assert conn._open_link.await_args.args[0] == light_mod.CONNECT_ATTEMPTS_BACKGROUND
 
 
 async def test_the_scheduled_check_in_keeps_the_full_budget(hass: HomeAssistant):

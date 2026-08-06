@@ -17,6 +17,7 @@ import pytest
 
 from custom_components.fermob import (
     CHECK_IN_STARTUP_DELAY,
+    CHECK_IN_STARTUP_RETRY_DELAY,
     resolve_connection_profile,
 )
 from custom_components.fermob.config_flow import (
@@ -114,3 +115,27 @@ def test_the_startup_check_in_does_not_make_the_user_wait():
     # And the upper bound stays expressed as a ratio rather than a literal, so
     # a deliberate adjustment is not a test failure with nothing to learn from.
     assert shortest / 10 > CHECK_IN_STARTUP_DELAY
+
+
+def test_the_startup_check_in_gets_a_second_shot():
+    """The first tick can be spent for free, so it cannot be the only one.
+
+    `_open_link` raises immediately when the lamp is not yet in Home Assistant's
+    Bluetooth registry -- no connect attempts, no time -- and `async_check_in`
+    swallows that by contract. An ESPHome proxy frequently has not reconnected
+    and re-advertised a minute after a restart, so a single tick would be
+    consumed silently and the next contact would be a whole interval away.
+
+    Bounds, not values: the retry must land after the first and still well
+    inside the shortest interval, or it is either pointless or indistinguishable
+    from the regular tick.
+    """
+    shortest = min(
+        resolve_connection_profile(
+            _entry(**{CONF_CONNECTION_MODE: mode})
+        ).check_in_interval
+        for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
+    )
+
+    assert CHECK_IN_STARTUP_RETRY_DELAY > CHECK_IN_STARTUP_DELAY
+    assert shortest / 5 > CHECK_IN_STARTUP_RETRY_DELAY

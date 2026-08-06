@@ -21,10 +21,12 @@ pairing changes; nothing here requires re-pairing a lamp.
   and the obvious next move is deleting the integration, which leaves the lamp
   needing a ten-second factory reset).
 
-- **The battery entities populate one minute after a restart, not two.** The
-  first check-in is what fills them in and what opens the link that makes button
-  presses visible. Commands were never affected — the lamp is controllable as
-  soon as setup finishes.
+- **The battery entities populate one minute after a restart, not two**, with a
+  second attempt at three minutes if the first found nothing. The first check-in
+  is what fills them in and what opens the link that makes button presses
+  visible; the retry covers a Bluetooth proxy that had not finished reconnecting,
+  which previously cost a full check-in interval. Commands were never affected —
+  the lamp is controllable as soon as setup finishes.
 
 - **`fermob.unpair` really does release the lamp**, now confirmed on hardware: a
   lamp unpaired with the service re-adds and pairs again with **no factory

@@ -62,7 +62,7 @@ refresh the battery, which the lamp reports only when asked. It sends no light c
 the lamp is doing — which is also how the vendor app behaves, polling the same battery command on a timer with
 every lamp dark.
 
-It also runs once `CHECK_IN_STARTUP_DELAY` (one minute) after setup, for two reasons: the interval timer
+It also runs shortly after setup, for two reasons: the interval timer
 restarts from zero on every reload, so on a box that is restarted often the tick could otherwise be missed
 repeatedly; and both battery entities read unavailable until the lamp has reported once, which would otherwise
 last until something turned the light on. The delay lets the Bluetooth stack come up first.
@@ -72,13 +72,20 @@ the lamp is commandable from the moment setup finishes. What the delay does gate
 the link being held open — and until it is, a button press goes unseen and both battery entities read
 unavailable.
 
-**One shot, and one minute, both deliberately.** Firing late costs a window of exactly the blindness that mode
-exists to remove; firing early is worse than it looks, because the check-in swallows its failures — an adapter
-or proxy still coming up consumes the single attempt in silence and the next is a whole interval away. 0.9.2
-briefly tried 30 s plus a retry chain, but the chain re-armed its timer *after* an await, so a reload landing
-mid-check-in left a timer nothing could cancel, firing later against a discarded connection and opening a
-second BLE link to a lamp that accepts one controller. One minute needs no retry, and the single timer is
-registered synchronously so a reload can always cancel it.
+**Two ticks, at one minute and three, and the second is what makes the first one safe.** Firing late costs a
+window of exactly the blindness that mode exists to remove. Firing early is worse than it looks: `_open_link`
+raises *immediately* when the lamp is not yet in Home Assistant's Bluetooth registry — no attempts, no time —
+and the check-in swallows that by contract, so the tick is spent for free and the next contact is a whole
+interval away. An adapter is up before the integration loads (`bluetooth_adapters` is a manifest dependency);
+an ESPHome proxy is a separate integration and frequently is not.
+
+The second tick costs one battery request on a healthy start, the same one the interval makes anyway.
+
+**Both timers are registered synchronously in `async_setup_entry`, and that is load-bearing.** 0.9.2 first
+tried 30 s plus a chain that re-armed *after* awaiting the check-in; a reload landing mid-check-in then left a
+timer nothing could cancel, which later fired against a discarded connection and opened a second BLE link to a
+lamp that accepts one controller. Scheduling both up front closes that window — `entry.async_on_unload` holds
+both cancels before either can run.
 
 Two deliberate refusals:
 

@@ -2000,13 +2000,20 @@ class FermobLight(LightEntity):
                     # run the re-pair branch -- flashing it, re-registering it to
                     # Home Assistant -- and only then broadcast UNREGISTER, which
                     # is the exact opposite of what was asked for.
-                    # The **full** budget, despite a user waiting on it. This
-                    # is the asymmetric case: giving up early does not merely
-                    # annoy, it pushes them toward deleting the integration
-                    # instead, which takes the keys while the lamp stays
-                    # registered -- the one-way door needing a 10 s factory
-                    # reset. Waiting longer is much the cheaper mistake.
-                    await self._conn.ensure_connected(allow_pairing=False)
+                    # The **full** budget, despite a user waiting on it, and
+                    # passed explicitly rather than inherited. This is the
+                    # asymmetric case: giving up early does not merely annoy, it
+                    # pushes them toward deleting the integration instead, which
+                    # takes the keys while the lamp stays registered -- the
+                    # one-way door needing a 10 s factory reset. Waiting longer
+                    # is much the cheaper mistake. Spelling it out means a later
+                    # change to `ensure_connected`'s default -- tempting, since
+                    # every other user-facing caller wants the short one --
+                    # cannot silently take this path with it.
+                    await self._conn.ensure_connected(
+                        allow_pairing=False,
+                        max_attempts=CONNECT_ATTEMPTS_BACKGROUND,
+                    )
                     verdict = await self._conn.unpair()
                 except LampNotAnswering as err:
                     # `ensure_connected` refuses a link it could not get an

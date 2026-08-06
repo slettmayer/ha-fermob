@@ -64,30 +64,34 @@ _CONNECTION_PROFILES = {
 # unavailable until the lamp has reported once, which would otherwise last until
 # something turns the light on. The delay lets the Bluetooth stack come up first.
 #
-# One minute, halved from two in 0.9.1, and it is a **one-shot on purpose** --
-# there is exactly one timer here and it is registered synchronously, so a
-# reload or unload can always cancel it.
-#
 # The delay does not gate commands: `_async_send_led` calls `ensure_connected`
-# itself and never waits on this timer, so the lamp is controllable as soon as
-# setup finishes. What it gates, under *always connected*, is the link being
+# itself and never waits on either timer, so the lamp is controllable as soon as
+# setup finishes. What these gate, under *always connected*, is the link being
 # held open -- until it is, a button press goes unseen and both battery entities
 # read unavailable.
 #
-# Both directions of getting it wrong cost something, which is why this is a
-# middle value rather than the shortest one that looks safe. **Too late** is a
-# window of exactly the blindness that mode exists to remove. **Too early** is
-# worse than it looks: the check-in swallows its failures, so a Bluetooth
-# adapter or ESPHome proxy still coming up consumes the single attempt in
-# silence and the next is a whole interval away -- 30 minutes, or six hours on
-# demand.
+# **Two shots, not one, and that is what makes the short first one safe.** Too
+# late is a window of exactly the blindness that mode exists to remove. Too
+# early is worse than it looks: `_open_link` raises immediately when the lamp is
+# not yet in Home Assistant's Bluetooth registry -- no attempts consumed, no
+# time spent -- and `async_check_in` swallows that by contract. So a single tick
+# landing before an ESPHome proxy has reconnected and re-advertised is spent for
+# free, and the next contact would be a whole interval away: 30 minutes, or six
+# hours on demand. An adapter is up before we load (`bluetooth_adapters` is a
+# manifest dependency); a proxy is a separate integration and frequently is not.
 #
-# 0.9.2 briefly tried 30 s plus a retry chain to cover that. The chain re-armed
-# its timer *after* an await, which meant a reload landing mid-check-in left a
-# timer nothing could cancel, firing later against a discarded connection and
-# opening a second BLE link to a lamp that accepts one controller at a time. Not
-# worth it for a faster battery reading: prefer the value that needs no retry.
+# The second tick costs one battery poll on a healthy start -- the same request
+# the interval makes anyway -- and removes that cliff entirely.
+#
+# **Both are registered synchronously, in `async_setup_entry`, and that is
+# load-bearing.** 0.9.2 first tried a chain that re-armed *after* awaiting the
+# check-in; a reload landing mid-check-in then left a timer nothing could
+# cancel, which later fired against a discarded connection and opened a second
+# BLE link to a lamp that accepts one controller at a time. Scheduling both up
+# front has no such window: `entry.async_on_unload` has taken both cancels
+# before either can run.
 CHECK_IN_STARTUP_DELAY = timedelta(minutes=1)
+CHECK_IN_STARTUP_RETRY_DELAY = timedelta(minutes=3)
 
 
 def _key_store(hass: HomeAssistant, address: str) -> Store:
@@ -156,7 +160,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(
         async_track_time_interval(hass, _check_in, profile.check_in_interval)
     )
-    entry.async_on_unload(async_call_later(hass, CHECK_IN_STARTUP_DELAY, _check_in))
+    for delay in (CHECK_IN_STARTUP_DELAY, CHECK_IN_STARTUP_RETRY_DELAY):
+        entry.async_on_unload(async_call_later(hass, delay, _check_in))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload the entry when the user changes an option. The connection mode
