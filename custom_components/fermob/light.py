@@ -147,15 +147,23 @@ class LampNotAnswering(RuntimeError):
     It carries the `BatteryVerdict` that produced it, because the two kinds need
     opposite handling and the message alone cannot be branched on:
 
-    * `SILENT` -- nothing works, and nothing the user does will change that.
+    * `SILENT` -- the lamp is not talking on this link. Nothing the user does
+      fixes it *directly*, but it is not necessarily terminal either: two of the
+      three raise sites are about a link that may simply be marginal, and their
+      messages say to retry. What it never is, is grounds to re-pair.
     * `KEYS_REJECTED` -- the lamp was factory-reset. Turning the light on
-      re-pairs it, so this one *is* recoverable, by exactly one gesture.
+      re-pairs it, so this one is recoverable, by exactly one gesture.
 
     Callers that treat the second as the first take the entity unavailable, and
     an unavailable entity cannot be told to turn on -- see `async_check_in`.
+
+    The verdict is **required**. Defaulting it would let a forgotten argument
+    read as `SILENT`, which is the wrong answer in both places that branch on it:
+    `fermob.unpair` would blame range, and the check-in would grey out a lamp it
+    should have left alone -- silently, with nothing pointing at the omission.
     """
 
-    def __init__(self, message: str, verdict: BatteryVerdict | None = None) -> None:
+    def __init__(self, message: str, verdict: BatteryVerdict) -> None:
         super().__init__(message)
         self.verdict = verdict
 
@@ -1316,10 +1324,20 @@ class FermobBLEConnection:
                 # carries one.
                 _LOGGER.warning("%s", err)
 
-                # And a factory-reset lamp must stay *available*, which looks
-                # backwards and is not. Unavailable means "commands will not
-                # work". Here exactly one command will, and it is the documented
-                # recovery: turning the light on re-pairs the lamp.
+                # And a factory-reset lamp must be reported *available*, which
+                # looks backwards and is not. Unavailable means "commands will
+                # not work". Here exactly one command will, and it is the
+                # documented recovery: turning the light on re-pairs the lamp.
+                #
+                # Reported, not merely left alone. Suppressing the `False` is not
+                # enough, because the entity may already be unavailable -- the
+                # command path writes that on any failure, and so does the
+                # `proven_dead` branch above. The realistic order is exactly
+                # that: the lamp goes quiet, the entity greys out, the owner
+                # reacts by factory-resetting it (which the README suggests for
+                # several symptoms), and from then on every check-in returns
+                # KEYS_REJECTED against an entity nothing can lift. Same dead
+                # end, reached the long way round.
                 #
                 # Reporting it unavailable does not merely overstate the problem,
                 # it removes the cure. Home Assistant silently drops every
@@ -1330,9 +1348,9 @@ class FermobBLEConnection:
                 # reloads the integration, which nothing tells them to do.
                 # Observed on an H134, 2026-08-06.
                 #
-                # Every other verdict is genuinely unusable, and still reported.
-                if err.verdict is not BatteryVerdict.KEYS_REJECTED:
-                    self._notify(self._availability_listeners, "availability", False)
+                # Every other verdict is genuinely unusable, and still greys out.
+                reachable = err.verdict is BatteryVerdict.KEYS_REJECTED
+                self._notify(self._availability_listeners, "availability", reachable)
                 return
             except Exception:
                 # Broad on purpose: out of range, adapter busy, lamp asleep --
@@ -1885,7 +1903,7 @@ class FermobLight(LightEntity):
                     # exact opposite of what was asked for. Seen on an H134,
                     # 2026-08-06; the unit tests missed it because they mock
                     # `ensure_connected`.
-                    verdict = err.verdict or BatteryVerdict.SILENT
+                    verdict = err.verdict
                 except Exception as exc:
                     _LOGGER.error(
                         "Fermob %s unpair error: %s", address, exc, exc_info=True

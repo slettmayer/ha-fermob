@@ -703,7 +703,9 @@ async def test_check_in_reports_a_lamp_that_never_answered(hass: HomeAssistant):
     has gone deaf reads as available and *on* until somebody presses the switch.
     """
     conn = _conn(hass, keys=_KEYS)
-    conn.ensure_connected = AsyncMock(side_effect=LampNotAnswering("deaf"))
+    conn.ensure_connected = AsyncMock(
+        side_effect=LampNotAnswering("deaf", BatteryVerdict.SILENT)
+    )
     seen: list[bool] = []
     conn.add_availability_listener(seen.append)
 
@@ -726,7 +728,8 @@ async def test_the_check_in_logs_why_the_lamp_is_unusable(hass: HomeAssistant, c
     conn.ensure_connected = AsyncMock(
         side_effect=LampNotAnswering(
             f"Fermob {ADDRESS}: lamp no longer holds our keys "
-            "-- turn the light on in Home Assistant to re-pair it"
+            "-- turn the light on in Home Assistant to re-pair it",
+            BatteryVerdict.KEYS_REJECTED,
         )
     )
 
@@ -752,6 +755,9 @@ async def test_a_reset_lamp_stays_available_so_it_can_be_re_paired(
     and nothing anywhere told the owner to do that.
 
     "Unavailable" means commands will not work. Here exactly one will.
+
+    And it must be *reported* available, not merely left alone: the entity is
+    very often unavailable already by the time this runs -- see the test below.
     """
     conn = _conn(hass, keys=_KEYS)
     conn.ensure_connected = AsyncMock(
@@ -762,7 +768,35 @@ async def test_a_reset_lamp_stays_available_so_it_can_be_re_paired(
 
     await conn.async_check_in()
 
-    assert seen == []
+    assert seen == [True]
+
+
+async def test_a_reset_lamp_is_lifted_out_of_an_existing_unavailability(
+    hass: HomeAssistant,
+):
+    """Suppressing the `False` is not enough; the entity is usually already down.
+
+    The realistic order is: the lamp goes quiet, `proven_dead` or a failed
+    command greys the entity out, and *then* the owner factory-resets it --
+    which the README suggests for several symptoms. From that point every
+    check-in returns KEYS_REJECTED, and a handler that only declines to report
+    `False` leaves the entity unavailable for good: Home Assistant goes on
+    dropping the `light.turn_on` that would re-pair it. The same dead end,
+    reached the long way round.
+    """
+    conn = _conn(hass, keys=_KEYS)
+    conn._connected = True
+    conn._client = MagicMock(is_connected=True)
+    conn.request_battery = AsyncMock(return_value=False)  # session proven dead
+    conn.ensure_connected = AsyncMock(
+        side_effect=[None, LampNotAnswering("reset", BatteryVerdict.KEYS_REJECTED)]
+    )
+    seen: list[bool] = []
+    conn.add_availability_listener(seen.append)
+
+    await conn.async_check_in()
+
+    assert seen[-1] is True
 
 
 async def test_a_deaf_lamp_is_still_reported_unavailable(hass: HomeAssistant):

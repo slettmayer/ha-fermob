@@ -132,6 +132,12 @@ Silently, with the call still reporting success. So `light.turn_on` never arrive
 arrives, and `async_check_in` may not pair — leaving the lamp stuck until someone reloads the integration,
 which nothing tells them to do. Reproduced on an H134 (2026-08-06) and fixed in 0.9.1.
 
+It is *reported* available, not merely left alone. Suppressing the `False` is not enough, because the entity is
+usually unavailable already by the time this runs: the command path writes that on any failure, and so does the
+`proven_dead` branch. The realistic order is exactly that -- the lamp goes quiet, the entity greys out, and only
+*then* does the owner factory-reset it, which the README suggests for several symptoms. From that point every
+check-in returns `KEYS_REJECTED` against an entity nothing can lift.
+
 `SILENT` still greys the entity out, because nothing the user does will fix that one.
 
 Its third job is **liveness**. `request_battery()` returns whether the lamp acknowledged, and that ACK is the
