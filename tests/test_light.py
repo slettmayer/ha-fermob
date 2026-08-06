@@ -176,11 +176,35 @@ async def test_fetch_module_info_once_skips_when_already_known(hass: HomeAssista
     """The extra round trip is one per install, not one per connect."""
     conn = _conn(hass)
     conn.module_type = MODULE_TYPE_TW
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
     conn._send = AsyncMock()
 
     await conn._fetch_module_info_once()
 
     conn._send.assert_not_called()
+
+
+async def test_fetch_module_info_once_retries_while_the_address_is_zero(
+    hass: HomeAssistant,
+):
+    """ "Once" means once it has given us both things it carries.
+
+    Only the handshake's step 7 ever set the short address, so a pairing whose
+    MODULE_INFO_GET went unanswered left it at 0 permanently -- and every
+    addressed frame after that, the battery request included, goes to the wrong
+    place. That used to cost an unavailable battery sensor; now that the battery
+    ACK is the liveness signal it would cost the whole light.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW  # family known, address never learned
+    # [len, type, *value]; 0xb1 is the short address, 0xb4 the module type.
+    payload = bytes([3, 0xB1, 0x75, 0x7E, 3, 0xB4, 0x94, 0x01])
+    conn._send = AsyncMock(return_value=(payload, 0))
+
+    await conn._fetch_module_info_once()
+
+    conn._send.assert_awaited_once()
+    assert (conn._addr_b2, conn._addr_b3) == (0x75, 0x7E)
 
 
 async def test_fetch_module_info_once_reads_and_persists(hass: HomeAssistant):

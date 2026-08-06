@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (987 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other three use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1041 tests, ~10 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -105,6 +105,31 @@ channels whose sum is the total output, which is how colour temperature is expre
   reconnects after an unexpected drop, so lengthening its interval directly lengthens how long the entity can
   show confidently stale state. See [STATE-MODEL.md](docs/domain/STATE-MODEL.md) and
   [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md).
+- **The battery ACK has three meanings, and `CRYPT_MSG` is the counter-intuitive one.** A refusal normally
+  proves the lamp is listening — except `CRYPT_MSG` (7) and `UNREGISTERED` (5), which are the lamp saying it
+  cannot decrypt us. Confirmed on hardware: a factory-reset lamp answers `CRYPT_MSG` rather than going silent,
+  and a release that read every refusal as "listening" could not detect a reset at all. Branch on
+  `BatteryVerdict`, never on a bare bool.
+- **Almost nothing we send is acknowledged, so a dead session is invisible.** `send_led`, `DATETIME_SET` and
+  `UNREGISTER` are all writes-without-response and cannot fail; `is_connected` stays true on a link the lamp
+  has stopped honouring. The **battery ACK is the only acknowledgement there is**, which is why
+  `request_battery()` returns a bool and the check-in reconnects when it comes back false. Three separate 0.8.x
+  failures traced to this one blind spot — see
+  [STATE-MODEL.md](docs/domain/STATE-MODEL.md#it-is-also-the-liveness-probe). Do not add a command path that
+  assumes a successful write means the lamp heard it.
+- **`ensure_connected()` is a two-pass loop, and neither extra step is a redundant round trip.** Pairing
+  reconnects afterwards, because the lamp stops honouring the link it was paired on once `REGISTER_END` lands.
+  And a battery request unanswered **twice** triggers `_lamp_still_paired()`, because a lamp factory-reset behind
+  our back is otherwise a silent, permanent dead end. That probe is `REGISTER(0)` — a **pairing** frame whose
+  effect on an already-registered lamp is unknown — so it must stay behind the failure and never move onto the
+  happy path. See [PAIRING.md](docs/domain/PAIRING.md#when-the-lamp-does-not-answer-is-this-still-our-lamp).
+- **Only a user action may pair.** `async_check_in` passes `ensure_connected(allow_pairing=False)`; a
+  key-presence guard is *not* sufficient, because a factory-reset lamp leaves our keys on disk. Pairing flashes
+  the lamp and takes ownership of it, and the owner may have reset it on purpose to free it for the vendor app.
+- **Entry removal deletes the pairing keys, and that makes "delete and re-add" a one-way door** — the lamp stays
+  registered while its key is gone, so the re-add needs a 10-second factory reset first. Deliberate: it is the
+  cleanup path for a lamp that is gone, since `fermob.unpair` refuses on an unreachable one. Documented in
+  `async_remove_entry`, [PAIRING.md](docs/domain/PAIRING.md#unpairing) and the README troubleshooting table.
 - **The idle timeout and the check-in interval are coupled, and must stay derived from one option.** A check-in
   calls `ensure_connected()`, which re-arms the idle timer — so an interval shorter than the timeout holds the
   link open no matter what the timeout says. `resolve_connection_profile` sets both from `connection_mode` for

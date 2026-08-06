@@ -69,10 +69,60 @@ last until something turned the light on. The delay lets the Bluetooth stack com
 
 Two deliberate refusals:
 
-- **It will not run on an unpaired lamp.** `ensure_connected()` would otherwise start the pairing handshake,
-  which makes the lamp flash — unattended and at an arbitrary hour.
+- **It never pairs, at all.** Not merely "will not run on an unpaired lamp" — it passes
+  `ensure_connected(allow_pairing=False)`, which forbids the handshake outright. The older key-presence guard
+  was not enough: a lamp someone factory-reset to hand back to the Fermob app leaves *our* keys on disk, so the
+  guard passed, and the re-pair branch would have flashed it through a full handshake overnight and silently
+  taken ownership again. Pairing belongs to something the user just did.
 - **It swallows every failure.** An out-of-range balcony lamp is the normal case, and a missed check-in must
-  leave the last known level in place rather than clearing it or marking the entities unavailable.
+  leave the last known level in place rather than clearing it.
+
+It does, however, **report one specific outcome**: `LampNotAnswering`, meaning the link came up and the lamp
+ignored two requests on it. Availability is otherwise written only when a command is sent, so a lamp that has
+gone deaf would read *available* and *on* in the UI indefinitely — exactly the appearance this release is about.
+
+**Failing to reach the lamp at all is not that**, and deliberately changes nothing. Out of range, taken indoors,
+no advertisement yet, adapter busy — that is the normal condition of a balcony lamp, and in *on demand* mode the
+next check-in is six hours away. Reporting unavailable there would grey the entity out for the rest of the day
+over one missed advertisement, for a lamp that would answer a command perfectly well.
+
+**With one exception: once the session has been *proved* dead, that excuse expires.** If the check-in found an
+open link the lamp was ignoring, tore it down, and then could not get the lamp back, "cannot reach it" is no
+longer reassuring — the last thing known for certain is that the lamp was not answering. It reports unavailable
+in that case too.
+
+### It is also the liveness probe
+
+**The battery ACK is the only acknowledgement this integration ever receives on a live link.** Every other
+frame it sends — `send_led`, `DATETIME_SET`, `UNREGISTER` — is a write-without-response and cannot fail. So
+when the check-in finds the link already up, an unacknowledged battery request is the *only* available evidence
+that the lamp has stopped listening, and it acts on it: disconnect, reconnect, and let the connect path
+re-establish the session.
+
+Two things make that signal trustworthy enough to act on:
+
+- **A refusal usually counts as an answer.** The lamp NAKs some commands outright (`DEVICE_DATA_GET` is
+  refused with error 18), and such a NAK is proof it is listening. `request_battery()` therefore reports the
+  *acknowledgement*, not the payload — both a NAK and a timeout come back with no body.
+- **Except `CRYPT_MSG` and `UNREGISTERED`, which mean the opposite.** Those two are the lamp saying it cannot
+  decrypt us, so a session that gets one is not alive at all: our keys are wrong. Verified on hardware
+  (2026-08-06) — a factory-reset H134 answers `CRYPT_MSG` rather than going silent, and for one release counting
+  that as "listening" made the reset undetectable. The three-way split lives in `BatteryVerdict`.
+- **One miss is not a diagnosis.** A `SILENT` request is retried once before anything acts on the failure —
+  and the retry returns a `BatteryVerdict` too, so a rejection that only shows up on the second attempt is
+  still read as a rejection. Anywhere that flattens the three verdicts into a bool loses exactly that case;
+  `request_battery()` is the bool wrapper and is only for callers that genuinely mean "can I talk to this
+  lamp".
+
+This is what replaces the 30 s idle disconnect. Before 0.8.0 that timer dropped the link after every command,
+so a session the lamp had stopped honouring was repaired within half a minute — invisibly, and by accident.
+Holding the link open removed that and put nothing in its place: `is_connected` stays `True` on a session the
+lamp is ignoring, `_async_send_led` marks the entity *available* after a write that cannot fail, and
+`request_battery` logged its timeout and swallowed it. The result was a lamp that read as connected and
+healthy in Home Assistant while ignoring every command, permanently. Fixed in 0.9.0.
+
+The check-in interval is therefore also the **upper bound on how long that state can last**, which is a second
+reason not to lengthen it.
 
 `fermob.check_in` is the same routine on demand — see
 [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services).

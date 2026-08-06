@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.9.0
+
+**A lamp that stopped responding now recovers on its own.** If you are on 0.8.0
+or 0.8.1 and your lamp shows as connected but ignores everything, with the
+battery reading *unavailable*, this is the release for you. Upgrade; nothing to
+re-pair, no settings to revisit.
+
+- **A lamp that goes deaf is noticed and reconnected.** The link could be up, the
+  entity available, and every command silently discarded by the lamp — with no
+  error anywhere, because the frames that carry light commands are sent without
+  asking for a reply and cannot fail. The battery request is the one thing the
+  lamp does acknowledge, so an unanswered one is now treated as what it is: a
+  dead session. The check-in reconnects, and the lamp comes back within one
+  check-in interval (30 minutes by default) or immediately via `fermob.check_in`.
+
+  This was a 0.8.0 regression, and an unlucky one. Until then the link was
+  dropped 30 seconds after each command, which repaired this by accident, every
+  time, before anyone could see it. Holding the link open — which is what makes
+  a physical button press visible in Home Assistant — removed the accident
+  without replacing it.
+
+- **Pairing no longer leaves the lamp unresponsive until you reload.** The lamp
+  stops honouring the link it was paired on the moment pairing completes, so
+  pairing now reconnects before handing over. Previously the first commands
+  after a fresh pairing went nowhere, and reloading the integration was the
+  undocumented cure.
+
+- **A lamp you factory-reset is detected and re-paired automatically.** Home
+  Assistant kept its old keys and went on encrypting with them forever, against
+  a lamp that could no longer read them — connected, available, and deaf, with
+  no way out but deleting `.storage/fermob_*` by hand. A lamp that stops
+  answering is now asked whether it still knows us, and re-paired if it says no.
+  Usually it does not have to be asked at all: a reset lamp *says so*, and Home
+  Assistant now understands the answer. A lamp that is answering normally is
+  never asked, and one that is merely out of range is never mistaken for a reset
+  one.
+
+- **A lamp that cannot be woken is reported as unavailable instead of pretending.**
+  A connection that comes up but gets no answer from the lamp is now a failed
+  connection, so the light entity goes unavailable rather than accepting commands
+  it cannot deliver — and the scheduled check-in updates that too, so a lamp that
+  goes quiet is noticed without anyone pressing a switch. The lamp is always asked
+  twice before any of this: one lost reply on a marginal link changes nothing.
+  A lamp that simply cannot be reached — out of range, taken indoors for the
+  winter — is left alone as before, and is not the same thing.
+
+- **Deleting the integration now deletes its pairing keys**, so a lamp that is
+  gone for good — dead battery, given away, already reset — leaves nothing behind.
+  Note the consequence: deleting the integration and adding the same lamp back
+  will not work, because the lamp is still registered to Home Assistant and the
+  key it needs is gone. Hold the lamp's button for ten seconds first, or use
+  `fermob.unpair` instead, which releases the lamp properly.
+
+- **`fermob.unpair` no longer strands the lamp when it cannot be reached.** It
+  used to delete the keys regardless, leaving the lamp registered to a Home
+  Assistant that had forgotten it: the *"lamp is in PRIVATE mode but no stored
+  keys"* dead end, which only a 10-second factory reset clears. It now checks
+  that the lamp is listening first, and if it is not, it does not even send the
+  unpair command — it reports an error and changes nothing. Bring the lamp in
+  range and try again.
+
+  Two cases where that error used to be simply wrong now say what is actually
+  going on. A lamp you already factory-reset is not unreachable — it is answering,
+  and what it is answering is that it is no longer yours; the service now tells
+  you there is nothing left to release and to delete the integration. And an entry
+  whose pairing never completed has nothing to release either, so it is removed
+  without touching the radio, instead of failing with a message about range.
+
+- **The background check-in can no longer pair a lamp.** It was only ever
+  supposed to reconnect and read the battery, but the new re-pairing above could
+  be reached from it, which meant a lamp you had reset to hand back to the Fermob
+  app could be silently claimed again overnight. Pairing now only ever happens
+  because you did something.
+
+With thanks to Thomas Rehm, who hit all of this on real hardware and reported it
+carefully enough to find.
+
 ## 0.8.1
 
 **Correction.** This entry originally said the release fixed a bug where the

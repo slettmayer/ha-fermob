@@ -66,6 +66,11 @@ _CONNECTION_PROFILES = {
 CHECK_IN_STARTUP_DELAY = timedelta(minutes=2)
 
 
+def _key_store(hass: HomeAssistant, address: str) -> Store:
+    """The store holding one lamp's pairing keys, keyed by its BLE address."""
+    return Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+
+
 def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
     """Map the connection-mode option onto its timings.
 
@@ -85,7 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .light import FermobBLEConnection, resolve_light_type
 
     address = entry.data[CONF_ADDRESS]
-    store = Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    store = _key_store(hass, address)
     profile = resolve_connection_profile(entry)
     conn = FermobBLEConnection(
         hass,
@@ -142,6 +147,28 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the lamp's stored pairing keys along with the entry.
+
+    Removing the integration is how a lamp that can no longer be reached gets
+    cleaned up -- `fermob.unpair` refuses on an unreachable lamp by design -- so
+    the keys must not outlive it as an orphaned `.storage/fermob_<mac>`.
+
+    **This makes "delete it and add it again" a one-way door**, and that is a
+    known, accepted cost rather than an oversight. Removing an entry tells the
+    lamp nothing: it stays registered to us in PRIVATE mode, and once the keys
+    are gone the re-add hits the handshake's step-1 probe, finds a lamp it cannot
+    decrypt, and stops. The only way back is holding the lamp's button for ten
+    seconds. The pairing error says exactly that, and README/PAIRING.md warn
+    about it up front.
+
+    Note this is *not* the recovery path for a lamp that was factory-reset while
+    the entry existed -- `_lamp_still_paired()` handles that one automatically,
+    with no `.storage` surgery and no re-add.
+    """
+    await _key_store(hass, entry.data[CONF_ADDRESS]).async_remove()
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

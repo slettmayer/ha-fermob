@@ -2,7 +2,7 @@
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q          # 987 tests, ~10 s (most of it importing Home Assistant)
+python -m pytest tests/ -q          # 1041 tests, ~10 s (most of it importing Home Assistant)
 ```
 
 CI runs the same suite with `-v` (`.github/workflows/validate.yml`), so a local `-q` run and the `Pytest` job
@@ -16,6 +16,7 @@ Two modules with deliberately different needs:
 | `tests/test_light.py` | a real `hass` (`pytest-homeassistant-custom-component`) | family resolution, module-info persistence, entity capabilities, the command path, which pushes are believed |
 | `tests/test_connection_profile.py` | the `fermob` package (no radio) | how the connection-mode option maps to an idle timeout and a check-in interval |
 | `tests/test_battery_entities.py` | a real `hass` | the two diagnostic entities: that both get every battery push, and that each subscription dies with its entity |
+| `tests/test_session_recovery.py` | a real `hass` | the mechanisms that recover a link the lamp has stopped honouring — the reconnect after pairing, the retried battery ACK as liveness signal, the gated factory-reset probe, the check-in that never pairs and reports its verdict, and the unpair that neither broadcasts nor removes when the lamp is silent |
 
 `protocol.py` stays HA-free so the first of those keeps running on a bare install. `requirements_test.txt`
 installs everything for both, because CI runs them together.

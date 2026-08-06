@@ -57,9 +57,22 @@ Two sanctioned exceptions, both deliberate:
   not write a second copy of that block; `async_turn_on`/`async_turn_off` only compute parameters and record attributes
   after it succeeds.
 - **`async_unpair()` is the one sanctioned exception.** It runs its own lock → `ensure_connected()` → `unpair()` →
-  `disconnect()` block and reaches into the connection's private key state, because it is removing the config entry:
-  there is no availability to maintain and no entity left to update afterwards. It is not a precedent — any *new*
-  command belongs in `_async_send_led()`.
+  `disconnect()` block, because it is removing the config entry: there is no availability to maintain and no entity
+  left to update afterwards. It is not a precedent — any *new* command belongs in `_async_send_led()`.
+- **`async_unpair()` removes both halves or neither.** Deleting the keys when the lamp never heard `UNREGISTER`
+  strands it registered to a controller with no key — recoverable only by a 10-second factory reset. So it verifies
+  the session is answering first, and an unreachable lamp raises `HomeAssistantError` and removes nothing. That
+  check proves the session was alive, not that the broadcast landed.
+- **`unpair()` does not send the broadcast when its own liveness check failed.** Sending anyway makes the caller's
+  error message a coin toss: the lamp may receive it and drop to `NONE` while `async_unpair` reports "nothing has
+  been removed" and keeps the keys.
+- **`discard_keys()` is for `fermob.unpair` only.** It deletes the stored record, which is irreversible. The
+  re-pair path inside `ensure_connected` uses `_forget_keys_in_memory()` — the handshake's own `_save_keys()`
+  replaces the record, so deleting first buys nothing and costs the keys if pairing fails halfway.
+- **Anything that can pair must be reachable only from a user action.** `ensure_connected(allow_pairing=False)`
+  is what `async_check_in` passes; pairing flashes the lamp and takes ownership of it, so a background timer must
+  never reach the handshake. The old key-presence guard was not enough — a factory-reset lamp leaves our keys on
+  disk.
 - **Update attributes only after a confirmed send**, so a failure never leaves HA asserting a state the lamp does not have.
 - **Branch on `LIGHT_TYPE_DW` / `LIGHT_TYPE_TW`**, never on model names or `module_type`.
 - **Hold the connection lock for the whole connect-and-send.** `ensure_connected()` and `send_led()` assume the caller holds it.
