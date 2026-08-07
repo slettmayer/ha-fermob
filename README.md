@@ -26,7 +26,8 @@ Control your **Fermob Bluetooth lamps** (Hoopik GL1200, MOOON! and compatible) d
 - **Automatic check-in** — reconnects a dropped link and refreshes the battery on a timer, without turning the lamp on, so a lamp left switched off does not keep a stale reading
 - **Lamp family read from the lamp** — `MODULE_INFO_GET` reports what the lamp actually is, rather than guessing from its name, with a manual override if it is ever wrong
 - **Two services** — `fermob.check_in` (contact the lamp now) and `fermob.unpair` (cleanly remove it, equivalent to "Forget" in the Fermob app)
-- **Two options** — lamp type and connection mode, both under **Configure**; see [Configuration](#configuration)
+- **Firmware version, and whether a newer one exists** — read from the lamp, checked once a day against the manufacturer's release server. It **cannot install** an update; only the Fermob app can. See [Firmware updates](#firmware-updates)
+- **Three options** — lamp type, connection mode and the firmware check, all under **Configure**; see [Configuration](#configuration)
 
 ## Entities
 
@@ -37,6 +38,7 @@ One device per lamp, with these entities:
 | `light.<lamp>` | Light | — | On/off and brightness. Colour temperature too on tunable-white lamps |
 | `sensor.<lamp>_battery` | Sensor (`battery`, %) | Diagnostic | State of charge as the lamp reports it |
 | `binary_sensor.<lamp>_charging` | Binary sensor (`battery_charging`) | Diagnostic | On while the lamp is on its charger |
+| `update.<lamp>_firmware` | Update (`firmware`) | — | The lamp's firmware version, and whether the manufacturer has published a newer one. **No install button** — see [Firmware updates](#firmware-updates) |
 
 The two battery entities read **unavailable** until the lamp has reported a level
 at least once, so a lamp that has never answered is never mistaken for a flat
@@ -135,13 +137,14 @@ If the automatic notification does not appear:
 
 ## Configuration
 
-Two options, both under **Settings → Devices & Services → Fermob → Configure**.
-Changing either reloads the integration; neither requires re-pairing.
+Three options, all under **Settings → Devices & Services → Fermob → Configure**.
+Changing any of them reloads the integration; none requires re-pairing.
 
 | Option | Default | What it decides |
 |---|---|---|
 | **Lamp type** | Auto-detect (by name) | Whether the lamp is treated as dimmable white or tunable white — i.e. whether it gets a colour-temperature slider |
 | **Connection** | Always connected | Whether the BLE link is held open, which is what makes the lamp's own button presses visible in HA |
+| **Check for firmware updates** | On | Whether the firmware entity asks the manufacturer's server, once a day, whether a newer build is published. Off keeps the entity but stops the request |
 
 ### Lamp type
 
@@ -216,6 +219,26 @@ worth thinking about. For one stored off-charger for a season, it is still
 probably not the dominant term — but the honest answer is that we have not
 measured the alternative, so switch modes for the connection slot, not for the
 battery.
+
+### Check for firmware updates
+
+**This is the only thing the integration sends outside your network**, which is
+why it is switchable at all. When it is on, HA asks the manufacturer's release
+server once a day whether a newer firmware build exists for your lamp model — one
+small HTTPS request per lamp, carrying nothing but the manufacturer and model
+name the lamp reported. No image is ever downloaded, because nothing here can
+install one; see [Firmware updates](#firmware-updates).
+
+Switching it off stops the request entirely. The `update` entity stays — so
+nothing you renamed, put in an area or built a dashboard card on breaks — and
+simply reports your installed version with the available one **unknown**. If you
+would rather not see it at all, disable the entity itself in **Settings →
+Devices & Services → Entities**; Home Assistant then never creates it.
+
+Until a check succeeds the entity reads **unknown** rather than "up to date". It
+will stay that way for a lamp the manufacturer's server does not carry (it has no
+Hoopik entry at all) or if your HA cannot reach it — saying "up to date" there
+would be a claim nobody checked.
 
 ## Usage
 
@@ -389,6 +412,34 @@ outcomes:
 An entry whose pairing never completed has nothing to release either, so it is
 removed without contacting the lamp at all.
 
+## Firmware updates
+
+**This integration cannot update your lamp's firmware — only the official Fermob
+app can.** If you want to be on the latest firmware, do it **with the app,
+before you pair the lamp to Home Assistant**: once HA owns the lamp the app
+cannot reach it, so updating later means `fermob.unpair` first and pairing again
+afterwards.
+
+Two things worth knowing before you bother:
+
+- **Fermob ship firmware rarely.** The newest build on their update server for
+  any lamp is from November 2023 (checked 2026-08-07).
+- **The app does not tell you which version it installs.** It says only
+  *"Firmware update found…"* or *"The firmware of your lamp is updated."* — the
+  version is on its technical-information screen, and on this integration's
+  device page.
+- **The firmware this integration is tested against is 3.0.27.0** — the newest
+  build Fermob publish for the MOOON! H134, and what the reference lamp here
+  runs. Brightness, colour temperature, pairing, reconnect and unpair have all
+  been exercised on it. Older firmware works too (the protocol was originally
+  reverse-engineered on 2.3.21.0), so there is no need to update on this
+  integration's account. If you do update and something misbehaves, please
+  [open an issue](https://github.com/slettmayer/ha-fermob/issues) with the
+  firmware version from the device page.
+
+Why it is not built, and what it would take, is written up in
+[docs/domain/FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md).
+
 ## Factory reset
 
 If the lamp has stale keys from a previous client and won't pair:
@@ -429,6 +480,7 @@ steps either: it is detected and re-paired the next time you turn the light on.
 | Lamp holds a Bluetooth connection permanently | By design — it is what makes button presses visible. Switch **Configure → Connection** to *On demand* to free the slot, at the cost of press detection |
 | Lamp dims when lifted off the charger | Expected — the lamp limits its own output on battery. No setting exists, in HA or in the Fermob app — see [Brightness on battery](#brightness-on-battery) |
 | Top of the brightness slider does nothing | Same cause, worse at a low state of charge. Charge the lamp before suspecting a bug |
+| Want to update the lamp's firmware | Not supported here — use the Fermob app, ideally *before* pairing to HA. See [Firmware updates](#firmware-updates) |
 | Integration not loading | Check logs for `custom_components.fermob` errors |
 
 ## Debug logging

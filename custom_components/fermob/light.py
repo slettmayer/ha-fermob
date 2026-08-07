@@ -34,7 +34,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import DOMAIN
+from . import DOMAIN, address_slug
 from .protocol import (
     CHAR_UUID,
     CMD_CRYPT_AUTHKEY_GEN,
@@ -266,7 +266,16 @@ class FermobBLEConnection:
         # What the lamp says it is (MODULE_INFO_GET). None until read once.
         self.module_type: int | None = None
         self.model: str | None = None
-        self.on_module_info: Any = None  # (module_type, model) -> None
+        self.manufacturer: str | None = None
+        self.sw_version: str | None = None
+        self.hw_version: str | None = None
+        # Called with the lamp's **full reported identity**, not a delta, and
+        # unconditionally on every connect -- the subscriber owns the diff, since
+        # only it can see what the config entry is missing. See
+        # `_store_module_info` and `__init__.module_info_updates`. A mapping rather
+        # than one argument per field so that reporting one more thing about the
+        # lamp does not churn the signature and every call site.
+        self.on_module_info: Any = None  # (identity: dict[str, Any]) -> None
 
         # Runtime state
         self._connected = False  # BLE link is up
@@ -393,6 +402,9 @@ class FermobBLEConnection:
             self._addr_b3 = data.get("addr_b3", 0)
             self.module_type = data.get("module_type")
             self.model = data.get("model")
+            self.manufacturer = data.get("manufacturer")
+            self.sw_version = data.get("sw_version")
+            self.hw_version = data.get("hw_version")
             self._have_keys = True
             _LOGGER.debug("Fermob %s: keys loaded", self._address)
             return True
@@ -417,6 +429,9 @@ class FermobBLEConnection:
                 "addr_b3": self._addr_b3,
                 "module_type": self.module_type,
                 "model": self.model,
+                "manufacturer": self.manufacturer,
+                "sw_version": self.sw_version,
+                "hw_version": self.hw_version,
             }
         )
         _LOGGER.debug("Fermob %s: keys saved", self._address)
@@ -1234,26 +1249,91 @@ class FermobBLEConnection:
     # What the lamp says it is
     # ------------------------------------------------------------------
 
-    def _store_module_info(self, info: ModuleInfo) -> None:
-        """Record a reported module_type / model and announce any change."""
-        changed = (
-            info.module_type is not None and info.module_type != self.module_type
-        ) or (info.model is not None and info.model != self.model)
-        if info.module_type is not None:
-            self.module_type = info.module_type
-        if info.model is not None:
-            self.model = info.model
-        if not changed:
-            return
+    def reported_identity(self) -> dict[str, Any]:
+        """Everything the lamp has told us about itself, omitting the unknown."""
+        return {
+            field: value
+            for field in (
+                "module_type",
+                "model",
+                "manufacturer",
+                "sw_version",
+                "hw_version",
+            )
+            if (value := getattr(self, field)) is not None
+        }
 
-        _LOGGER.info(
-            "Fermob %s: reports module_type=%s model=%s",
-            self._address,
-            self.module_type,
-            self.model,
-        )
+    def _store_module_info(self, info: ModuleInfo) -> None:
+        """Record what the lamp reported about itself and announce it.
+
+        A field the reply omitted is left alone rather than cleared: a short
+        reply must never lose what a fuller one already told us.
+
+        **The announcement carries the full identity, not the delta, and that is
+        what makes it self-healing.** The subscriber diffs against the config
+        entry, which is written through a *delayed* store while the key store is
+        written immediately -- so a restart in that window leaves the key store
+        holding a version the entry never got. Sending only what changed
+        in-memory could never repair that: the next connect loads the version
+        from the key store, finds nothing changed, and stays quiet forever, with
+        the device page missing a version for good. Sending everything costs a
+        dict per connect and lets the subscriber decide.
+        """
+        reported = {
+            "module_type": info.module_type,
+            "model": info.model,
+            "manufacturer": info.manufacturer,
+            "sw_version": info.sw_version,
+            "hw_version": info.hw_version,
+        }
+        changed = {
+            field: value
+            for field, value in reported.items()
+            if value is not None and value != getattr(self, field)
+        }
+        for field, value in changed.items():
+            setattr(self, field, value)
+
+        if changed:
+            _LOGGER.info(
+                "Fermob %s: reports module_type=%s model=%s firmware=%s hardware=%s",
+                self._address,
+                self.module_type,
+                self.model,
+                self.sw_version,
+                self.hw_version,
+            )
         if self.on_module_info:
-            self.on_module_info(self.module_type, self.model)
+            self.on_module_info(self.reported_identity())
+
+    def _latch_after_max_attempts(self) -> None:
+        """Stop re-reading MODULE_INFO_GET once the attempt budget is spent.
+
+        The budget is per connection object, so it resets on a reload -- a lamp
+        that never answers costs a few attempts after each restart rather than
+        one on every connect for the life of the install.
+        """
+        if self._module_info_attempts >= _MODULE_INFO_MAX_READS:
+            self._module_info_read = True
+
+    def _latch_unanswered(self) -> None:
+        """Spend the budget on a *failed* read -- but never while the address is 0.
+
+        **Giving up on silence is only safe once we have a short address.** With
+        the address still `0x0000`, every addressed frame -- `send_led` and the
+        battery request that is our only liveness signal -- goes to a lamp that is
+        not there, is written without response, and is silently ignored while Home
+        Assistant reports success. Latching there would make that permanent until
+        a reload, so a few seconds per connect is the cheaper failure by a wide
+        margin and the read stays armed.
+
+        Bounding the *other* case is what this budget is for: an install that
+        already has an address and is only missing the firmware version must not
+        pay a 3 s ACK deadline on every connect forever.
+        """
+        if not (self._addr_b2 or self._addr_b3):
+            return
+        self._latch_after_max_attempts()
 
     async def _fetch_module_info_once(self) -> None:
         """Read MODULE_INFO_GET on reconnect, but only until it has answered.
@@ -1271,9 +1351,35 @@ class FermobBLEConnection:
         # the address being non-zero alone would never be satisfied by a lamp
         # whose short address genuinely is 0x0000: it would re-read, and re-write
         # the key store, on every single reconnect.
+        # **Announce first, then decide whether to ask.** The subscriber diffs
+        # against the config entry, and the entry can be *behind* what we already
+        # know: the key store is written immediately while the entry goes through a
+        # delayed store, so a restart in that window leaves the entry missing a
+        # version the key store has. Announcing only after a fresh read would make
+        # that unrepairable, because every guard below is satisfied by exactly the
+        # values the key store restored. Costs one dict and one diff per connect,
+        # and writes nothing when the entry already agrees.
+        if self.on_module_info:
+            self.on_module_info(self.reported_identity())
         if self._module_info_read:
             return
-        if self.module_type is not None and (self._addr_b2 or self._addr_b3):
+        # The firmware version joins the "already know it" test, so an install
+        # paired before we started reading it re-reads exactly once and then
+        # persists it.
+        #
+        # **That is also what made the retry bound below load-bearing.** Until it
+        # did, every 0.9.x install returned right here and the failure paths could
+        # never be reached; now they can, and a lamp whose firmware does not answer
+        # this command in GATEWAY mode would otherwise re-ask on every single
+        # connect -- from inside `ensure_connected`, holding the lock, ahead of the
+        # light command that opened the link, at 3 s per unanswered send. Hence
+        # `_latch_after_max_attempts` on *both* failure paths: silence costs a
+        # bounded few attempts per connection object, never one per command.
+        if (
+            self.module_type is not None
+            and self.sw_version is not None
+            and (self._addr_b2 or self._addr_b3)
+        ):
             return
         self._module_info_attempts += 1
         try:
@@ -1281,9 +1387,11 @@ class FermobBLEConnection:
         except Exception as err:
             # Broad on purpose: any transport failure here is non-fatal.
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET failed: %s", self._address, err)
+            self._latch_unanswered()
             return
         if not pl:
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET not answered", self._address)
+            self._latch_unanswered()
             return
         info = parse_module_info(pl)
         # The short address too, not just the family. Only the handshake's step 7
@@ -1300,12 +1408,10 @@ class FermobBLEConnection:
         # 0xb1 short-address TLV left the address at 0 *and* stopped anything from
         # asking again. Bounded, so a lamp whose address genuinely is 0x0000 costs
         # a few extra round trips rather than one per reconnect forever.
-        if (
-            self._addr_b2
-            or self._addr_b3
-            or self._module_info_attempts >= _MODULE_INFO_MAX_READS
-        ):
+        if self._addr_b2 or self._addr_b3:
             self._module_info_read = True
+        else:
+            self._latch_after_max_attempts()
         if self._have_keys:
             await self._save_keys()
 
@@ -1786,7 +1892,7 @@ class FermobLight(LightEntity):
 
         addr = entry.data[CONF_ADDRESS]
         self._attr_name = entry.data.get("name", addr)
-        self._attr_unique_id = f"fermob_{addr.replace(':', '_').lower()}"
+        self._attr_unique_id = address_slug(addr)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -1797,11 +1903,17 @@ class FermobLight(LightEntity):
             if self._light_type == LIGHT_TYPE_TW
             else "Hoopik GL1200 (dimmable white)"
         )
+        # Both versions come from the same MODULE_INFO_GET reply as the model, so
+        # they appear on the device page from the first connect onwards -- writing
+        # them into entry.data reloads the entry, which rebuilds this. None until
+        # then, which the registry renders as absent rather than wrong.
         return DeviceInfo(
             identifiers={("fermob", addr)},
             name=self._attr_name,
             manufacturer="Fermob",
             model=model,
+            sw_version=self._entry.data.get("sw_version"),
+            hw_version=self._entry.data.get("hw_version"),
         )
 
     # ------------------------------------------------------------------

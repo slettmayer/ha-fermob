@@ -26,7 +26,7 @@ Everything the app can change about a lamp is:
 | Timer, scheduling | `RULE_*` (97–111) |
 | Group membership, LUDO switch assignment | `GROUP_*` (81–88) |
 | Set the lamp's clock | `DATETIME_SET` (26) |
-| Firmware update, delete / unpair | DFU, `UNREGISTER` (17) |
+| Firmware update, delete / unpair | DFU (see [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md)), `UNREGISTER` (17) |
 
 There is **no output limit, no power profile, no battery-behaviour setting and no persistent power-on
 default.** The app's command enum does define `CONFIG_SET` (5), `MODULE_PROPERTY_SET` (53),

@@ -24,7 +24,9 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.fermob import address_slug, module_info_updates
 from custom_components.fermob.light import (
+    _MODULE_INFO_MAX_READS,
     DEFAULT_KELVIN,
     FermobBLEConnection,
     FermobLight,
@@ -140,26 +142,106 @@ def _conn(
 
 async def test_store_module_info_records_and_announces(hass: HomeAssistant):
     conn = _conn(hass)
-    seen: list[tuple] = []
-    conn.on_module_info = lambda mt, model: seen.append((mt, model))
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
 
-    conn._store_module_info(ModuleInfo(0x75, 0x7E, 2, MODULE_TYPE_TW, "MOOON - H134"))
+    conn._store_module_info(
+        ModuleInfo(
+            0x75,
+            0x7E,
+            2,
+            MODULE_TYPE_TW,
+            "MOOON - H134",
+            "Fermob",
+            "2.3.21.0",
+            "1.0.0",
+        )
+    )
 
     assert conn.module_type == MODULE_TYPE_TW
     assert conn.model == "MOOON - H134"
-    assert seen == [(MODULE_TYPE_TW, "MOOON - H134")]
+    assert conn.manufacturer == "Fermob"
+    assert conn.sw_version == "2.3.21.0"
+    assert conn.hw_version == "1.0.0"
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "manufacturer": "Fermob",
+            "sw_version": "2.3.21.0",
+            "hw_version": "1.0.0",
+        }
+    ]
 
 
-async def test_store_module_info_is_quiet_when_nothing_changed(hass: HomeAssistant):
-    """Repeat reports must not churn the config entry on every connect."""
+async def test_store_module_info_announces_the_full_identity(hass: HomeAssistant):
+    """Everything known, not the delta -- that is what lets the entry self-heal.
+
+    The subscriber diffs against the config entry, which is written through a
+    *delayed* store while the key store is written at once. A delta computed
+    here could never mention a field the entry lost in that window, because the
+    next connect loads it from the key store and sees no change.
+    """
     conn = _conn(hass)
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
-    seen: list[tuple] = []
-    conn.on_module_info = lambda mt, model: seen.append((mt, model))
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
+    conn._store_module_info(
+        ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134", sw_version="2.3.21.0")
+    )
+
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "sw_version": "2.3.21.0",
+        }
+    ]
+
+
+async def test_store_module_info_announces_even_when_nothing_changed(
+    hass: HomeAssistant,
+):
+    """Churn protection belongs to the subscriber, which alone sees the entry.
+
+    Announcing unconditionally is what makes a version missing from
+    `entry.data` recoverable; `module_info_updates` is what keeps it from
+    costing a config-entry write, and a reload, on every connect.
+    """
+    conn = _conn(hass)
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
-    assert seen == []
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
+    conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
+
+    assert seen == [{"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}]
+
+
+def test_address_slug_is_the_one_definition_and_must_not_change():
+    """Five things are keyed on this and none can be renamed after the fact.
+
+    The pairing key store under `.storage` and the unique_id of every entity. A
+    change here orphans a user's keys -- recoverable only by a ten-second factory
+    reset -- or their entity customisations, so the exact legacy format is pinned
+    rather than left to the implementation.
+    """
+    assert address_slug("D6:86:76:E8:7E:75") == "fermob_d6_86_76_e8_7e_75"
+    assert address_slug("d6:86:76:e8:7e:75") == "fermob_d6_86_76_e8_7e_75"
+
+
+async def test_module_info_updates_only_reports_what_the_entry_lacks():
+    """The diff that stands between "reported every connect" and "reload every connect"."""
+    stored = {"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}
+    reported = {**stored, "sw_version": "3.0.27.0", "hw_version": None}
+
+    assert module_info_updates(stored, reported) == {"sw_version": "3.0.27.0"}
+    assert module_info_updates(reported, reported) == {}
+    # The self-healing case: the key store kept a version the entry never got.
+    assert module_info_updates({}, {"sw_version": "3.0.27.0"}) == {
+        "sw_version": "3.0.27.0"
+    }
 
 
 async def test_store_module_info_keeps_known_values_when_absent(hass: HomeAssistant):
@@ -176,12 +258,31 @@ async def test_fetch_module_info_once_skips_when_already_known(hass: HomeAssista
     """The extra round trip is one per install, not one per connect."""
     conn = _conn(hass)
     conn.module_type = MODULE_TYPE_TW
+    conn.sw_version = "2.3.21.0"
     conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
     conn._send = AsyncMock()
 
     await conn._fetch_module_info_once()
 
     conn._send.assert_not_called()
+
+
+async def test_fetch_module_info_once_rereads_for_a_missing_firmware_version(
+    hass: HomeAssistant,
+):
+    """An install paired before we read 0xb5 must ask once more.
+
+    Its stored record has the module type and the address, so the old guard
+    returned early and the firmware version would never have been learned.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock(return_value=(b"", 2))
+
+    await conn._fetch_module_info_once()
+
+    conn._send.assert_called_once()
 
 
 async def test_fetch_module_info_once_retries_while_the_address_is_zero(
@@ -220,6 +321,83 @@ async def test_fetch_module_info_once_reads_and_persists(hass: HomeAssistant):
     assert conn.module_type == MODULE_TYPE_TW
     assert conn.model == "MOOON - H134"
     conn._store.async_save.assert_awaited_once()
+
+
+async def test_silence_never_latches_while_the_short_address_is_unknown(
+    hass: HomeAssistant,
+):
+    """The attempt budget must not be allowed to strand the address at 0x0000.
+
+    With no address every addressed frame -- `send_led` and the battery request
+    that is our only liveness signal -- goes to a lamp that is not there, is
+    written without response, and is silently ignored while HA reports success.
+    Latching there makes that permanent until a reload, so the read stays armed
+    however many times the lamp says nothing.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._send = AsyncMock(return_value=(b"", 0))
+
+    for _ in range(_MODULE_INFO_MAX_READS + 2):
+        await conn._fetch_module_info_once()
+
+    assert conn._module_info_read is False
+    assert conn._send.await_count == _MODULE_INFO_MAX_READS + 2
+
+    # And it recovers the moment the lamp does answer.
+    conn._send = AsyncMock(return_value=(bytes([3, 0xB1, 0x75, 0x7E]), 0))
+    await conn._fetch_module_info_once()
+    assert (conn._addr_b2, conn._addr_b3) == (0x75, 0x7E)
+
+
+async def test_silence_does_latch_once_the_address_is_known(hass: HomeAssistant):
+    """The other half: a read that is only after the firmware version is bounded.
+
+    An install with an address and a family, missing only `0xb5`, must not pay a
+    3 s ACK deadline on every connect forever -- it sits on the command path,
+    inside `ensure_connected`, holding the lock.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock(return_value=(b"", 0))
+
+    for _ in range(_MODULE_INFO_MAX_READS + 3):
+        await conn._fetch_module_info_once()
+
+    assert conn._module_info_read is True
+    assert conn._send.await_count == _MODULE_INFO_MAX_READS
+
+
+async def test_what_we_already_know_is_announced_without_a_fresh_read(
+    hass: HomeAssistant,
+):
+    """The self-heal has to survive the guard, or it is unreachable.
+
+    The key store is written at once and the config entry through a delayed
+    store, so a restart in that window leaves the entry missing a version the key
+    store has -- and every guard here is then satisfied by exactly the values the
+    key store restored. Announcing before deciding is what repairs it.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn.model = "MOOON - H134"
+    conn.sw_version = "3.0.27.0"
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock()
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
+
+    await conn._fetch_module_info_once()
+
+    conn._send.assert_not_awaited()
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "sw_version": "3.0.27.0",
+        }
+    ]
 
 
 async def test_fetch_module_info_once_swallows_transport_errors(hass: HomeAssistant):
@@ -279,6 +457,24 @@ async def test_device_info_prefers_the_reported_model(hass: HomeAssistant):
     assert light.device_info["model"] == "MOOON - H134"
     assert light.device_info["manufacturer"] == "Fermob"
     assert light.device_info["identifiers"] == {("fermob", ADDRESS)}
+
+
+async def test_device_info_carries_both_reported_versions(hass: HomeAssistant):
+    """Firmware and hardware version ride the same reply as the model."""
+    light = _light(hass, LIGHT_TYPE_TW, sw_version="2.3.21.0", hw_version="1.0.0")
+
+    assert light.device_info["sw_version"] == "2.3.21.0"
+    assert light.device_info["hw_version"] == "1.0.0"
+
+
+async def test_device_info_omits_versions_before_the_lamp_reports_them(
+    hass: HomeAssistant,
+):
+    """Absent must stay absent -- the registry renders None as nothing at all."""
+    light = _light(hass, LIGHT_TYPE_TW)
+
+    assert light.device_info["sw_version"] is None
+    assert light.device_info["hw_version"] is None
 
 
 async def test_device_info_falls_back_to_the_family_label(hass: HomeAssistant):

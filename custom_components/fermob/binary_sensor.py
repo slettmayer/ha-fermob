@@ -11,7 +11,7 @@ from homeassistant.const import CONF_ADDRESS, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import DOMAIN
+from . import DOMAIN, address_slug
 from .entity import FermobBatteryEntityBase
 
 
@@ -45,7 +45,7 @@ class FermobChargingSensor(FermobBatteryEntityBase, BinarySensorEntity):
     def __init__(self, entry, conn) -> None:
         super().__init__(entry, conn)
         address = entry.data[CONF_ADDRESS]
-        self._attr_unique_id = f"fermob_{address.replace(':', '_').lower()}_charging"
+        self._attr_unique_id = f"{address_slug(address)}_charging"
 
     @property
     def is_on(self) -> bool | None:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
@@ -21,7 +22,7 @@ from .config_flow import (
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "fermob"
-PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.UPDATE]
 
 _STORAGE_VERSION = 1
 
@@ -94,9 +95,33 @@ CHECK_IN_STARTUP_DELAY = timedelta(minutes=1)
 CHECK_IN_STARTUP_RETRY_DELAY = timedelta(minutes=3)
 
 
+def address_slug(address: str) -> str:
+    """`D6:86:76:E8:7E:75` -> `fermob_d6_86_76_e8_7e_75`.
+
+    **The one definition, because five things are keyed on it and none of them
+    can be renamed after the fact**: the pairing key store under `.storage`, and
+    the unique_id of every entity. A second copy that drifted by one character
+    would orphan a user's pairing keys or their entity customisations, with no way
+    back but re-pairing the lamp -- so this is deliberately duller than it looks.
+    """
+    return f"fermob_{address.replace(':', '_').lower()}"
+
+
 def _key_store(hass: HomeAssistant, address: str) -> Store:
     """The store holding one lamp's pairing keys, keyed by its BLE address."""
-    return Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    return Store(hass, _STORAGE_VERSION, address_slug(address))
+
+
+def module_info_updates(
+    stored: Mapping[str, Any], reported: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The reported fields the config entry does not already hold.
+
+    Module level and pure so it can be tested on its own: it is the only thing
+    standing between a lamp that reports its identity on every connect and a
+    config-entry write -- and therefore a reload -- on every connect.
+    """
+    return {k: v for k, v in reported.items() if v is not None and stored.get(k) != v}
 
 
 def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
@@ -128,7 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         idle_disconnect_delay=profile.idle_disconnect_delay,
     )
 
-    def _remember_module_info(module_type: int | None, model: str | None) -> None:
+    def _remember_module_info(reported: dict[str, Any]) -> None:
         """Persist what the lamp reported into the config entry.
 
         Runs while the connection lock is held, so it must not await a reload:
@@ -136,12 +161,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         that listener triggers then waits on the lock we are inside. Writing
         entry.data is also what makes this self-limiting -- once stored,
         resolve_light_type agrees with the lamp and nothing changes again.
+
+        **The connection sends its full identity and the diff happens here, on
+        purpose.** This is the only place that can see what the *entry* is
+        missing: the key store is written immediately and the entry through a
+        delayed store, so a restart in between leaves the two disagreeing, and a
+        delta computed against the connection's own memory would never mention
+        the field again. Diffing here also keeps the write -- and the reload it
+        schedules -- to the connects that actually change something.
         """
-        updates = {
-            k: v
-            for k, v in (("module_type", module_type), ("model", model))
-            if v is not None and entry.data.get(k) != v
-        }
+        updates = module_info_updates(entry.data, reported)
         if not updates:
             return
         hass.config_entries.async_update_entry(entry, data={**entry.data, **updates})

@@ -148,8 +148,11 @@ CRYPTO_REJECTION_ERRORS = frozenset({LMP_ERROR_UNREGISTERED, LMP_ERROR_CRYPT_MSG
 
 LMP_PARAM_BATTERY_LEVEL = 192  # 0xc0 — bit7 = charging, bits0-6 = percent
 LMP_PARAM_SHORT_ADDRESS = 177  # 0xb1
+LMP_PARAM_MANUFACTURER_NAME = 178  # 0xb2 — NUL-padded ASCII, e.g. "Fermob"
 LMP_PARAM_MODEL = 179  # 0xb3 — NUL-padded ASCII, e.g. "MOOON - H134"
 LMP_PARAM_MODULE_TYPE = 180  # 0xb4 — little-endian uint16
+LMP_PARAM_MODULE_SW_VERSION = 181  # 0xb5 — four bytes, reordered (see below)
+LMP_PARAM_MODULE_HW_VERSION = 182  # 0xb6 — three bytes, in order
 LMP_PARAM_API_VERSION = 184  # 0xb8
 
 # module_type values from the app's device-class table (manufacturer_id 7).
@@ -288,10 +291,73 @@ def iter_tlv(payload: bytes) -> list[tuple[int, bytes]]:
     return out
 
 
+def _ascii_field(value: bytes) -> str | None:
+    """Decode a NUL-padded fixed-width ASCII TLV, or None if it says nothing.
+
+    Anything undecodable is dropped rather than allowed to raise: every caller
+    here is a diagnostic string, and none of them is worth failing a connect
+    over.
+    """
+    text = value.split(b"\x00", 1)[0].decode("ascii", "ignore").strip()
+    return text or None
+
+
+def format_sw_version(value: bytes) -> str | None:
+    """Render the `0xb5` software version the way the vendor app reads it.
+
+    The app takes the four value bytes **reordered** as `[v1, v2, v3, v0]` — the
+    first byte is the *last* component, not the first. On the H134 `00 02 03 15`
+    is therefore `2.3.21.0`, not `0.2.3.21`.
+
+    *Derived from the app's JS* (`m_firmware_version=[e[o+3],e[o+4],e[o+5],e[o+2]]`),
+    and consistent with the versions the vendor's own update server serves — see
+    [docs/domain/FIRMWARE-UPDATE.md]. Never checked against a screen that
+    displays a version, so the order is the app's claim, not a verified fact.
+    """
+    if len(value) < 4:
+        return None
+    return ".".join(str(b) for b in (value[1], value[2], value[3], value[0]))
+
+
+def format_hw_version(value: bytes) -> str | None:
+    """Render the `0xb6` hardware version, which the app reads *in* order."""
+    if len(value) < 3:
+        return None
+    return ".".join(str(b) for b in value[:3])
+
+
+def _version_parts(version: str) -> list[int]:
+    """Split a dotted version into three ints, padding and tolerating junk."""
+    parts: list[int] = []
+    for part in version.split(".")[:3]:
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return parts + [0] * (3 - len(parts))
+
+
+def compare_versions(left: str, right: str) -> int:
+    """Compare two dotted versions over their first three components.
+
+    Three components because that is what the app's own `compVersion` compares,
+    and the fourth is not always present: the update server serves `3.0.24` for
+    one model and `3.0.24.0` for the next, while a lamp always reports four.
+
+    We differ from the app in padding a missing component with `0` rather than
+    special-casing "absent"; the two agree on everything the server serves.
+    """
+    a, b = _version_parts(left), _version_parts(right)
+    for x, y in zip(a, b, strict=True):
+        if x != y:
+            return 1 if x > y else -1
+    return 0
+
+
 class ModuleInfo(NamedTuple):
     """What we read out of a MODULE_INFO_GET response.
 
-    `module_type` and `model` are None when the lamp did not include them, so a
+    Everything but the address is None when the lamp did not include it, so a
     caller can tell "not reported" from "reported as something we don't know".
     """
 
@@ -300,14 +366,20 @@ class ModuleInfo(NamedTuple):
     api_version: int
     module_type: int | None
     model: str | None
+    manufacturer: str | None = None
+    sw_version: str | None = None
+    hw_version: str | None = None
 
 
 def parse_module_info(payload: bytes) -> ModuleInfo:
-    """Read the short address, API version, module_type and model string."""
+    """Read the address, API version, module_type, names and versions."""
     addr_b2 = addr_b3 = 0
     api_ver = 2
     module_type: int | None = None
     model: str | None = None
+    manufacturer: str | None = None
+    sw_version: str | None = None
+    hw_version: str | None = None
 
     for t_type, value in iter_tlv(payload):
         if t_type == LMP_PARAM_SHORT_ADDRESS and len(value) >= 2:
@@ -318,12 +390,24 @@ def parse_module_info(payload: bytes) -> ModuleInfo:
         elif t_type == LMP_PARAM_MODULE_TYPE and len(value) >= 2:
             module_type = value[0] | (value[1] << 8)
         elif t_type == LMP_PARAM_MODEL and value:
-            # NUL-padded to a fixed width; anything undecodable is dropped
-            # rather than allowed to raise on a diagnostic string.
-            text = value.split(b"\x00", 1)[0].decode("ascii", "ignore").strip()
-            model = text or None
+            model = _ascii_field(value)
+        elif t_type == LMP_PARAM_MANUFACTURER_NAME and value:
+            manufacturer = _ascii_field(value)
+        elif t_type == LMP_PARAM_MODULE_SW_VERSION and value:
+            sw_version = format_sw_version(value)
+        elif t_type == LMP_PARAM_MODULE_HW_VERSION and value:
+            hw_version = format_hw_version(value)
 
-    return ModuleInfo(addr_b2, addr_b3, api_ver, module_type, model)
+    return ModuleInfo(
+        addr_b2,
+        addr_b3,
+        api_ver,
+        module_type,
+        model,
+        manufacturer,
+        sw_version,
+        hw_version,
+    )
 
 
 def module_type_to_light_type(module_type: int | None) -> str | None:

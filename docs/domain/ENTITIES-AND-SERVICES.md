@@ -1,7 +1,7 @@
 # Entities and Services
 
-> What one paired lamp becomes in Home Assistant: one light entity, two diagnostic battery entities, two
-> entity services and two options.
+> What one paired lamp becomes in Home Assistant: one light entity, two diagnostic battery entities, a firmware
+> entity, two entity services and three options.
 
 **Scope.** The user-facing surface. How fresh any of it is — and why — is in
 [STATE-MODEL.md](STATE-MODEL.md). Which lamps get a colour-temperature slider at all is in
@@ -39,6 +39,51 @@ drain around a charger event — 24 % → 33 % in one test, 86 % → 98 % in ano
 following minutes once the charger comes off. In between it is stable and slow-moving (see
 [STATE-MODEL.md](STATE-MODEL.md#what-holding-the-link-costs) for the measured rate). Take the trustworthy
 figure once the lamp has been off the charger for a while.
+
+## The firmware entity
+
+One `update` entity per lamp — `update.<lamp>_firmware` — since 0.10.0. It exists whatever the *Check for
+firmware updates* option says; the option decides only whether it may ask the network.
+
+- **`installed_version`** is local: the `0xb5` TLV of the `MODULE_INFO_GET` reply, rendered by
+  `protocol.format_sw_version`. It is read from the connection first and the config entry second, so a fresh
+  reading shows up before the reload that persists it and a restart has an answer before the first connect.
+- **`latest_version`** comes from the vendor release server (`firmware.py`), asked once when the entity is added
+  and daily after that. When nothing newer exists it reports the *installed* version, which is how an update
+  entity says "up to date" — and what stops the server's three-component `3.0.24` reading as an update against
+  a lamp's `3.0.24.0`.
+- **Until a check has actually succeeded it is `None`, and the entity reads *unknown*.** Falling back to the
+  installed version there would assert currency that was never checked — permanently for a model the server does
+  not carry, which is every Hoopik slug, and for any install that cannot reach the server. Unknown is the honest
+  answer, and it is why the entity asks once on being added rather than only on its daily tick: the state would
+  otherwise sit at unknown for a day after every restart.
+- **It does not support `UpdateEntityFeature.INSTALL`, deliberately.** Nothing here can write a signed Nordic
+  Secure DFU image; the `release_summary` says so and points at the Fermob app. Adding the feature would put a
+  button in the UI that nothing implements. See [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md).
+- **It stays available when the lamp is out of range**, holding the last answer. Neither version is state the
+  lamp has to be present to have.
+- **`_attr_name` is deliberately absent, not `None`.** Setting it to `None` declares the entity to be the
+  device's main feature, which names it after the lamp and registers it as `update.<lamp>`. Left unset,
+  `UpdateEntity` names it from its device class — which is where `_firmware` and "Firmware" come from.
+
+### Switching the check off leaves the entity in place, unpolled
+
+**The option governs the request, not the entity's existence** — `should_poll` goes False and no one-shot is
+scheduled, so nothing leaves the network, and `latest_version` stays None so the entity reads *unknown*: exactly
+true, since we were told not to find out. Three tidier-looking alternatives were each tried and reverted, and
+the reasons are worth keeping because they are not obvious:
+
+| Alternative | Why not |
+|---|---|
+| Don't add the entity | HA keeps the registry row and renders it *unavailable* — and the `unavailable` state written during unload is never cleaned up (`cleanup_restored_states_filter` fires on removal and rename only), so a dashboard or template reads `unavailable` until the next restart. That is "looks broken", which is what this was meant to avoid |
+| Delete the registry row | Throws away the user's rename, area, icon and hidden flag, orphans the recorder history, and silently breaks anything referencing the entity_id |
+| Disable the registry row | Clearing `disabled_by` again makes core's `EntityRegistryDisabledHandler` schedule a **second** config-entry reload 30 s later, which tears down the BLE link for an unrelated options change |
+
+A user who wants the entity out of sight disables it in the UI, which HA already honours by never adding it.
+That keeps one writer per fact: the option owns the traffic, the registry owns the visibility.
+
+The firmware and hardware versions also appear on the **device page**, from the same TLVs — those are
+unconditional, since they need no network.
 
 There are no switches and no other platforms.
 
@@ -103,9 +148,10 @@ who is denied the light entities contact every lamp over BLE.
 
 ## Options
 
-Two, both under **Configure**. Changing either reloads the entry; neither requires re-pairing.
+Three, all under **Configure**. Changing any of them reloads the entry; none requires re-pairing.
 
 | Option | Default | Decides |
 |---|---|---|
 | **Lamp type** | Auto | Dimmable or tunable white — whether the lamp gets a colour-temperature slider. Overrides what the lamp reports; see [DEVICES.md](DEVICES.md#lamp-family-detection) |
 | **Connection** | Always connected | Whether the BLE link is held open, which is what makes the lamp's own button presses visible; see [STATE-MODEL.md](STATE-MODEL.md#connection-modes) |
+| **Check for firmware updates** | On | Whether the firmware entity may ask the vendor server whether a newer build is published. **The integration's only non-local traffic**, which is the whole reason it is switchable. Off leaves the entity in place, unpolled and reading *unknown* — [and why that beats removing, deleting or disabling it](#switching-the-check-off-leaves-the-entity-in-place-unpolled) |

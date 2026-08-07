@@ -1,6 +1,6 @@
 # Fermob (ha-fermob)
 
-> Home Assistant custom integration for Fermob Bluetooth lamps — MOOON! (tunable white) and Hoopik GL1200 (dimmable white) — over local BLE, no hub and no cloud.
+> Home Assistant custom integration for Fermob Bluetooth lamps — MOOON! (tunable white) and Hoopik GL1200 (dimmable white) — over local BLE, no hub and no cloud. One exception, opt-out: a daily firmware-version check against the vendor's release server.
 
 > **Editing this guide:** `AGENTS.md` is the single source of truth for project context, read by all AI
 > coding agents and humans. Keep it concise — put detail in `docs/` and link it. When you change code that
@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1058 tests, ~11 s — `test_protocol.py` needs no Home Assistant, the other four use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1122 tests, ~12 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -32,19 +32,22 @@
 | Understand state freshness or connection modes | [STATE-MODEL.md](docs/domain/STATE-MODEL.md) |
 | Change an entity, service or option | [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md) |
 | Debug pairing, ownership or resets | [PAIRING.md](docs/domain/PAIRING.md) |
+| Answer a firmware-update question | [FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md) — reporting is implemented; *installing* is deliberately not |
 | Check whether something was already tried | [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md) |
 
 ## Architecture Overview
 
-Seven modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
+Nine modules in `custom_components/fermob/`. `protocol.py` is a **pure** layer — frame building, AES-ECB
 keystream crypto, payload construction, inbound parsing — with **no `homeassistant` imports**, so it is unit
 testable on its own. `light.py` holds `FermobBLEConnection` (BLE link, pairing handshake, key persistence,
 frame send/ACK matching, idle disconnect) and `FermobLight` (the HA entity). `config_flow.py` handles
 Bluetooth discovery, manual add, and the lamp-type options flow. `entity.py`, `sensor.py` and
 `binary_sensor.py` add the two diagnostic battery entities on top of the same connection, with no BLE logic of
-their own. `__init__.py` forwards the platforms and reloads the entry when options change. There is no
-coordinator and no light polling: state is pushed by our own commands and by EVENT notifications while the link
-is up (the battery is the one scheduled read). See [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
+their own. `firmware.py` is the second HA-free module — the vendor release-server client, session injected —
+and `update.py` is the firmware entity built on it. `__init__.py` forwards the platforms and reloads the entry
+when options change. There is no coordinator and no light polling: state is pushed by our own commands and by
+EVENT notifications while the link is up (the battery is the one scheduled read; the firmware check is the one
+daily poll). See [ARCHITECTURE.md](docs/tech/ARCHITECTURE.md).
 
 ## Tech Stack
 
@@ -162,6 +165,11 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **One controller at a time.** Pairing makes Home Assistant the owner; the Fermob app cannot connect while HA
   holds the link, and re-pairing from the app invalidates our stored keys. See
   [PAIRING.md](docs/domain/PAIRING.md).
+- **The firmware entity reports and must never install.** The lamps take a *signed* Nordic Secure DFU image
+  only Fermob can produce, so `UpdateEntityFeature.INSTALL` would be a button nothing implements — a test pins
+  its absence. The daily release-server check is also the **only non-local traffic in the integration**, which
+  is why it is an option and why it asks for metadata, never an image. See
+  [FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md).
 - **`config_flow.py` keeps its own copy of the lamp-family strings** (`LIGHT_TYPE_AUTO/DW/TW`) instead of importing them
   from `protocol.py`, so the two must be kept in sync by hand. See
   [CONVENTIONS.md](docs/tech/CONVENTIONS.md#protocol-code).
@@ -171,6 +179,9 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Only two lamps have ever been confirmed on hardware** — the MOOON! H134 on this build, and the Moon2AD2 by
   the contributor; the Hoopik only by upstream, on an older build. Every other MOOON! size is inferred from the
   same `module_type`. See [DEVICES.md](docs/domain/DEVICES.md#confidence).
+- **"Confirmed on hardware" means lamp firmware `3.0.27.0`** — the reference build, and the newest the vendor
+  publishes for the H134. The one exception is the `MODULE_INFO_GET` fixture in `tests/test_protocol.py`, whose
+  `0xb5` predates the update. See [DEVICES.md](docs/domain/DEVICES.md#the-reference-firmware-is-30270).
 
 ## Development Workflow
 
