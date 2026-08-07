@@ -266,7 +266,13 @@ class FermobBLEConnection:
         # What the lamp says it is (MODULE_INFO_GET). None until read once.
         self.module_type: int | None = None
         self.model: str | None = None
-        self.on_module_info: Any = None  # (module_type, model) -> None
+        self.manufacturer: str | None = None
+        self.sw_version: str | None = None
+        self.hw_version: str | None = None
+        # Called with a mapping of the entry-data fields that just changed. A
+        # mapping rather than one argument per field so that reporting one more
+        # thing about the lamp does not churn the signature and both call sites.
+        self.on_module_info: Any = None  # (updates: dict[str, Any]) -> None
 
         # Runtime state
         self._connected = False  # BLE link is up
@@ -393,6 +399,9 @@ class FermobBLEConnection:
             self._addr_b3 = data.get("addr_b3", 0)
             self.module_type = data.get("module_type")
             self.model = data.get("model")
+            self.manufacturer = data.get("manufacturer")
+            self.sw_version = data.get("sw_version")
+            self.hw_version = data.get("hw_version")
             self._have_keys = True
             _LOGGER.debug("Fermob %s: keys loaded", self._address)
             return True
@@ -417,6 +426,9 @@ class FermobBLEConnection:
                 "addr_b3": self._addr_b3,
                 "module_type": self.module_type,
                 "model": self.model,
+                "manufacturer": self.manufacturer,
+                "sw_version": self.sw_version,
+                "hw_version": self.hw_version,
             }
         )
         _LOGGER.debug("Fermob %s: keys saved", self._address)
@@ -1235,25 +1247,38 @@ class FermobBLEConnection:
     # ------------------------------------------------------------------
 
     def _store_module_info(self, info: ModuleInfo) -> None:
-        """Record a reported module_type / model and announce any change."""
-        changed = (
-            info.module_type is not None and info.module_type != self.module_type
-        ) or (info.model is not None and info.model != self.model)
-        if info.module_type is not None:
-            self.module_type = info.module_type
-        if info.model is not None:
-            self.model = info.model
-        if not changed:
+        """Record what the lamp reported about itself and announce any change.
+
+        A field the reply omitted is left alone rather than cleared: a short
+        reply must never lose what a fuller one already told us.
+        """
+        reported = {
+            "module_type": info.module_type,
+            "model": info.model,
+            "manufacturer": info.manufacturer,
+            "sw_version": info.sw_version,
+            "hw_version": info.hw_version,
+        }
+        updates = {
+            field: value
+            for field, value in reported.items()
+            if value is not None and value != getattr(self, field)
+        }
+        for field, value in updates.items():
+            setattr(self, field, value)
+        if not updates:
             return
 
         _LOGGER.info(
-            "Fermob %s: reports module_type=%s model=%s",
+            "Fermob %s: reports module_type=%s model=%s firmware=%s hardware=%s",
             self._address,
             self.module_type,
             self.model,
+            self.sw_version,
+            self.hw_version,
         )
         if self.on_module_info:
-            self.on_module_info(self.module_type, self.model)
+            self.on_module_info(updates)
 
     async def _fetch_module_info_once(self) -> None:
         """Read MODULE_INFO_GET on reconnect, but only until it has answered.
@@ -1273,7 +1298,16 @@ class FermobBLEConnection:
         # the key store, on every single reconnect.
         if self._module_info_read:
             return
-        if self.module_type is not None and (self._addr_b2 or self._addr_b3):
+        # The firmware version joins the "already know it" test, so an install
+        # paired before we started reading it re-reads exactly once and then
+        # persists it. A lamp that never reports 0xb5 pays one extra round trip
+        # per reload instead -- the latch below still fires on the first answer,
+        # so it cannot become one per connect.
+        if (
+            self.module_type is not None
+            and self.sw_version is not None
+            and (self._addr_b2 or self._addr_b3)
+        ):
             return
         self._module_info_attempts += 1
         try:
@@ -1797,11 +1831,17 @@ class FermobLight(LightEntity):
             if self._light_type == LIGHT_TYPE_TW
             else "Hoopik GL1200 (dimmable white)"
         )
+        # Both versions come from the same MODULE_INFO_GET reply as the model, so
+        # they appear on the device page from the first connect onwards -- writing
+        # them into entry.data reloads the entry, which rebuilds this. None until
+        # then, which the registry renders as absent rather than wrong.
         return DeviceInfo(
             identifiers={("fermob", addr)},
             name=self._attr_name,
             manufacturer="Fermob",
             model=model,
+            sw_version=self._entry.data.get("sw_version"),
+            hw_version=self._entry.data.get("hw_version"),
         )
 
     # ------------------------------------------------------------------

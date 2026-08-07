@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
@@ -21,7 +21,7 @@ from .config_flow import (
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "fermob"
-PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS = [Platform.LIGHT, Platform.SENSOR, Platform.BINARY_SENSOR, Platform.UPDATE]
 
 _STORAGE_VERSION = 1
 
@@ -128,7 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         idle_disconnect_delay=profile.idle_disconnect_delay,
     )
 
-    def _remember_module_info(module_type: int | None, model: str | None) -> None:
+    def _remember_module_info(reported: dict[str, Any]) -> None:
         """Persist what the lamp reported into the config entry.
 
         Runs while the connection lock is held, so it must not await a reload:
@@ -136,10 +136,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         that listener triggers then waits on the lock we are inside. Writing
         entry.data is also what makes this self-limiting -- once stored,
         resolve_light_type agrees with the lamp and nothing changes again.
+
+        The connection reports whatever changed; this filters against what the
+        entry already holds, because the reload is what puts the model and both
+        versions on the device page and an update that changes nothing would
+        still cost one.
         """
         updates = {
             k: v
-            for k, v in (("module_type", module_type), ("model", model))
+            for k, v in reported.items()
             if v is not None and entry.data.get(k) != v
         }
         if not updates:

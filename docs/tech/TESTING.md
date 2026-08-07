@@ -2,13 +2,13 @@
 
 ```bash
 pip install -r requirements_test.txt
-python -m pytest tests/ -q          # 1058 tests, ~11 s (most of it importing Home Assistant)
+python -m pytest tests/ -q          # 1100 tests, ~12 s (most of it importing Home Assistant)
 ```
 
 CI runs the same suite with `-v` (`.github/workflows/validate.yml`), so a local `-q` run and the `Pytest` job
 differ only in output verbosity.
 
-Two modules with deliberately different needs:
+Seven modules with deliberately different needs:
 
 | Module | Needs | Covers |
 |---|---|---|
@@ -16,9 +16,13 @@ Two modules with deliberately different needs:
 | `tests/test_light.py` | a real `hass` (`pytest-homeassistant-custom-component`) | family resolution, module-info persistence, entity capabilities, the command path, which pushes are believed |
 | `tests/test_connection_profile.py` | the `fermob` package (no radio) | how the connection-mode option maps to an idle timeout and a check-in interval |
 | `tests/test_battery_entities.py` | a real `hass` | the two diagnostic entities: that both get every battery push, and that each subscription dies with its entity |
+| `tests/test_firmware.py` | the `fermob` package (no radio, no network — the aiohttp session is a stub) | the release-server client: the URL shape, an error envelope inside a `200`, a non-JSON body, and which of those makes the fallback host fire |
+| `tests/test_update_entity.py` | a real `hass` | the firmware entity: that it never advertises `INSTALL`, that a lamp on current firmware reads as up to date, and that the option being off adds no entity |
 | `tests/test_session_recovery.py` | a real `hass` | the mechanisms that recover a link the lamp has stopped honouring — the reconnect after pairing, the retried battery ACK as liveness signal, the gated factory-reset probe, the check-in that never pairs and reports its verdict, the unpair that neither broadcasts nor removes when the lamp is silent, and which connect budget each caller gets |
 
-`protocol.py` stays HA-free so the first of those keeps running on a bare install. `requirements_test.txt`
+`protocol.py` stays HA-free so the first of those keeps running on a bare install. `firmware.py` is HA-free
+too, but its tests reach it through the package, so they need the harness like the rest -- what the injected
+session buys there is a suite that never touches the network, not a second bare-install module. `requirements_test.txt`
 installs everything for both, because CI runs them together.
 
 ## How the test module imports the code

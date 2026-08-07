@@ -16,10 +16,11 @@
     "step": {
       "init": {
         "title": "Fermob lamp options",
-        "description": "**Lamp type** — Auto-detect picks tunable white for every lamp except the Hoopik L1200 string light. Change it only if the lamp is detected as the wrong type.\n\n**Connection** — Always connected keeps the Bluetooth link open, which is the only way the lamp reports being switched on at its own button, and costs one connection slot on the adapter or Bluetooth proxy it uses (proxies usually allow three). On demand releases that slot between commands; the lamp still works, but pressing its button will not update Home Assistant.",
+        "description": "**Lamp type** — Auto-detect picks tunable white for every lamp except the Hoopik L1200 string light. Change it only if the lamp is detected as the wrong type.\n\n**Connection** — Always connected keeps the Bluetooth link open, which is the only way the lamp reports being switched on at its own button, and costs one connection slot on the adapter or Bluetooth proxy it uses (proxies usually allow three). On demand releases that slot between commands; the lamp still works, but pressing its button will not update Home Assistant.\n\n**Firmware updates** — when enabled, Home Assistant asks the manufacturer's release server once a day whether a newer firmware build exists for this lamp, and shows the answer as a Firmware entity. This is the only thing the integration sends outside your network, and it cannot install what it finds — only the Fermob app can. Switch it off to remove the entity and the request.",
         "data": {
           "light_type": "Lamp type",
-          "connection_mode": "Connection"
+          "connection_mode": "Connection",
+          "check_firmware_updates": "Check for firmware updates"
         }
       }
     }

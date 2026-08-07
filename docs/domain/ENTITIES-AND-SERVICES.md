@@ -1,7 +1,7 @@
 # Entities and Services
 
-> What one paired lamp becomes in Home Assistant: one light entity, two diagnostic battery entities, two
-> entity services and two options.
+> What one paired lamp becomes in Home Assistant: one light entity, two diagnostic battery entities, a firmware
+> entity, two entity services and three options.
 
 **Scope.** The user-facing surface. How fresh any of it is — and why — is in
 [STATE-MODEL.md](STATE-MODEL.md). Which lamps get a colour-temperature slider at all is in
@@ -39,6 +39,26 @@ drain around a charger event — 24 % → 33 % in one test, 86 % → 98 % in ano
 following minutes once the charger comes off. In between it is stable and slow-moving (see
 [STATE-MODEL.md](STATE-MODEL.md#what-holding-the-link-costs) for the measured rate). Take the trustworthy
 figure once the lamp has been off the charger for a while.
+
+## The firmware entity
+
+One `update` entity per lamp — `update.<lamp>_firmware` — added since 0.10.0 unless the *Check for firmware
+updates* option is off, in which case it is not created at all.
+
+- **`installed_version`** is local: the `0xb5` TLV of the `MODULE_INFO_GET` reply, rendered by
+  `protocol.format_sw_version`. It is read from the connection first and the config entry second, so a fresh
+  reading shows up before the reload that persists it and a restart has an answer before the first connect.
+- **`latest_version`** comes from the vendor release server, polled once a day (`firmware.py`). When nothing
+  newer exists it reports the *installed* version, which is how an update entity says "up to date" — and what
+  stops the server's three-component `3.0.24` reading as an update against a lamp's `3.0.24.0`.
+- **It does not support `UpdateEntityFeature.INSTALL`, deliberately.** Nothing here can write a signed Nordic
+  Secure DFU image; the `release_summary` says so and points at the Fermob app. Adding the feature would put a
+  button in the UI that nothing implements. See [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md).
+- **It stays available when the lamp is out of range**, holding the last answer. Neither version is state the
+  lamp has to be present to have.
+
+The firmware and hardware versions also appear on the **device page**, from the same TLVs — those are
+unconditional, since they need no network.
 
 There are no switches and no other platforms.
 
@@ -103,9 +123,10 @@ who is denied the light entities contact every lamp over BLE.
 
 ## Options
 
-Two, both under **Configure**. Changing either reloads the entry; neither requires re-pairing.
+Three, all under **Configure**. Changing any of them reloads the entry; none requires re-pairing.
 
 | Option | Default | Decides |
 |---|---|---|
 | **Lamp type** | Auto | Dimmable or tunable white — whether the lamp gets a colour-temperature slider. Overrides what the lamp reports; see [DEVICES.md](DEVICES.md#lamp-family-detection) |
 | **Connection** | Always connected | Whether the BLE link is held open, which is what makes the lamp's own button presses visible; see [STATE-MODEL.md](STATE-MODEL.md#connection-modes) |
+| **Check for firmware updates** | On | Whether the firmware entity exists and asks the vendor server, once a day, whether a newer build is published. **The integration's only non-local traffic**, which is the whole reason it is switchable; see [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) |

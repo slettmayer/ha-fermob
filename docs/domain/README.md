@@ -10,6 +10,7 @@ Detailed guides on the lamps and the protocol they speak. Read the one that matc
 | [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) | The light entity, the two diagnostic battery entities, `check_in` and `unpair`, and the two options |
 | [STATE-MODEL.md](STATE-MODEL.md) | Push-only state, why the held link is the whole mechanism, the connection modes and their coupled timings, the check-in |
 | [APP-CAPABILITIES.md](APP-CAPABILITIES.md) | What the official Fermob app can and cannot configure, and why feature parity is not a route to changing lamp behaviour |
+| [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) | How the app updates firmware, the vendor DFU server, and why we do not install it |
 | [LINKIO-PROTOCOL.md](LINKIO-PROTOCOL.md) | Protocol index and the confidence statement covering every protocol page |
 | [PROTOCOL-TRANSPORT.md](PROTOCOL-TRANSPORT.md) | Transport and UUIDs, the 20-byte frame, message types, ACK matching, AES-ECB keystream crypto |
 | [PROTOCOL-COMMANDS.md](PROTOCOL-COMMANDS.md) | Every command we send, the battery command, and the `MODULE_INFO_GET` TLV table |

@@ -1,4 +1,4 @@
-"""Config flow for Fermob integration — BLE discovery, lamp type, connection mode."""
+"""Config flow for Fermob — BLE discovery, lamp type, connection, firmware check."""
 
 from __future__ import annotations
 
@@ -42,6 +42,13 @@ CONF_CONNECTION_MODE = "connection_mode"
 CONNECTION_MODE_ALWAYS = "always"
 CONNECTION_MODE_ON_DEMAND = "on_demand"
 
+# Whether to ask the vendor's release server for the newest firmware build. On
+# by default: a lamp running old firmware is worth knowing about, and the check
+# is one small GET per lamp per day. It is the integration's only non-local
+# traffic, which is why it is switchable at all -- off removes the entity.
+CONF_CHECK_FIRMWARE = "check_firmware_updates"
+DEFAULT_CHECK_FIRMWARE = True
+
 
 def _is_fermob_device(info: BluetoothServiceInfoBleak) -> bool:
     """Return True if the BLE advertisement is from a Fermob lamp."""
@@ -64,7 +71,7 @@ class FermobConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> FermobOptionsFlow:
-        """Return the options flow (lamp type + connection mode)."""
+        """Return the options flow (lamp type, connection, firmware check)."""
         return FermobOptionsFlow(config_entry)
 
     # ------------------------------------------------------------------
@@ -192,6 +199,12 @@ class FermobOptionsFlow(OptionsFlow):
     Deliberately a mode rather than two numbers: the idle timeout and the
     check-in interval are not independent (a check-in re-arms the idle timer),
     so exposing both invites settings whose combination does nothing.
+
+    **Firmware check.** The one thing here that is not about the lamp in the
+    room: whether to ask the vendor's release server, once a day, if a newer
+    firmware build exists. It is the integration's only non-local traffic, which
+    is the whole reason it is switchable -- off removes the entity along with the
+    request. See docs/domain/FIRMWARE-UPDATE.md.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:
@@ -233,6 +246,12 @@ class FermobOptionsFlow(OptionsFlow):
                             ),
                         }
                     ),
+                    vol.Required(
+                        CONF_CHECK_FIRMWARE,
+                        default=options.get(
+                            CONF_CHECK_FIRMWARE, DEFAULT_CHECK_FIRMWARE
+                        ),
+                    ): bool,
                 }
             ),
         )

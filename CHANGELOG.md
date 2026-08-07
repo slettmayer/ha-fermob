@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.10.0
+
+**Your lamp's firmware version, and whether Fermob has published a newer one.**
+Nothing about pairing or lamp control changed; no re-pairing needed.
+
+- **The firmware and hardware version now appear on the device page.** Both come
+  from the same reply that already tells us the model, so they cost no extra
+  Bluetooth traffic — a lamp paired before this release reads them once, the next
+  time it connects.
+
+- **A new *Firmware* entity says whether a newer build exists.** It **cannot
+  install one**: these lamps take a signed firmware image that only Fermob can
+  produce and only their app can transfer, so the entity reports and points you
+  at the app. Updating with the app means releasing the lamp from Home Assistant
+  first (`fermob.unpair`) — which is why it is easier to update *before* pairing
+  a new lamp. See the [README](README.md#firmware-updates).
+
+  For the record, our own MOOON! H134 reports 2.3.21.0 against 3.0.27.0 on
+  Fermob's server, so a lamp that has never been updated may well have one
+  waiting. Firmware for these lamps is published rarely: the newest build for
+  any model is from November 2023.
+
+- **New option: *Check for firmware updates*, on by default.** This is the only
+  thing the integration sends outside your network — one small HTTPS request per
+  lamp per day, to the manufacturer's release server, carrying nothing but the
+  model name. Switching it off removes the entity and the request; the firmware
+  version stays on the device page either way.
+
+- **Only tested against the firmware our reference lamp runs (2.3.21.0).** If
+  you update a lamp and something misbehaves, please open an issue with the
+  version — the protocol this integration speaks was reverse-engineered on that
+  build.
+
 ## 0.9.2
 
 **Two responsiveness fixes and a documentation correction.** No protocol or

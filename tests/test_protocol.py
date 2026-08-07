@@ -492,11 +492,20 @@ def test_solicited_state_is_recognised_alongside_unsolicited():
 def test_parse_module_info_reads_short_address():
     # TLV: len=3, type=0xb1 (short address), b2, b3 | len=2, type=0xb8, api=4
     payload = bytes([3, 0xB1, 0x12, 0x34, 2, 0xB8, 4, 0])
-    assert parse_module_info(payload) == (0x12, 0x34, 4, None, None)
+    assert parse_module_info(payload) == (
+        0x12,
+        0x34,
+        4,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 def test_parse_module_info_defaults_when_absent():
-    assert parse_module_info(b"\x00") == (0, 0, 2, None, None)
+    assert parse_module_info(b"\x00") == (0, 0, 2, None, None, None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +534,57 @@ def test_parse_module_info_real_h134_capture():
     assert info.api_version == 2
     assert info.module_type == protocol.MODULE_TYPE_TW == 404
     assert info.model == "MOOON - H134"
+
+
+def test_parse_module_info_real_h134_names_and_versions():
+    """Manufacturer, firmware and hardware version off the same real response.
+
+    The firmware bytes in that capture are `00 02 03 15`, which is the whole
+    reason `format_sw_version` exists: read in order it would be 0.2.3.21, and
+    the vendor's own release server publishes 3.x for this model -- consistent
+    with the app's reordering and not with the naive reading.
+    """
+    info = parse_module_info(H134_MODULE_INFO)
+    assert info.manufacturer == "Fermob"
+    assert info.sw_version == "2.3.21.0"
+    assert info.hw_version == "1.0.0"
+
+
+def test_format_sw_version_moves_the_first_byte_last():
+    assert protocol.format_sw_version(bytes([0x00, 0x02, 0x03, 0x15])) == "2.3.21.0"
+    assert protocol.format_sw_version(bytes([0x01, 0x03, 0x00, 0x1B])) == "3.0.27.1"
+
+
+def test_format_versions_return_none_when_too_short():
+    """A truncated TLV must read as "not reported", never as a partial version."""
+    assert protocol.format_sw_version(bytes([0, 2, 3])) is None
+    assert protocol.format_hw_version(bytes([1, 0])) is None
+
+
+def test_format_hw_version_reads_in_order():
+    assert protocol.format_hw_version(bytes([0x01, 0x00, 0x00])) == "1.0.0"
+    # A fourth byte is ignored rather than appended: the app reads three.
+    assert protocol.format_hw_version(bytes([0x01, 0x02, 0x03, 0x04])) == "1.2.3"
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        ("3.0.27.0", "2.3.21.0", 1),
+        ("2.3.21.0", "3.0.27.0", -1),
+        ("2.3.21.0", "2.3.21.0", 0),
+        # Only the first three components count, which is what makes the
+        # server's `3.0.24` and a lamp's `3.0.24.0` the same build.
+        ("3.0.24", "3.0.24.0", 0),
+        ("3.0.24.9", "3.0.24.0", 0),
+        # Numeric, not lexicographic: "21" is above "9", not below it.
+        ("2.3.21", "2.3.9", 1),
+        # Junk must not raise; it compares as zero.
+        ("3.0.x", "3.0.0", 0),
+    ],
+)
+def test_compare_versions(left, right, expected):
+    assert protocol.compare_versions(left, right) == expected
 
 
 def test_real_capture_resolves_to_tunable_white():

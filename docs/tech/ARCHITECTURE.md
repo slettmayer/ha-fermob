@@ -4,20 +4,23 @@
 
 ## Modules
 
-Seven files in `custom_components/fermob/`:
+Nine files in `custom_components/fermob/`:
 
 | Module | Owns | Imports `homeassistant`? |
 |---|---|---|
-| `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, TLV walking, all protocol constants | **No — keep it that way** |
+| `protocol.py` | Frame building, AES-ECB keystream crypto, payload construction, inbound parsing, TLV walking, version formatting and comparison, all protocol constants | **No — keep it that way** |
 | `light.py` | `FermobBLEConnection` (BLE link, handshake, key/module-info persistence, ACK matching, idle disconnect) and `FermobLight` (the entity) | Yes |
-| `config_flow.py` | Bluetooth discovery, manual add, the options flow (lamp type, connection mode) | Yes |
+| `config_flow.py` | Bluetooth discovery, manual add, the options flow (lamp type, connection mode, firmware check) | Yes |
 | `entity.py` | `FermobBatteryEntityBase` — device info and the battery-push subscription shared by both diagnostic entities | Yes |
 | `sensor.py` | `FermobBatterySensor` — state of charge | Yes |
 | `binary_sensor.py` | `FermobChargingSensor` — charging flag | Yes |
+| `firmware.py` | The vendor release-server client — URL shape, response envelope, host fallback | **No — the session is injected** |
+| `update.py` | `FermobFirmwareUpdate` — installed vs published version, and the daily poll | Yes |
 | `__init__.py` | Platform forwarding, unload, the check-in timers, the connection profile, the options-update listener | Yes |
 
 The three battery files carry no BLE logic: they read `FermobBLEConnection.battery` and subscribe to its
-pushes.
+pushes. `update.py` carries none either — the installed version comes from the connection, the published one
+from `firmware.py`.
 
 ### Push subscriptions are lists with removal, not assignable slots
 
@@ -35,7 +38,8 @@ corrected to say so. This is a defensive change, not a bug fix. Do not cite it a
 broke in production.
 
 `on_module_info` is still a single slot, and that is correct — the config entry is its only writer, and it is
-set before the platforms are forwarded.
+set before the platforms are forwarded. It takes a **mapping of the fields that changed**, not one argument per
+field, so that reporting one more thing about the lamp does not churn the signature and both call sites.
 
 ### Why `protocol.py` has no HA imports
 

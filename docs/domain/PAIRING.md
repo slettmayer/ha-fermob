@@ -48,8 +48,10 @@ between a working lamp and a dead one, and the failure is invisible from Home As
 `send_led` is a write-without-response.
 
 Storage is `.storage/fermob_<mac_with_underscores>` in the HA config directory — the MAC is **lowercased**, so
-grep for it in lower case during recovery. It holds five keys: `pub`, `priv` and `nonce` as hex strings, plus
-`addr_b2` and `addr_b3` (the short address) as plain integers, not hex.
+grep for it in lower case during recovery. The pairing material is `pub`, `priv` and `nonce` as hex strings,
+plus `addr_b2` and `addr_b3` (the short address) as plain integers, not hex. Alongside it the store caches what
+the lamp reported about itself — `module_type`, `model`, `manufacturer`, `sw_version`, `hw_version` — which is
+not key material and is safe to be missing: every field defaults to None and is re-read on the next connect.
 
 ### The short address is not key material, and must never be overwritten with zero
 

@@ -140,14 +140,50 @@ def _conn(
 
 async def test_store_module_info_records_and_announces(hass: HomeAssistant):
     conn = _conn(hass)
-    seen: list[tuple] = []
-    conn.on_module_info = lambda mt, model: seen.append((mt, model))
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
 
-    conn._store_module_info(ModuleInfo(0x75, 0x7E, 2, MODULE_TYPE_TW, "MOOON - H134"))
+    conn._store_module_info(
+        ModuleInfo(
+            0x75,
+            0x7E,
+            2,
+            MODULE_TYPE_TW,
+            "MOOON - H134",
+            "Fermob",
+            "2.3.21.0",
+            "1.0.0",
+        )
+    )
 
     assert conn.module_type == MODULE_TYPE_TW
     assert conn.model == "MOOON - H134"
-    assert seen == [(MODULE_TYPE_TW, "MOOON - H134")]
+    assert conn.manufacturer == "Fermob"
+    assert conn.sw_version == "2.3.21.0"
+    assert conn.hw_version == "1.0.0"
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "manufacturer": "Fermob",
+            "sw_version": "2.3.21.0",
+            "hw_version": "1.0.0",
+        }
+    ]
+
+
+async def test_store_module_info_announces_only_what_changed(hass: HomeAssistant):
+    """The entry update is a reload, so it must carry no field that is unchanged."""
+    conn = _conn(hass)
+    conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
+
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
+    conn._store_module_info(
+        ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134", sw_version="2.3.21.0")
+    )
+
+    assert seen == [{"sw_version": "2.3.21.0"}]
 
 
 async def test_store_module_info_is_quiet_when_nothing_changed(hass: HomeAssistant):
@@ -155,8 +191,8 @@ async def test_store_module_info_is_quiet_when_nothing_changed(hass: HomeAssista
     conn = _conn(hass)
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
-    seen: list[tuple] = []
-    conn.on_module_info = lambda mt, model: seen.append((mt, model))
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
     assert seen == []
@@ -176,12 +212,31 @@ async def test_fetch_module_info_once_skips_when_already_known(hass: HomeAssista
     """The extra round trip is one per install, not one per connect."""
     conn = _conn(hass)
     conn.module_type = MODULE_TYPE_TW
+    conn.sw_version = "2.3.21.0"
     conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
     conn._send = AsyncMock()
 
     await conn._fetch_module_info_once()
 
     conn._send.assert_not_called()
+
+
+async def test_fetch_module_info_once_rereads_for_a_missing_firmware_version(
+    hass: HomeAssistant,
+):
+    """An install paired before we read 0xb5 must ask once more.
+
+    Its stored record has the module type and the address, so the old guard
+    returned early and the firmware version would never have been learned.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock(return_value=(b"", 2))
+
+    await conn._fetch_module_info_once()
+
+    conn._send.assert_called_once()
 
 
 async def test_fetch_module_info_once_retries_while_the_address_is_zero(
@@ -279,6 +334,24 @@ async def test_device_info_prefers_the_reported_model(hass: HomeAssistant):
     assert light.device_info["model"] == "MOOON - H134"
     assert light.device_info["manufacturer"] == "Fermob"
     assert light.device_info["identifiers"] == {("fermob", ADDRESS)}
+
+
+async def test_device_info_carries_both_reported_versions(hass: HomeAssistant):
+    """Firmware and hardware version ride the same reply as the model."""
+    light = _light(hass, LIGHT_TYPE_TW, sw_version="2.3.21.0", hw_version="1.0.0")
+
+    assert light.device_info["sw_version"] == "2.3.21.0"
+    assert light.device_info["hw_version"] == "1.0.0"
+
+
+async def test_device_info_omits_versions_before_the_lamp_reports_them(
+    hass: HomeAssistant,
+):
+    """Absent must stay absent -- the registry renders None as nothing at all."""
+    light = _light(hass, LIGHT_TYPE_TW)
+
+    assert light.device_info["sw_version"] is None
+    assert light.device_info["hw_version"] is None
 
 
 async def test_device_info_falls_back_to_the_family_label(hass: HomeAssistant):
