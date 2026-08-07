@@ -416,11 +416,16 @@ Two things worth knowing before you bother:
 
 - **Fermob ship firmware rarely.** The newest build on their update server for
   any lamp is from November 2023 (checked 2026-08-07).
-- **This integration is only verified against the firmware our reference lamp
-  runs** — a MOOON! H134 on 2.3.21.0. Nothing is known to change on newer
-  builds, and nothing has been tested on them either. If you update and
-  something misbehaves, please [open an issue](https://github.com/slettmayer/ha-fermob/issues)
-  with your firmware version.
+- **The app does not tell you which version it installs.** It says only
+  *"Firmware update found…"* or *"The firmware of your lamp is updated."* — the
+  version is on its technical-information screen, and on this integration's
+  device page.
+- **This integration's protocol was reverse-engineered on firmware 2.3.21.0**
+  (a MOOON! H134), which is what every hardware test to date ran on. Nothing is
+  known to change on newer builds and nothing has been tested on them either. If
+  you update and something misbehaves, please
+  [open an issue](https://github.com/slettmayer/ha-fermob/issues) with your
+  firmware version.
 
 Why it is not built, and what it would take, is written up in
 [docs/domain/FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md).

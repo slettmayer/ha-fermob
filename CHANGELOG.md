@@ -17,9 +17,10 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
   first (`fermob.unpair`) — which is why it is easier to update *before* pairing
   a new lamp. See the [README](README.md#firmware-updates).
 
-  For the record, our own MOOON! H134 reports 2.3.21.0 against 3.0.27.0 on
-  Fermob's server, so a lamp that has never been updated may well have one
-  waiting. Firmware for these lamps is published rarely: the newest build for
+  A lamp that has never been updated may well have one waiting — our own MOOON!
+  H134 was on 2.3.21.0 against 3.0.27.0 on Fermob's server. Note the app names
+  no version numbers while updating, so this entity may be the first place you
+  see one. Firmware for these lamps is published rarely: the newest build for
   any model is from November 2023.
 
 - **New option: *Check for firmware updates*, on by default.** This is the only
@@ -28,10 +29,12 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
   model name. Switching it off removes the entity and the request; the firmware
   version stays on the device page either way.
 
-- **Only tested against the firmware our reference lamp runs (2.3.21.0).** If
-  you update a lamp and something misbehaves, please open an issue with the
-  version — the protocol this integration speaks was reverse-engineered on that
-  build.
+- **The protocol was reverse-engineered on firmware 2.3.21.0**, which is the
+  build every hardware test to date was run on. A lamp of ours has since been
+  updated with the Fermob app and still works, but nothing has been *tested* on
+  a newer build. If you update a lamp and something misbehaves, please open an
+  issue with the version — which, as of this release, you can read off the
+  device page.
 
 ## 0.9.2
 

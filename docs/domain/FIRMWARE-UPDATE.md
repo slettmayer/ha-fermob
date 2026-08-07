@@ -51,6 +51,12 @@ Three calls, in this order:
 | 2 | `POST /token` with `{"date":"YYYY-MM-DDTHH:MM:SS"}` | none | `data.token` — a 40-hex-char bearer token |
 | 3 | `GET /files/{file_id}` | `Authorization: Bearer <token>` | the DFU zip |
 
+**Those three plus `POST /infos` are the entire public API — there is no release history.** The server is a
+Django app whose 404 page lists its URL patterns; everything else it serves (`release/<id>`, `release/add`,
+`manufacturers`, `models`) is behind `accounts/login`. So **you cannot ask it about any build but the newest**:
+no list, no by-version lookup, and therefore **no publication date for a version a lamp is currently running**.
+The `date` in call 1 is the publication date of the *current* release only.
+
 `manufacturer` and `model` are the lamp's own strings — TLV `0xb2` and `0xb3` from `MODULE_INFO_GET`, which we
 already parse ([PROTOCOL-COMMANDS.md](PROTOCOL-COMMANDS.md)) — with `-` and whitespace stripped:
 `MOOON - H134` → `MOOONH134`. An unknown model is a `400` with `"This model doesn't exists"`, and the token is
@@ -58,9 +64,9 @@ required only for the download.
 
 *Verified live 2026-08-07*, one query per model string we could guess:
 
-| Model | Latest | Dated |
+| Model | Latest | Published |
 |---|---|---|
-| `MOOONH134` | 3.0.27.0 | 2023-11-07 |
+| `MOOONH134` | 3.0.27.0 | 2023-11-07 (image itself built 2023-09-21, per the timestamps inside the zip) |
 | `MOOONH63` | 3.0.27.0 | 2023-11-07 |
 | `INOUI` | 3.0.27.0 | 2023-11-07 |
 | `MOOON3D15`, `MOOOND25` | 3.0.24.0 | 2023-01-10 |
@@ -73,15 +79,34 @@ Two things to take from that table. **Firmware moves rarely**: the newest build 
 (no Hoopik has ever been on hardware here, see [DEVICES.md](DEVICES.md#confidence)), so this is not evidence
 that it has no updates.
 
-## Our reference lamp has an update pending
+## The version a lamp reports, and why nobody can see what the app installed
 
-The H134 reports `0xb5 = 00 02 03 15` (*verified on hardware*). The app reads that TLV **reordered** as
-`[v3, v4, v5, v2]` (*derived from the app's JS*), giving **2.3.21.0** — against **3.0.27.0** on the server.
-Its own comparison is over the first three components, so it would offer the update.
+The H134 reported `0xb5 = 00 02 03 15` (*verified on hardware*, most recent capture 2026-08-03). The app reads
+that TLV **reordered** as `[v3, v4, v5, v2]`, giving **2.3.21.0** — against **3.0.27.0** on the server, so its
+own comparison (first three components) would offer the update.
 
-That matters beyond the update itself: **every hardware-verified claim in these docs rests on firmware
-2.3.21.0.** A lamp on 3.0.27.0 is a build this integration has never been tested against — the major-version
-jump is not known to change anything on the wire, and is not known not to.
+**The reorder is not a guess about the app's intent — it is the same parse its comparison consumes.**
+`parseModuleInfoData` walks the TLVs with `o` on the length byte, so `o+2` is the first value byte:
+`m_type=(e[o+3]<<8)+e[o+2]` (little-endian, as we read it), `m_firmware_version=[e[o+3],e[o+4],e[o+5],e[o+2]]`,
+`m_hardware_version=[e[o+2],e[o+3],e[o+4]]`. Still *derived from the app*, but from the code path that decides
+whether a user is offered an update, not from a display string.
+
+**The app never shows a version number while updating**, which is worth knowing before reading anything into
+what a user saw. Its whole DFU vocabulary is version-free: *"Looking for update…"*, *"Firmware update
+found…"*, *"The firmware of your lamp is updated."*, *"Update in progress, please wait…"*. The installed
+version appears only on a separate technical-information screen (`PRODUCT_TECHNICAL_INFO_FIRMWARE_LABEL`,
+"Software version"), which needs the app to own the lamp. So **"the app did not offer me version X" is not
+evidence about X** — the app names no versions at all. The discriminator is which of two messages appeared:
+*"Firmware update found…"* means it flashed something; *"The firmware of your lamp is updated."* means it
+thought the lamp was already current.
+
+**Our reference lamp was updated via the app on 2026-08-06 and what it now runs is unconfirmed.** The HA log
+for that evening shows the fingerprint of another controller taking ownership — `CRYPT_MSG`, *"lamp no longer
+holds our keys"*, then an automatic re-pair — and the last `MODULE_INFO_GET` dump predates it (2026-08-03,
+still `00 02 03 15`). It is presumably on 3.0.27.0 now; the first connect under 0.10.0 will say. **Treat
+2.3.21.0 as the build every hardware-verified claim in these docs was established on, not as what the lamp is
+running today.** The lamp does still work after that update, which is the only evidence we have about 3.x on
+the wire.
 
 ## How the app installs one
 
