@@ -33,8 +33,9 @@ ignores everything — it is a `MSG_FIRE` write with no ACK to observe.
 |---|---|
 | Hoopik GL1200 works | Confirmed on hardware by upstream's author |
 | MOOON! Moon2AD2 works (on/off, brightness, 3000↔6000 K, reconnect) | Confirmed on hardware by the PR author |
-| **MOOON! H134 works on this build** (pairing, on/off, brightness, colour temperature) | **Confirmed on hardware**, 2026-08-02 |
+| **MOOON! H134 works on this build** (pairing, on/off, brightness, colour temperature) | **Confirmed on hardware**, 2026-08-02, on lamp firmware 2.3.21.0 |
 | The H134 reports `module_type` 404 and model `MOOON - H134` | **Confirmed on hardware** — full TLV capture in [PROTOCOL-COMMANDS.md](PROTOCOL-COMMANDS.md#module_info_get) |
+| **The protocol still works on lamp firmware 3.0.27.0** | **Partly confirmed on hardware**, 2026-08-07. The reference H134 was updated to 3.0.27.0 with the vendor app on 2026-08-06; pairing, connect, the battery ACK and `MODULE_INFO_GET` all behave unchanged. The light-command path has **not** been re-verified there — and cannot be from the protocol alone, since `send_led` takes no ACK. See [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) |
 | Other MOOON! sizes (H63 / Ø15 / 3×Ø15 / Ø25) work | **Inferred** — same `module_type`, same protocol, untested by anyone |
 | The dimmable-white path still works | **Inferred** — unchanged code and pinned by `test_dw_payload_matches_upstream_literal`, but no Hoopik has run *this* build |
 

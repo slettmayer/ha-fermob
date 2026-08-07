@@ -100,13 +100,17 @@ evidence about X** — the app names no versions at all. The discriminator is wh
 *"Firmware update found…"* means it flashed something; *"The firmware of your lamp is updated."* means it
 thought the lamp was already current.
 
-**Our reference lamp was updated via the app on 2026-08-06 and what it now runs is unconfirmed.** The HA log
-for that evening shows the fingerprint of another controller taking ownership — `CRYPT_MSG`, *"lamp no longer
-holds our keys"*, then an automatic re-pair — and the last `MODULE_INFO_GET` dump predates it (2026-08-03,
-still `00 02 03 15`). It is presumably on 3.0.27.0 now; the first connect under 0.10.0 will say. **Treat
-2.3.21.0 as the build every hardware-verified claim in these docs was established on, not as what the lamp is
-running today.** The lamp does still work after that update, which is the only evidence we have about 3.x on
-the wire.
+**Our reference lamp is on 3.0.27.0 as of 2026-08-06** — *verified on hardware* 2026-08-07, the first connect
+after 0.10.0 was deployed to a live instance. It reports `0xb5` such that `format_sw_version` renders exactly
+the string the server publishes, which is a **cross-check the byte order would have failed** if it were wrong:
+a 2.3.21.0 lamp became a 3.0.27.0 lamp, on the same formatter, matching a version nobody typed in. The HA log
+for that evening also shows the vendor app taking ownership on the way — `CRYPT_MSG`, *"lamp no longer holds
+our keys"*, then our automatic re-pair.
+
+So **2.3.21.0 is the build every hardware claim in these docs was established on, and no lamp here runs it any
+more.** What 3.0.27.0 has actually demonstrated is in
+[DEVICES.md](DEVICES.md#confidence): pairing, connect, the battery ACK and `MODULE_INFO_GET` unchanged; the
+light-command path not re-verified, because `send_led` takes no ACK and only eyes on the lamp can confirm it.
 
 ## How the app installs one
 
