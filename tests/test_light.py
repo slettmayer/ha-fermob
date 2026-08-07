@@ -396,7 +396,7 @@ async def test_commands_are_serialised_by_the_connection_lock(hass: HomeAssistan
     light.async_write_ha_state = MagicMock()
     order: list[str] = []
 
-    async def slow_connect() -> None:
+    async def slow_connect(**_kwargs: object) -> None:
         order.append("enter")
         await asyncio.sleep(0)
         order.append("leave")

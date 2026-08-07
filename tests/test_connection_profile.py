@@ -15,7 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.fermob import resolve_connection_profile
+from custom_components.fermob import (
+    CHECK_IN_STARTUP_DELAY,
+    CHECK_IN_STARTUP_RETRY_DELAY,
+    resolve_connection_profile,
+)
 from custom_components.fermob.config_flow import (
     CONF_CONNECTION_MODE,
     CONNECTION_MODE_ALWAYS,
@@ -76,3 +80,62 @@ def test_an_unrecognised_stored_mode_falls_back_to_always_connected():
     """A downgrade, or a hand-edited entry, must not leave the lamp unmanaged."""
     profile = resolve_connection_profile(_entry(**{CONF_CONNECTION_MODE: "sometimes"}))
     assert profile == resolve_connection_profile(_entry())
+
+
+def test_the_startup_check_in_does_not_make_the_user_wait():
+    """What this delay costs is blindness, not the ability to command the lamp.
+
+    `_async_send_led` calls `ensure_connected` itself and never waits on this
+    timer, so it has never gated a command. What it does gate, in
+    always-connected mode, is the link being held open -- and until it is, a
+    button press goes unseen and both battery entities read unavailable.
+
+    Both directions cost something, which is why the value is a middle one.
+    Firing late is a window of exactly that blindness; firing *early* is worse
+    than it looks, because the check-in swallows its failures, so a Bluetooth
+    stack that is not up yet consumes the single attempt in silence and the next
+    is a whole interval away. There is deliberately no retry -- see the constant.
+
+    The bound, rather than the number, is what matters: it must stay well inside
+    the shortest check-in interval, or the startup tick stops being a distinct
+    thing at all.
+    """
+    shortest = min(
+        resolve_connection_profile(
+            _entry(**{CONF_CONNECTION_MODE: mode})
+        ).check_in_interval
+        for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
+    )
+
+    # The **lower** bound is the one that had to be added. An upper bound alone
+    # is satisfied by any shorter value, including the 30 s that was tried and
+    # reverted, so it could never have caught the regression it looked like it
+    # was guarding against.
+    assert timedelta(seconds=45) <= CHECK_IN_STARTUP_DELAY
+    # And the upper bound stays expressed as a ratio rather than a literal, so
+    # a deliberate adjustment is not a test failure with nothing to learn from.
+    assert shortest / 10 > CHECK_IN_STARTUP_DELAY
+
+
+def test_the_startup_check_in_gets_a_second_shot():
+    """The first tick can be spent for free, so it cannot be the only one.
+
+    `_open_link` raises immediately when the lamp is not yet in Home Assistant's
+    Bluetooth registry -- no connect attempts, no time -- and `async_check_in`
+    swallows that by contract. An ESPHome proxy frequently has not reconnected
+    and re-advertised a minute after a restart, so a single tick would be
+    consumed silently and the next contact would be a whole interval away.
+
+    Bounds, not values: the retry must land after the first and still well
+    inside the shortest interval, or it is either pointless or indistinguishable
+    from the regular tick.
+    """
+    shortest = min(
+        resolve_connection_profile(
+            _entry(**{CONF_CONNECTION_MODE: mode})
+        ).check_in_interval
+        for mode in (CONNECTION_MODE_ALWAYS, CONNECTION_MODE_ON_DEMAND)
+    )
+
+    assert CHECK_IN_STARTUP_RETRY_DELAY > CHECK_IN_STARTUP_DELAY
+    assert shortest / 5 > CHECK_IN_STARTUP_RETRY_DELAY

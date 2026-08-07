@@ -62,10 +62,30 @@ refresh the battery, which the lamp reports only when asked. It sends no light c
 the lamp is doing — which is also how the vendor app behaves, polling the same battery command on a timer with
 every lamp dark.
 
-It also runs once `CHECK_IN_STARTUP_DELAY` (2 minutes) after setup, for two reasons: the interval timer
+It also runs shortly after setup, for two reasons: the interval timer
 restarts from zero on every reload, so on a box that is restarted often the tick could otherwise be missed
 repeatedly; and both battery entities read unavailable until the lamp has reported once, which would otherwise
 last until something turned the light on. The delay lets the Bluetooth stack come up first.
+
+**It has never gated commands.** `_async_send_led` calls `ensure_connected()` itself and waits on no timer, so
+the lamp is commandable from the moment setup finishes. What the delay does gate, under *always connected*, is
+the link being held open — and until it is, a button press goes unseen and both battery entities read
+unavailable.
+
+**Two ticks, at one minute and three, and the second is what makes the first one safe.** Firing late costs a
+window of exactly the blindness that mode exists to remove. Firing early is worse than it looks: `_open_link`
+raises *immediately* when the lamp is not yet in Home Assistant's Bluetooth registry — no attempts, no time —
+and the check-in swallows that by contract, so the tick is spent for free and the next contact is a whole
+interval away. An adapter is up before the integration loads (`bluetooth_adapters` is a manifest dependency);
+an ESPHome proxy is a separate integration and frequently is not.
+
+The second tick costs one battery request on a healthy start, the same one the interval makes anyway.
+
+**Both timers are registered synchronously in `async_setup_entry`, and that is load-bearing.** 0.9.2 first
+tried 30 s plus a chain that re-armed *after* awaiting the check-in; a reload landing mid-check-in then left a
+timer nothing could cancel, which later fired against a discarded connection and opened a second BLE link to a
+lamp that accepts one controller. Scheduling both up front closes that window — `entry.async_on_unload` holds
+both cancels before either can run.
 
 Two deliberate refusals:
 
@@ -129,7 +149,55 @@ The check-in interval is therefore also the **upper bound on how long that state
 reason not to lengthen it.
 
 `fermob.check_in` is the same routine on demand — see
-[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services).
+[ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#services). Being an entity service it cannot be called on
+a lamp whose entity has gone *unavailable*; the scheduled check-in has never had that problem, because it calls
+the connection directly, and it is what recovers such a lamp without anyone asking.
+
+### How long a failed connect is allowed to take
+
+`bleak_retry_connector` hardcodes its per-attempt timeout at the `client.connect()` call site (`BLEAK_TIMEOUT`,
+20 s) out of reach of `**kwargs`, so `max_attempts` is the only lever the integration has. It sets two, because
+the right answer depends on who is waiting:
+
+| Path | Attempts | Why |
+|---|---|---|
+| A light command | 2 | A human is watching the UI |
+| `fermob.check_in` (the service) | 2 | Same, and it holds the connection lock while it waits |
+| The scheduled check-in | 4 (the library default) | Nothing is waiting; giving up early costs a missed heartbeat |
+| Any connect on a pass that pairs | 4, **always** | Both of them; see below |
+| `fermob.unpair` | 4 | Failing costs more than waiting — see below |
+
+Two of those override the caller, and both are the interesting cases:
+
+- **A pass that pairs never inherits a short budget, on either of its two connects.** The only caller that ever
+  pairs is a light command, which asks for 2, so both would otherwise be halved: the *initial* open, where a
+  freshly added lamp at the edge of range would report "pairing failed" on a lamp that would have paired; and
+  the *reopen after `REGISTER_END`*, which exists because the lamp stops honouring the link it was paired on
+  (reproduced on an H134) and where failing reports an error with the lamp already registered. `have_keys` is
+  what marks such a pass — false on a first pairing, and cleared again before the `continue` that re-pairs a
+  factory-reset lamp, so automatic recovery keeps the full budget too.
+- **`fermob.unpair` keeps the full budget even though a user is waiting.** It is the asymmetric one: an unpair
+  that gives up removes nothing, and the obvious next move is to delete the integration instead — which takes
+  the keys while the lamp stays registered, the one-way door needing a ten-second factory reset. Waiting longer
+  is much the cheaper mistake.
+
+**There is deliberately no "worst case" column, because the honest number is not `attempts × 20 s`.** An
+earlier draft of this table claimed one and was wrong twice over: each attempt also sits under
+`BLEAK_SAFETY_TIMEOUT` (60 s), and `_raise_if_needed` counts only `timeouts + connect_errors` against
+`max_attempts` — anything in `TRANSIENT_ERRORS`, plus a device that goes missing, retries on a *separate*
+budget of `MAX_TRANSIENT_ERRORS` (9) with backoffs of up to 4 s. A command also waits on
+`FermobBLEConnection.lock` before its own budget applies at all, so a check-in already in progress is added to
+whatever the command then spends.
+
+What the setting does buy is bounded and worth having: it halves the ordinary out-of-range failure, which is a
+connect timeout or a hard error such as `ESP_GATT_ERROR` (a connect error, not a transient one). A lamp in
+range connects in one to two seconds, so the retries only cost time when it is genuinely absent. On a
+background check-in that is free, and giving up early would mean a missed heartbeat and up to another interval
+of stale state. On a command it is a minute or more of unresponsive UI, which reads as a hang.
+
+Cutting the interactive path to two does **not** cost the proxy flakes it might appear to: those are transient
+errors and retry on their own budget regardless. `ensure_connected` defaults to the *background* number, so a
+caller who forgets the argument waits longer rather than giving up on a lamp that was there.
 
 ## What holding the link costs
 

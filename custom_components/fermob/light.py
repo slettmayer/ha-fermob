@@ -85,6 +85,41 @@ DEFAULT_KELVIN = 4000
 
 _STORAGE_VERSION = 1
 
+# How many times `establish_connection` may try before giving up, and the one
+# thing about the connect budget we can actually set.
+#
+# `bleak_retry_connector` hardcodes its per-attempt timeout at the
+# `client.connect()` call site -- `BLEAK_TIMEOUT`, 20 s -- and it is not
+# reachable through `**kwargs`, which go to the client constructor. So
+# `max_attempts` is the only lever, and the library's own default is 4.
+#
+# **Do not read that as "attempts x 20 s".** Two things break the arithmetic, and
+# both were found by reading the pinned library rather than assuming:
+#
+#   - each attempt also sits under `BLEAK_SAFETY_TIMEOUT`, 60 s, which is what
+#     bounds an attempt whose own timeout does not fire; and
+#   - `_raise_if_needed` counts only `timeouts + connect_errors` against
+#     `max_attempts`. Errors in the `TRANSIENT_ERRORS` set -- and a device that
+#     goes missing -- get a *separate* budget of `MAX_TRANSIENT_ERRORS` (9),
+#     plus backoff sleeps of up to 4 s each.
+#
+# So this bounds the common failures (a connect timeout, and hard errors such as
+# `ESP_GATT_ERROR`, which counts as a connect error) and does not bound the
+# transient ones at all. Roughly: halving it halves a typical out-of-range
+# failure, and promises nothing about the worst case.
+#
+# The right number differs by who is waiting, which is why there are two. A lamp
+# in range connects in one to two seconds, so the retries only ever cost time
+# when it is genuinely absent: out of range, asleep, or off. On a background
+# check-in that costs nothing and the full budget is worth having, because the
+# alternative is a missed heartbeat and up to another interval of stale state.
+# On a command a human is watching the UI, and a minute-plus of nothing reads as
+# a hang. Cutting the interactive path to two does not cost the proxy flakes it
+# might look like it does: those are transient errors, and they retry on their
+# own budget regardless of what this says.
+CONNECT_ATTEMPTS_BACKGROUND = 4
+CONNECT_ATTEMPTS_INTERACTIVE = 2
+
 # How long the BLE link is held open after the last command, in seconds --
 # or None to hold it open indefinitely, which is now the default.
 #
@@ -824,7 +859,7 @@ class FermobBLEConnection:
 
         self._idle_task = asyncio.ensure_future(_idle())
 
-    async def _open_link(self) -> None:
+    async def _open_link(self, max_attempts: int = CONNECT_ATTEMPTS_BACKGROUND) -> None:
         """Open a raw BLE link and start notifications. No crypto, no state.
 
         Split out of `ensure_connected` because pairing now needs to do it
@@ -844,7 +879,9 @@ class FermobBLEConnection:
             raise RuntimeError(f"Fermob BLE device not found: {self._address}")
 
         _LOGGER.debug("Fermob %s: connecting…", self._address)
-        self._client = await establish_connection(BleakClient, device, self._address)
+        self._client = await establish_connection(
+            BleakClient, device, self._address, max_attempts=max_attempts
+        )
 
         try:
             # Flush any stale frames
@@ -968,7 +1005,11 @@ class FermobBLEConnection:
         self._module_info_read = False
         self._module_info_attempts = 0
 
-    async def ensure_connected(self, allow_pairing: bool = True) -> None:
+    async def ensure_connected(
+        self,
+        allow_pairing: bool = True,
+        max_attempts: int = CONNECT_ATTEMPTS_BACKGROUND,
+    ) -> None:
         """Ensure an authenticated BLE connection is up.
 
         Runs the full pairing handshake on first use and a plain BLE reconnect
@@ -987,6 +1028,11 @@ class FermobBLEConnection:
         something the user just did -- `async_check_in` passes False, because a
         3 a.m. timer must not re-register a lamp its owner deliberately reset to
         hand back to the Fermob app.
+
+        `max_attempts` is the connect budget, and defaults to the background one
+        because that is the safe direction to be wrong in: a caller who forgets
+        it waits longer, rather than giving up on a lamp that was there. Callers
+        a user is waiting on pass `CONNECT_ATTEMPTS_INTERACTIVE`.
         """
         have_keys = await self._load_keys()
 
@@ -1010,7 +1056,18 @@ class FermobBLEConnection:
             # rather than dispatched to entities that cannot decode them.
             self._ready = False
             self._connected = False
-            await self._open_link()
+            # A pass that is going to pair takes the full budget, whatever the
+            # caller asked for -- the same rule as the reconnect below, and for
+            # the same reason. `have_keys` is what distinguishes them: false on
+            # a first pairing, and set false again before the `continue` that
+            # re-pairs a factory-reset lamp. Both are reached only from a light
+            # command, which asks for the short budget, and both are worse
+            # places to give up early than an ordinary command is: one reads as
+            # "pairing failed" on a lamp that would have paired, the other is
+            # the automatic recovery from a reset.
+            await self._open_link(
+                max_attempts if have_keys else CONNECT_ATTEMPTS_BACKGROUND
+            )
 
             if have_keys:
                 # The lamp retains GATEWAY+PRIVATE state across BLE disconnects,
@@ -1036,7 +1093,15 @@ class FermobBLEConnection:
                     self._address,
                 )
                 await self.disconnect()
-                await self._open_link()
+                # **Always the full budget, whatever the caller asked for.** This
+                # is the single most fragile connect in the integration -- the
+                # lamp has just changed state under us and its radio may need a
+                # moment -- and the only caller that ever reaches it is a light
+                # command, which asks for the short one. Inheriting that would
+                # halve the retries on exactly the connect that needs them, and
+                # a first toggle on a newly added lamp would report failure with
+                # the lamp already registered to Home Assistant.
+                await self._open_link(CONNECT_ATTEMPTS_BACKGROUND)
 
             self._ready = True
             self._connected = True
@@ -1244,7 +1309,9 @@ class FermobBLEConnection:
         if self._have_keys:
             await self._save_keys()
 
-    async def async_check_in(self) -> None:
+    async def async_check_in(
+        self, max_attempts: int = CONNECT_ATTEMPTS_BACKGROUND
+    ) -> None:
         """Reconnect if the link dropped, and refresh the battery reading.
 
         Two jobs, and with the link now held open the first is the important
@@ -1288,6 +1355,12 @@ class FermobBLEConnection:
         takes ownership of it, which is not something a 3 a.m. timer may decide:
         the lamp may have been factory-reset on purpose, to hand it back to the
         Fermob app.
+
+        `max_attempts` defaults to the background budget, which is right for the
+        scheduled caller -- nothing is waiting on it. The `fermob.check_in`
+        entity service passes the interactive one, because somebody just clicked
+        it and is watching, and because this holds the connection lock for the
+        whole connect: a slow give-up here also stalls the next light command.
         """
         async with self.lock:
             if not await self._load_keys():
@@ -1303,7 +1376,9 @@ class FermobBLEConnection:
             # that the lamp was fine.
             proven_dead = False
             try:
-                await self.ensure_connected(allow_pairing=False)
+                await self.ensure_connected(
+                    allow_pairing=False, max_attempts=max_attempts
+                )
                 if connected:
                     # ensure_connected already asked on a fresh connect; this is
                     # the branch where it returned early.
@@ -1323,7 +1398,9 @@ class FermobBLEConnection:
                         )
                         proven_dead = True
                         await self.disconnect()
-                        await self.ensure_connected(allow_pairing=False)
+                        await self.ensure_connected(
+                            allow_pairing=False, max_attempts=max_attempts
+                        )
             except LampNotAnswering as err:
                 # Reached it, and it is not usable. This is the one outcome worth
                 # reporting.
@@ -1356,11 +1433,13 @@ class FermobBLEConnection:
                 # end, reached the long way round.
                 #
                 # Reporting it unavailable does not merely overstate the problem,
-                # it removes the cure. Home Assistant silently drops every
-                # entity-service call to an unavailable entity
-                # (`helpers/service.py`: `if not entity.available: continue`), so
-                # neither `light.turn_on` nor `fermob.unpair` ever arrives -- and
-                # the check-in may not pair. The lamp is then stuck until someone
+                # it removes the cure. Home Assistant drops every entity-service
+                # call to an unavailable entity and still reports success --
+                # `_resolve_entity_service_call_entities` in
+                # `homeassistant/helpers/service.py` filters on
+                # `entity.available` before the handler runs -- so neither
+                # `light.turn_on` nor `fermob.unpair` ever arrives, and the
+                # check-in may not pair. The lamp is then stuck until someone
                 # reloads the integration, which nothing tells them to do.
                 # Observed on an H134, 2026-08-06.
                 #
@@ -1792,7 +1871,11 @@ class FermobLight(LightEntity):
         """
         async with self._conn.lock:
             try:
-                await self._conn.ensure_connected()
+                # A user is watching this one, so it gives up sooner -- see
+                # CONNECT_ATTEMPTS_INTERACTIVE.
+                await self._conn.ensure_connected(
+                    max_attempts=CONNECT_ATTEMPTS_INTERACTIVE
+                )
                 await self._conn.send_led(on, brightness_pct, warm_ratio)
             except Exception as exc:  # reported to the user via the log
                 _LOGGER.error(
@@ -1850,11 +1933,23 @@ class FermobLight(LightEntity):
         """Reconnect and refresh the battery now, rather than on the timer.
 
         The entity-service face of `FermobBLEConnection.async_check_in`, which
-        already takes the lock and swallows its own failures -- so this is a
-        plain delegation, and calling it on an out-of-range lamp is a no-op
-        rather than an error.
+        already takes the lock and swallows its own failures -- so an
+        out-of-range lamp is reported, not raised.
+
+        It passes the **interactive** connect budget, unlike the scheduled
+        caller: a user just clicked this and is watching it, and it holds the
+        connection lock for the whole connect, so giving up slowly here also
+        delays whatever they try next.
+
+        **Being an entity service, it cannot be called on an unavailable
+        entity** -- Home Assistant filters the target out before this runs, and
+        the call still reports success. That is a real limitation and it is
+        accepted rather than worked around: the *scheduled* check-in calls the
+        connection directly, so a lamp whose entity has gone unavailable is
+        recovered without anyone asking, within one check-in interval. See
+        `docs/domain/ENTITIES-AND-SERVICES.md`.
         """
-        await self._conn.async_check_in()
+        await self._conn.async_check_in(max_attempts=CONNECT_ATTEMPTS_INTERACTIVE)
 
     async def async_unpair(self) -> None:
         """Unpair the lamp and remove this config entry.
@@ -1905,7 +2000,20 @@ class FermobLight(LightEntity):
                     # run the re-pair branch -- flashing it, re-registering it to
                     # Home Assistant -- and only then broadcast UNREGISTER, which
                     # is the exact opposite of what was asked for.
-                    await self._conn.ensure_connected(allow_pairing=False)
+                    # The **full** budget, despite a user waiting on it, and
+                    # passed explicitly rather than inherited. This is the
+                    # asymmetric case: giving up early does not merely annoy, it
+                    # pushes them toward deleting the integration instead, which
+                    # takes the keys while the lamp stays registered -- the
+                    # one-way door needing a 10 s factory reset. Waiting longer
+                    # is much the cheaper mistake. Spelling it out means a later
+                    # change to `ensure_connected`'s default -- tempting, since
+                    # every other user-facing caller wants the short one --
+                    # cannot silently take this path with it.
+                    await self._conn.ensure_connected(
+                        allow_pairing=False,
+                        max_attempts=CONNECT_ATTEMPTS_BACKGROUND,
+                    )
                     verdict = await self._conn.unpair()
                 except LampNotAnswering as err:
                     # `ensure_connected` refuses a link it could not get an

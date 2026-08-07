@@ -268,7 +268,10 @@ acquires it, and `ensure_connected()`/`send_led()` assume it is already held.
 - **Both services are entity services**, registered in the platform's `async_setup_entry` via
   `entity_platform.async_get_current_platform().async_register_entity_service(...)` — not plain methods and not
   `hass.services` registrations. Neither takes a schema: `"unpair"` → `async_unpair`, `"check_in"` →
-  `async_check_in`. See [ENTITIES-AND-SERVICES.md](../domain/ENTITIES-AND-SERVICES.md#services) for what each
-  is for, and [PAIRING.md](../domain/PAIRING.md#unpairing) for what unpairing does to the lamp.
+  `async_check_in`. That means **neither can be called on an unavailable entity**, which is a known and
+  accepted limitation rather than an oversight — 0.9.2 tried moving `check_in` to the domain and reverted it.
+  See
+  [ENTITIES-AND-SERVICES.md](../domain/ENTITIES-AND-SERVICES.md#neither-can-be-called-on-an-unavailable-entity-and-that-is-accepted)
+  for the mechanism and why, and [PAIRING.md](../domain/PAIRING.md#unpairing) for what unpairing does to the lamp.
 
 See [STATE-MODEL.md](../domain/STATE-MODEL.md) for why there is no state resync.

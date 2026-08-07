@@ -3,7 +3,10 @@ check_in:
   description: >
     Contact the lamp now to reconnect if the link has dropped and refresh its
     battery level, instead of waiting for the next scheduled check-in. Does not
-    turn the lamp on or off. A lamp that is out of range is left alone.
+    turn the lamp on or off. A lamp that is out of range is left alone. Cannot
+    be called on a light that is showing as unavailable — Home Assistant
+    discards the call. Such a light recovers on its own at the next scheduled
+    check-in.
   target:
     entity:
       domain: light
@@ -14,7 +17,9 @@ unpair:
   description: >
     Unpair the Fermob lamp from Home Assistant (equivalent to "Forget" in the
     Fermob app). The lamp will flash 3× and reset its crypto state to NONE.
-    The integration will be removed automatically.
+    The integration will be removed automatically. Cannot be called on a light
+    that is showing as unavailable — Home Assistant discards the call and
+    reports success, so nothing is released and nothing is removed.
   target:
     entity:
       domain: light

@@ -146,7 +146,7 @@ when retrying the command takes the reconnect path and works if the link does.
 
 ## Unpairing
 
-`fermob.unpair` (an entity service) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
+`fermob.unpair` (an entity service, as `fermob.check_in` also is) broadcasts `UNREGISTER`, deletes the stored keys and removes the config
 entry. The lamp flashes 3× and resets its crypto state to `NONE`, so it can be paired with the app again. It is
 the only thing that deletes the keys **while telling the lamp** — removing the entry deletes them too, but
 silently, which is why that is a one-way door; see below.
@@ -196,7 +196,19 @@ still holding keys and an entry — and the next connect would silently re-pair 
 lamp back to the Fermob app could never succeed.
 
 Be precise about what the check does establish: it rules out a broadcast fired into a link the lamp had already
-stopped honouring. It does **not** prove the lamp received or acted on the broadcast — nothing can.
+stopped honouring. It does **not** prove the lamp received or acted on the broadcast — nothing can, at the time
+of sending.
+
+**Afterwards, though, there is one piece of evidence, and it is conclusive.** Confirmed on an H134
+(2026-08-06): a lamp released with `fermob.unpair` was re-added and paired cleanly **with no factory reset**.
+Had the broadcast not landed, the lamp would have stayed registered in `PRIVATE` with its keys deleted — the
+one-way door below — and the re-add would have stopped at step 1's probe with *"Lamp is in PRIVATE mode but no
+stored keys found"*. It did not, so the lamp really was back in `NONE`. The broadcast works; only its
+*acknowledgement* is unavailable.
+
+That is also the practical difference between the two ways of getting rid of a lamp, and worth stating plainly
+because the reset requirement is easy to over-apply: **re-adding after `fermob.unpair` needs no factory reset.**
+The lamp was told. Only entry removal leaves it registered, and only that path needs the ten seconds.
 
 Deleting the keys while the lamp stays registered produces the one state nothing recovers from except a
 paperclip: a lamp owned by a controller that has forgotten it, which reads as *"PRIVATE mode but no stored

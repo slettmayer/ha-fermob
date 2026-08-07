@@ -324,6 +324,41 @@ target:
   entity_id: light.fermob_moon
 ```
 
+One limitation worth knowing: **it cannot be called on a light that is already
+greyed out** — see below.
+
+### If the light goes unavailable
+
+The light entity greys out when a command to the lamp actually failed — it was
+out of range, asleep, or switched off at the globe. That is the entity telling
+you the truth rather than showing a state it can no longer vouch for.
+
+**It repairs itself, and usually you should just wait.** The scheduled check-in
+contacts the lamp on a timer and does not go through the entity, so it reaches
+the lamp whatever the entity looks like — and it restores the light as soon as
+the lamp answers. On the default *Always connected* setting that is **within 30
+minutes**; on *On demand* it can be up to 6 hours.
+
+**Nothing you can click will help in the meantime.** Home Assistant discards
+service calls aimed at an unavailable entity and still reports success, so
+`light.turn_on`, `fermob.check_in` and `fermob.unpair` all appear to work and do
+nothing. That is not this integration being unhelpful — the filtering happens in
+Home Assistant before any of our code runs.
+
+**To stop waiting, reload the integration:**
+
+> **Settings → Devices & Services → Fermob → ⋮ → Reload**
+
+That rebuilds the entity, which clears the greyed-out state and makes the
+controls work again. Be aware of what it does *not* do: reloading does not
+contact the lamp. The first attempt is the startup check-in about a minute
+later, or whenever you next press the switch — so if the lamp is still out of
+range, the light will look fine and then fail on the next command.
+
+Which is the honest summary: **if the lamp is genuinely out of range, asleep or
+switched off at the globe, none of this helps until it is back.** The grey is
+the entity being right, not a fault.
+
 ### Unpair service
 
 To remove the lamp from HA and reset it for use with the Fermob app:
@@ -363,6 +398,15 @@ If the lamp has stale keys from a previous client and won't pair:
 3. Restart HA
 4. Power-cycle the lamp and retry setup
 
+**You do not need this after `fermob.unpair`.** That service tells the lamp it is
+released, so it is already free — just add it again and switch the light on to
+pair. The reset is only for a lamp still registered to a controller whose keys
+are gone, which is what *deleting* the integration leaves behind (confirmed on
+hardware, 2026-08-06).
+
+A lamp you reset **while the integration is still installed** needs none of these
+steps either: it is detected and re-paired the next time you turn the light on.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -372,9 +416,13 @@ If the lamp has stale keys from a previous client and won't pair:
 | Lamp unresponsive right after pairing | Fixed in 0.9.0, which reconnects after pairing. On earlier versions, reload the integration once |
 | *"Lamp is in PRIVATE mode but no stored keys"* | The lamp has keys from a previous client. Factory-reset the lamp (hold its button 10 s), delete `.storage/fermob_*`, restart HA. On 0.9.0+ a lamp you factory-reset *while the integration is installed* is re-paired automatically, without any of that — but see the row below |
 | Lamp you factory-reset is greyed out and nothing works | Fixed in 0.9.1. On 0.9.0 the check-in correctly spotted the reset, marked the light unavailable, and Home Assistant then discarded every service call to it — including the `light.turn_on` that would have re-paired it. Reload the integration (**Settings → Devices & Services → Fermob → ⋮ → Reload**), then turn the light on |
-| Re-added the integration and the lamp no longer works | Expected. Deleting the integration deletes its pairing keys, and the lamp stays registered to Home Assistant — so the re-add has nothing to talk to it with. Factory-reset the lamp (hold its button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
+| Re-added the integration and the lamp no longer works | Expected — but only if you *deleted* it. Deleting the integration deletes its pairing keys while the lamp stays registered to Home Assistant, so the re-add has nothing to talk to it with. Factory-reset the lamp (hold its button 10 s) and set it up again. To avoid this, release the lamp with `fermob.unpair` **before** deleting the integration |
+| Re-adding a lamp released with `fermob.unpair` | Just add it again — **no factory reset needed.** The unpair told the lamp, so it is back in `NONE` and free. Pairing happens on the first toggle, so switch the light on once after adding it (confirmed on hardware, 2026-08-06) |
 | Lamp flashes 3× on toggle | The lamp is being unregistered. Use the `fermob.unpair` service instead of toggling, then re-pair |
 | Pairing timeout | Ensure the official Fermob app is not connected to the lamp |
+| Turning the lamp on takes ages before failing | Expected when it is out of range or asleep. Bluetooth allows 20 s per connect attempt and 0.9.2 halved the attempts a command makes, from four to two — but there is no fixed ceiling: some Bluetooth errors retry on their own separate budget, and a command also has to wait for any check-in already in progress. Bring the lamp into range rather than timing it |
+| Battery entities unavailable for a while after restarting HA | The lamp reports its battery only when asked, and the first check-in runs one minute after startup (two minutes before 0.9.2), with a second at three minutes in case a Bluetooth proxy was still coming up. Commands are **not** affected — the lamp is controllable straight away |
+| Light greyed out (unavailable) | A command to the lamp failed, so the entity stopped claiming a state it could not vouch for. It repairs itself at the next scheduled check-in — 30 minutes on the default setting. No service call will help in the meantime: HA discards calls to an unavailable entity and still reports success, `light.turn_on` and `fermob.check_in` alike. Reloading the integration clears the grey at once, but does not itself contact the lamp. See [If the light goes unavailable](#if-the-light-goes-unavailable) |
 | Physical button not reflected in HA | Check **Configure → Connection** is *Always connected*; on demand releases the BLE link, and the lamp reports presses only while connected. Otherwise the link has dropped — `fermob.check_in` restores it, and the scheduled check-in does so within 30 minutes |
 | Battery reads `unavailable` | The lamp has not reported a level yet. It answers on connect, so this clears at the next check-in or the next lamp command |
 | Battery percentage looks too high | Expected on and just off the charger — see [Entities](#entities). Read it once the lamp has been off the charger a while |
