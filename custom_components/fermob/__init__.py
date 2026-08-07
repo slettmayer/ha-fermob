@@ -95,9 +95,21 @@ CHECK_IN_STARTUP_DELAY = timedelta(minutes=1)
 CHECK_IN_STARTUP_RETRY_DELAY = timedelta(minutes=3)
 
 
+def address_slug(address: str) -> str:
+    """`D6:86:76:E8:7E:75` -> `fermob_d6_86_76_e8_7e_75`.
+
+    **The one definition, because five things are keyed on it and none of them
+    can be renamed after the fact**: the pairing key store under `.storage`, and
+    the unique_id of every entity. A second copy that drifted by one character
+    would orphan a user's pairing keys or their entity customisations, with no way
+    back but re-pairing the lamp -- so this is deliberately duller than it looks.
+    """
+    return f"fermob_{address.replace(':', '_').lower()}"
+
+
 def _key_store(hass: HomeAssistant, address: str) -> Store:
     """The store holding one lamp's pairing keys, keyed by its BLE address."""
-    return Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
+    return Store(hass, _STORAGE_VERSION, address_slug(address))
 
 
 def module_info_updates(

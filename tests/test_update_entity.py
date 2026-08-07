@@ -16,17 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.components.update import UpdateDeviceClass, UpdateEntityFeature
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 
 from custom_components.fermob.config_flow import CONF_CHECK_FIRMWARE
 from custom_components.fermob.firmware import FirmwareRelease
 from custom_components.fermob.light import FermobBLEConnection
 from custom_components.fermob.protocol import LIGHT_TYPE_TW
-from custom_components.fermob.update import (
-    FermobFirmwareUpdate,
-    async_setup_entry,
-    firmware_unique_id,
-)
+from custom_components.fermob.update import FermobFirmwareUpdate, async_setup_entry
 
 ADDRESS = "D6:86:76:E8:7E:75"
 
@@ -48,9 +43,12 @@ def _entry(**data) -> SimpleNamespace:
     )
 
 
-def _entity(hass: HomeAssistant, conn, entry) -> FermobFirmwareUpdate:
-    entity = FermobFirmwareUpdate(hass, entry, conn)
+def _entity(
+    hass: HomeAssistant, conn, entry, checking: bool = True
+) -> FermobFirmwareUpdate:
+    entity = FermobFirmwareUpdate(hass, entry, conn, checking)
     entity.async_write_ha_state = MagicMock()
+    entity.async_on_remove = MagicMock()
     return entity
 
 
@@ -171,13 +169,31 @@ async def test_the_first_check_runs_at_startup_not_a_day_later(hass: HomeAssista
     With SCAN_INTERVAL at one day, without this the entity sits at unknown for
     24 h after every restart -- and on a box that reloads more often than that,
     forever. It also repairs the reload that drops `_latest`.
+
+    **A background task specifically.** `async_schedule_update_ha_state` and
+    `update_before_add` both land in `hass._tasks`, which bootstrap drains via
+    `async_block_till_done()` -- so on a box that cannot reach the vendor server
+    the whole request budget would be added to HA's startup time.
     """
-    entity = _entity(hass, _conn(hass), _entry())
-    entity.async_schedule_update_ha_state = MagicMock()
+    conn = _conn(hass, model="MOOON - H134", sw_version="2.3.21.0")
+    entity = _entity(hass, conn, _entry())
+    created: list = []
+    hass.async_create_background_task = MagicMock(
+        side_effect=lambda coro, name=None: created.append((coro, name))
+    )
 
     await entity.async_added_to_hass()
 
-    entity.async_schedule_update_ha_state.assert_called_once_with(force_refresh=True)
+    assert len(created) == 1
+    coro, name = created[0]
+    assert "firmware" in name
+    with patch(
+        "custom_components.fermob.update.async_get_latest_release",
+        AsyncMock(return_value=FirmwareRelease("3.0.27.0", "abc", None)),
+    ):
+        await coro
+
+    assert entity.latest_version == "3.0.27.0"
 
 
 async def test_no_check_before_the_lamp_has_reported_a_model(hass: HomeAssistant):
@@ -213,95 +229,40 @@ async def test_the_lamp_reported_names_are_what_gets_asked_about(hass: HomeAssis
     assert checked.await_args.args[1:] == ("Fermob", "MOOON - H134")
 
 
-async def test_the_option_being_off_adds_no_entity(hass: HomeAssistant):
-    """Off must remove the entity, not leave one that never learns anything."""
-    entry = _entry()
-    entry.entry_id = "abc"
-    entry.options = {CONF_CHECK_FIRMWARE: False}
-    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
-    added: list = []
-
-    await async_setup_entry(hass, entry, added.extend)
-
-    assert added == []
-
-
-async def test_the_option_being_off_disables_rather_than_deletes(hass: HomeAssistant):
-    """Off must not destroy what the user put on the entity.
-
-    Not providing an entity leaves HA rendering its row as unavailable, which
-    reads as broken. Deleting the row instead -- which 0.10.0 briefly did --
-    throws away the rename, area, icon and hidden flag, orphans the recorder
-    history and silently breaks any dashboard card or automation pointing at the
-    entity_id. Disabling keeps all of it and says what is true.
-    """
-    registry = er.async_get(hass)
-    existing = registry.async_get_or_create(
-        "update", "fermob", firmware_unique_id(ADDRESS)
-    )
-    entry = _entry()
-    entry.entry_id = "abc"
-    entry.options = {CONF_CHECK_FIRMWARE: False}
-    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
-
-    await async_setup_entry(hass, entry, [].extend)
-
-    row = registry.async_get(existing.entity_id)
-    assert row is not None
-    assert row.disabled_by is er.RegistryEntryDisabler.INTEGRATION
-
-
-async def test_switching_the_option_back_on_re_enables_the_entity(hass: HomeAssistant):
-    """Our own disable must reverse cleanly, or off is a one-way door."""
-    registry = er.async_get(hass)
-    existing = registry.async_get_or_create(
-        "update",
-        "fermob",
-        firmware_unique_id(ADDRESS),
-        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
-    )
-    entry = _entry()
-    entry.entry_id = "abc"
-    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
-    added: list = []
-
-    await async_setup_entry(hass, entry, added.extend)
-
-    assert registry.async_get(existing.entity_id).disabled_by is None
-    assert len(added) == 1
-
-
-async def test_a_user_disabled_entity_is_left_disabled(hass: HomeAssistant):
-    """Only `INTEGRATION` is ours to clear -- a user's choice outranks the option."""
-    registry = er.async_get(hass)
-    existing = registry.async_get_or_create(
-        "update",
-        "fermob",
-        firmware_unique_id(ADDRESS),
-        disabled_by=er.RegistryEntryDisabler.USER,
-    )
-    entry = _entry()
-    entry.entry_id = "abc"
-    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
-
-    await async_setup_entry(hass, entry, [].extend)
-
-    assert (
-        registry.async_get(existing.entity_id).disabled_by
-        is er.RegistryEntryDisabler.USER
-    )
-
-
-async def test_the_option_being_off_is_fine_with_nothing_to_remove(
+async def test_the_option_being_off_still_adds_the_entity_but_never_polls(
     hass: HomeAssistant,
 ):
-    """The normal case: it was never on, so there is no registry entry."""
+    """The option governs the request, not whether the entity exists.
+
+    Three alternatives were tried and each broke something a user owns: not
+    adding it strands a stale `unavailable` state until the next restart,
+    deleting the registry row destroys renames, areas and history, and disabling
+    it makes core schedule a second config-entry reload that drops the BLE link.
+    So the entity stays, unpolled, reading *unknown* -- which is exactly true.
+    """
     entry = _entry()
     entry.entry_id = "abc"
     entry.options = {CONF_CHECK_FIRMWARE: False}
-    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
+    hass.data.setdefault("fermob", {})["abc"] = _conn(hass, sw_version="3.0.27.0")
+    added: list = []
 
-    await async_setup_entry(hass, entry, [].extend)  # must not raise
+    await async_setup_entry(hass, entry, added.extend)
+
+    assert len(added) == 1
+    entity = added[0]
+    assert entity.should_poll is False
+    assert entity.installed_version == "3.0.27.0"
+    assert entity.latest_version is None
+
+
+async def test_the_option_being_off_schedules_no_startup_check(hass: HomeAssistant):
+    """`should_poll` alone is not enough -- the one-shot must be skipped too."""
+    entity = _entity(hass, _conn(hass, model="MOOON - H134"), _entry(), checking=False)
+    hass.async_create_background_task = MagicMock()
+
+    await entity.async_added_to_hass()
+
+    hass.async_create_background_task.assert_not_called()
 
 
 async def test_the_option_defaults_to_on(hass: HomeAssistant):
@@ -314,3 +275,4 @@ async def test_the_option_defaults_to_on(hass: HomeAssistant):
 
     assert len(added) == 1
     assert isinstance(added[0], FermobFirmwareUpdate)
+    assert added[0].should_poll is True

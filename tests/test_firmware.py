@@ -122,6 +122,20 @@ async def test_an_unknown_model_is_an_answer_not_a_failure():
     assert len(session.urls) == 1
 
 
+async def test_the_unknown_model_answer_is_definitive_at_http_400():
+    """The real server answers an unknown model with HTTP 400, not 200.
+
+    Verified live on 2026-08-07: `/release/Fermob/HOOPIK/latest` -> HTTP 400 with
+    the `code: 400` envelope. So the status must not be judged before the
+    envelope is read, or every model the server does not carry would query both
+    hosts on every poll and log a host failure for a real answer.
+    """
+    session = _Session((400, UNKNOWN_MODEL), H134_RELEASE)
+
+    assert await async_get_latest_release(session, "Fermob", "HOOPIK") is None
+    assert len(session.urls) == 1
+
+
 async def test_a_json_error_envelope_still_tries_the_fallback_host():
     """Only "no such model" is final; a broken-but-reachable host is not.
 

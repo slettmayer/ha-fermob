@@ -38,7 +38,7 @@ One device per lamp, with these entities:
 | `light.<lamp>` | Light | — | On/off and brightness. Colour temperature too on tunable-white lamps |
 | `sensor.<lamp>_battery` | Sensor (`battery`, %) | Diagnostic | State of charge as the lamp reports it |
 | `binary_sensor.<lamp>_charging` | Binary sensor (`battery_charging`) | Diagnostic | On while the lamp is on its charger |
-| `update.<lamp>_firmware` | Update (`firmware`) | — | The lamp's firmware version, and whether the manufacturer has published a newer one. **No install button** — see [Firmware updates](#firmware-updates). Disabled if you switch the check off |
+| `update.<lamp>_firmware` | Update (`firmware`) | — | The lamp's firmware version, and whether the manufacturer has published a newer one. **No install button** — see [Firmware updates](#firmware-updates) |
 
 The two battery entities read **unavailable** until the lamp has reported a level
 at least once, so a lamp that has never answered is never mistaken for a flat
@@ -229,10 +229,11 @@ small HTTPS request per lamp, carrying nothing but the manufacturer and model
 name the lamp reported. No image is ever downloaded, because nothing here can
 install one; see [Firmware updates](#firmware-updates).
 
-Switching it off disables the `update` entity along with the request — disabled
-rather than deleted, so your rename, area and history survive being switched back
-on. Your lamp's firmware version still shows on the device page either way: that
-comes from the lamp itself.
+Switching it off stops the request entirely. The `update` entity stays — so
+nothing you renamed, put in an area or built a dashboard card on breaks — and
+simply reports your installed version with the available one **unknown**. If you
+would rather not see it at all, disable the entity itself in **Settings →
+Devices & Services → Entities**; Home Assistant then never creates it.
 
 Until a check succeeds the entity reads **unknown** rather than "up to date". It
 will stay that way for a lamp the manufacturer's server does not carry (it has no

@@ -24,8 +24,9 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.fermob import module_info_updates
+from custom_components.fermob import address_slug, module_info_updates
 from custom_components.fermob.light import (
+    _MODULE_INFO_MAX_READS,
     DEFAULT_KELVIN,
     FermobBLEConnection,
     FermobLight,
@@ -218,6 +219,18 @@ async def test_store_module_info_announces_even_when_nothing_changed(
     assert seen == [{"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}]
 
 
+def test_address_slug_is_the_one_definition_and_must_not_change():
+    """Five things are keyed on this and none can be renamed after the fact.
+
+    The pairing key store under `.storage` and the unique_id of every entity. A
+    change here orphans a user's keys -- recoverable only by a ten-second factory
+    reset -- or their entity customisations, so the exact legacy format is pinned
+    rather than left to the implementation.
+    """
+    assert address_slug("D6:86:76:E8:7E:75") == "fermob_d6_86_76_e8_7e_75"
+    assert address_slug("d6:86:76:e8:7e:75") == "fermob_d6_86_76_e8_7e_75"
+
+
 async def test_module_info_updates_only_reports_what_the_entry_lacks():
     """The diff that stands between "reported every connect" and "reload every connect"."""
     stored = {"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}
@@ -308,6 +321,83 @@ async def test_fetch_module_info_once_reads_and_persists(hass: HomeAssistant):
     assert conn.module_type == MODULE_TYPE_TW
     assert conn.model == "MOOON - H134"
     conn._store.async_save.assert_awaited_once()
+
+
+async def test_silence_never_latches_while_the_short_address_is_unknown(
+    hass: HomeAssistant,
+):
+    """The attempt budget must not be allowed to strand the address at 0x0000.
+
+    With no address every addressed frame -- `send_led` and the battery request
+    that is our only liveness signal -- goes to a lamp that is not there, is
+    written without response, and is silently ignored while HA reports success.
+    Latching there makes that permanent until a reload, so the read stays armed
+    however many times the lamp says nothing.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._send = AsyncMock(return_value=(b"", 0))
+
+    for _ in range(_MODULE_INFO_MAX_READS + 2):
+        await conn._fetch_module_info_once()
+
+    assert conn._module_info_read is False
+    assert conn._send.await_count == _MODULE_INFO_MAX_READS + 2
+
+    # And it recovers the moment the lamp does answer.
+    conn._send = AsyncMock(return_value=(bytes([3, 0xB1, 0x75, 0x7E]), 0))
+    await conn._fetch_module_info_once()
+    assert (conn._addr_b2, conn._addr_b3) == (0x75, 0x7E)
+
+
+async def test_silence_does_latch_once_the_address_is_known(hass: HomeAssistant):
+    """The other half: a read that is only after the firmware version is bounded.
+
+    An install with an address and a family, missing only `0xb5`, must not pay a
+    3 s ACK deadline on every connect forever -- it sits on the command path,
+    inside `ensure_connected`, holding the lock.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock(return_value=(b"", 0))
+
+    for _ in range(_MODULE_INFO_MAX_READS + 3):
+        await conn._fetch_module_info_once()
+
+    assert conn._module_info_read is True
+    assert conn._send.await_count == _MODULE_INFO_MAX_READS
+
+
+async def test_what_we_already_know_is_announced_without_a_fresh_read(
+    hass: HomeAssistant,
+):
+    """The self-heal has to survive the guard, or it is unreachable.
+
+    The key store is written at once and the config entry through a delayed
+    store, so a restart in that window leaves the entry missing a version the key
+    store has -- and every guard here is then satisfied by exactly the values the
+    key store restored. Announcing before deciding is what repairs it.
+    """
+    conn = _conn(hass)
+    conn.module_type = MODULE_TYPE_TW
+    conn.model = "MOOON - H134"
+    conn.sw_version = "3.0.27.0"
+    conn._addr_b2, conn._addr_b3 = 0x75, 0x7E
+    conn._send = AsyncMock()
+    seen: list[dict] = []
+    conn.on_module_info = seen.append
+
+    await conn._fetch_module_info_once()
+
+    conn._send.assert_not_awaited()
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "sw_version": "3.0.27.0",
+        }
+    ]
 
 
 async def test_fetch_module_info_once_swallows_transport_errors(hass: HomeAssistant):

@@ -34,7 +34,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from . import DOMAIN
+from . import DOMAIN, address_slug
 from .protocol import (
     CHAR_UUID,
     CMD_CRYPT_AUTHKEY_GEN,
@@ -269,10 +269,13 @@ class FermobBLEConnection:
         self.manufacturer: str | None = None
         self.sw_version: str | None = None
         self.hw_version: str | None = None
-        # Called with a mapping of the entry-data fields that just changed. A
-        # mapping rather than one argument per field so that reporting one more
-        # thing about the lamp does not churn the signature and both call sites.
-        self.on_module_info: Any = None  # (updates: dict[str, Any]) -> None
+        # Called with the lamp's **full reported identity**, not a delta, and
+        # unconditionally on every connect -- the subscriber owns the diff, since
+        # only it can see what the config entry is missing. See
+        # `_store_module_info` and `__init__.module_info_updates`. A mapping rather
+        # than one argument per field so that reporting one more thing about the
+        # lamp does not churn the signature and every call site.
+        self.on_module_info: Any = None  # (identity: dict[str, Any]) -> None
 
         # Runtime state
         self._connected = False  # BLE link is up
@@ -1313,6 +1316,25 @@ class FermobBLEConnection:
         if self._module_info_attempts >= _MODULE_INFO_MAX_READS:
             self._module_info_read = True
 
+    def _latch_unanswered(self) -> None:
+        """Spend the budget on a *failed* read -- but never while the address is 0.
+
+        **Giving up on silence is only safe once we have a short address.** With
+        the address still `0x0000`, every addressed frame -- `send_led` and the
+        battery request that is our only liveness signal -- goes to a lamp that is
+        not there, is written without response, and is silently ignored while Home
+        Assistant reports success. Latching there would make that permanent until
+        a reload, so a few seconds per connect is the cheaper failure by a wide
+        margin and the read stays armed.
+
+        Bounding the *other* case is what this budget is for: an install that
+        already has an address and is only missing the firmware version must not
+        pay a 3 s ACK deadline on every connect forever.
+        """
+        if not (self._addr_b2 or self._addr_b3):
+            return
+        self._latch_after_max_attempts()
+
     async def _fetch_module_info_once(self) -> None:
         """Read MODULE_INFO_GET on reconnect, but only until it has answered.
 
@@ -1329,6 +1351,16 @@ class FermobBLEConnection:
         # the address being non-zero alone would never be satisfied by a lamp
         # whose short address genuinely is 0x0000: it would re-read, and re-write
         # the key store, on every single reconnect.
+        # **Announce first, then decide whether to ask.** The subscriber diffs
+        # against the config entry, and the entry can be *behind* what we already
+        # know: the key store is written immediately while the entry goes through a
+        # delayed store, so a restart in that window leaves the entry missing a
+        # version the key store has. Announcing only after a fresh read would make
+        # that unrepairable, because every guard below is satisfied by exactly the
+        # values the key store restored. Costs one dict and one diff per connect,
+        # and writes nothing when the entry already agrees.
+        if self.on_module_info:
+            self.on_module_info(self.reported_identity())
         if self._module_info_read:
             return
         # The firmware version joins the "already know it" test, so an install
@@ -1355,11 +1387,11 @@ class FermobBLEConnection:
         except Exception as err:
             # Broad on purpose: any transport failure here is non-fatal.
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET failed: %s", self._address, err)
-            self._latch_after_max_attempts()
+            self._latch_unanswered()
             return
         if not pl:
             _LOGGER.debug("Fermob %s: MODULE_INFO_GET not answered", self._address)
-            self._latch_after_max_attempts()
+            self._latch_unanswered()
             return
         info = parse_module_info(pl)
         # The short address too, not just the family. Only the handshake's step 7
@@ -1860,7 +1892,7 @@ class FermobLight(LightEntity):
 
         addr = entry.data[CONF_ADDRESS]
         self._attr_name = entry.data.get("name", addr)
-        self._attr_unique_id = f"fermob_{addr.replace(':', '_').lower()}"
+        self._attr_unique_id = address_slug(addr)
 
     @property
     def device_info(self) -> DeviceInfo:

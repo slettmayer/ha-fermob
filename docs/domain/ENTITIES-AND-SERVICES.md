@@ -42,8 +42,8 @@ figure once the lamp has been off the charger for a while.
 
 ## The firmware entity
 
-One `update` entity per lamp — `update.<lamp>_firmware` — added since 0.10.0 unless the *Check for firmware
-updates* option is off.
+One `update` entity per lamp — `update.<lamp>_firmware` — since 0.10.0. It exists whatever the *Check for
+firmware updates* option says; the option decides only whether it may ask the network.
 
 - **`installed_version`** is local: the `0xb5` TLV of the `MODULE_INFO_GET` reply, rendered by
   `protocol.format_sw_version`. It is read from the connection first and the config entry second, so a fresh
@@ -66,12 +66,21 @@ updates* option is off.
   device's main feature, which names it after the lamp and registers it as `update.<lamp>`. Left unset,
   `UpdateEntity` names it from its device class — which is where `_firmware` and "Firmware" come from.
 
-**Switching the option off disables the entity rather than deleting it.** Neither of the two obvious
-alternatives is right: simply not providing it leaves Home Assistant rendering the row as *unavailable*, which
-reads as broken, and deleting the row throws away the user's rename, area, icon and hidden flag, orphans the
-recorder history and silently breaks any dashboard card or automation that referenced the entity_id. Disabling
-keeps all of that and reverses when the option goes back on — except a disable the *user* made, which is never
-ours to clear.
+### Switching the check off leaves the entity in place, unpolled
+
+**The option governs the request, not the entity's existence** — `should_poll` goes False and no one-shot is
+scheduled, so nothing leaves the network, and `latest_version` stays None so the entity reads *unknown*: exactly
+true, since we were told not to find out. Three tidier-looking alternatives were each tried and reverted, and
+the reasons are worth keeping because they are not obvious:
+
+| Alternative | Why not |
+|---|---|
+| Don't add the entity | HA keeps the registry row and renders it *unavailable* — and the `unavailable` state written during unload is never cleaned up (`cleanup_restored_states_filter` fires on removal and rename only), so a dashboard or template reads `unavailable` until the next restart. That is "looks broken", which is what this was meant to avoid |
+| Delete the registry row | Throws away the user's rename, area, icon and hidden flag, orphans the recorder history, and silently breaks anything referencing the entity_id |
+| Disable the registry row | Clearing `disabled_by` again makes core's `EntityRegistryDisabledHandler` schedule a **second** config-entry reload 30 s later, which tears down the BLE link for an unrelated options change |
+
+A user who wants the entity out of sight disables it in the UI, which HA already honours by never adding it.
+That keeps one writer per fact: the option owns the traffic, the registry owns the visibility.
 
 The firmware and hardware versions also appear on the **device page**, from the same TLVs — those are
 unconditional, since they need no network.

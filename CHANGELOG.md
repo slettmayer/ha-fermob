@@ -31,10 +31,10 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
 - **New option: *Check for firmware updates*, on by default.** This is the only
   thing the integration sends outside your network — one small HTTPS request per
   lamp per day (plus one when the entity is first added), to the manufacturer's
-  release server, carrying nothing but the model name. Switching it off disables
-  the entity and stops the request — disabled rather than deleted, so a rename,
-  an area and the entity's history survive being switched back on. The firmware
-  version stays on the device page either way.
+  release server, carrying nothing but the model name. Switching it off stops the
+  request entirely; the entity stays and reports the installed version with the
+  available one unknown, so nothing you renamed or built a dashboard on breaks.
+  Hide it by disabling the entity itself if you would rather not see it.
 
 - **The reference firmware is now 3.0.27.0**, the newest build Fermob publish for
   the MOOON! H134. That is what the lamp behind these releases runs and what

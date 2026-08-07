@@ -38,8 +38,11 @@ corrected to say so. This is a defensive change, not a bug fix. Do not cite it a
 broke in production.
 
 `on_module_info` is still a single slot, and that is correct — the config entry is its only writer, and it is
-set before the platforms are forwarded. It takes a **mapping of the fields that changed**, not one argument per
-field, so that reporting one more thing about the lamp does not churn the signature and both call sites.
+set before the platforms are forwarded. It takes a **mapping of the lamp's full reported identity**, not a
+delta and not one argument per field, and it fires on every connect. The subscriber owns the diff
+(`__init__.module_info_updates`) because it is the only side that can see what the *config entry* is missing:
+the key store is written immediately and the entry through a delayed store, so a delta computed against the
+connection's own memory could never repair a field the entry lost in that window.
 
 ### Why `protocol.py` has no HA imports
 

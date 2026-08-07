@@ -12,7 +12,7 @@ from homeassistant.const import CONF_ADDRESS, PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import DOMAIN
+from . import DOMAIN, address_slug
 from .entity import FermobBatteryEntityBase
 
 
@@ -36,10 +36,7 @@ class FermobBatterySensor(FermobBatteryEntityBase, SensorEntity):
 
     def __init__(self, entry, conn) -> None:
         super().__init__(entry, conn)
-        address = entry.data[CONF_ADDRESS]
-        self._attr_unique_id = (
-            f"fermob_{address.replace(':', '_').lower()}_battery_level"
-        )
+        self._attr_unique_id = f"{address_slug(entry.data[CONF_ADDRESS])}_battery_level"
 
     @property
     def native_value(self) -> int | None:

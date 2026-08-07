@@ -14,6 +14,7 @@ is why this platform is the one thing a user can switch off.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -25,12 +26,11 @@ from homeassistant.components.update import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import DOMAIN
+from . import DOMAIN, address_slug
 from .config_flow import CONF_CHECK_FIRMWARE, DEFAULT_CHECK_FIRMWARE
 from .firmware import async_get_latest_release
 from .light import FermobBLEConnection
@@ -55,8 +55,8 @@ RELEASE_SUMMARY = (
 
 
 def firmware_unique_id(address: str) -> str:
-    """The entity's registry key. Shared, so removal cannot drift from setup."""
-    return f"fermob_{address.replace(':', '_').lower()}_firmware"
+    """This entity's registry key, from the one shared address slug."""
+    return f"{address_slug(address)}_firmware"
 
 
 async def async_setup_entry(
@@ -64,39 +64,29 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Add the firmware entity, or disable it if the user switched the check off.
+    """Add the firmware entity, checking the server only if the option is on.
 
-    **Off disables the registry entry rather than deleting it, and neither is the
-    obvious "just don't add it".** Simply not providing an entity leaves Home
-    Assistant rendering its registry row as unavailable, which reads as broken
-    rather than switched off. Deleting the row instead -- which 0.10.0 briefly did
-    -- throws away everything the *user* put there: a rename, an area, an icon,
-    the hidden flag, and the recorder history keyed to that entity_id, silently
-    breaking any dashboard card or automation that referenced it. Disabling says
-    exactly what is true, keeps all of it, and reverses cleanly.
+    **The option governs the request, not the entity's existence, and three
+    attempts at the alternative are why.** Not providing the entity leaves Home
+    Assistant rendering its registry row as *unavailable* -- and, worse, leaves a
+    stale `unavailable` state in the machine that only a restart clears, because
+    the cleanup filter fires on removal and rename, not on anything else.
+    Deleting the row throws away the user's rename, area, icon and hidden flag,
+    orphans its history, and silently breaks references to the entity_id. And
+    disabling the row makes core's own `EntityRegistryDisabledHandler` schedule a
+    *second* config-entry reload 30 s later when the flag is cleared -- which
+    tears down the BLE link for an unrelated options change.
 
-    A user-disabled entity is left alone: only `INTEGRATION` is ours to clear.
+    So the entity always exists, and with the check off it simply never asks:
+    `should_poll` is False and nothing is scheduled, so no request leaves the
+    network. `latest_version` then stays None and the entity reads *unknown*,
+    which is exactly true -- we do not know, and were told not to find out. A
+    user who wants it out of sight can disable it in the UI, which Home Assistant
+    already honours by never adding it, and which is the one writer of that fact.
     """
-    registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id(
-        "update", DOMAIN, firmware_unique_id(entry.data[CONF_ADDRESS])
-    )
-    if not entry.options.get(CONF_CHECK_FIRMWARE, DEFAULT_CHECK_FIRMWARE):
-        if entity_id and registry.entities[entity_id].disabled_by is None:
-            _LOGGER.debug("Fermob: firmware check off, disabling %s", entity_id)
-            registry.async_update_entity(
-                entity_id, disabled_by=er.RegistryEntryDisabler.INTEGRATION
-            )
-        return
-
-    # Back on after being off: undo our own disable, but never the user's.
-    if entity_id and (
-        registry.entities[entity_id].disabled_by is er.RegistryEntryDisabler.INTEGRATION
-    ):
-        registry.async_update_entity(entity_id, disabled_by=None)
-
     conn = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([FermobFirmwareUpdate(hass, entry, conn)])
+    checking = entry.options.get(CONF_CHECK_FIRMWARE, DEFAULT_CHECK_FIRMWARE)
+    async_add_entities([FermobFirmwareUpdate(hass, entry, conn, checking)])
 
 
 class FermobFirmwareUpdate(UpdateEntity):
@@ -113,16 +103,25 @@ class FermobFirmwareUpdate(UpdateEntity):
     # it after the lamp and gave it `update.<lamp>`, not the `update.<lamp>_firmware`
     # named "Firmware" the docs promise. Left unset, `UpdateEntity` falls through to
     # its device-class name. `test_it_is_named_after_its_device_class` pins that.
-    _attr_should_poll = True
     _attr_release_summary = RELEASE_SUMMARY
 
     def __init__(
-        self, hass: HomeAssistant, entry: ConfigEntry, conn: FermobBLEConnection
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        conn: FermobBLEConnection,
+        checking: bool,
     ) -> None:
         self.hass = hass
         self._entry = entry
         self._conn = conn
+        self._checking = checking
         self._latest: str | None = None
+        self._first_check: asyncio.Task | None = None
+        # Per instance, not per class: with the check off the entity still exists
+        # and still reports the installed version, but nothing may reach the
+        # network on its behalf -- so it must not be polled at all.
+        self._attr_should_poll = checking
         address = entry.data[CONF_ADDRESS]
         self._attr_unique_id = firmware_unique_id(address)
         self._attr_device_info = DeviceInfo(
@@ -177,11 +176,40 @@ class FermobFirmwareUpdate(UpdateEntity):
         keeping `_latest` in memory: a reload drops it, and the refresh puts it
         back within a second instead of a day.
 
-        Scheduled rather than awaited so platform setup is not held up by an
-        HTTP request to a third party.
+        **A background task, not `async_schedule_update_ha_state` and not
+        `update_before_add`.** Both of those are awaited before Home Assistant
+        finishes starting -- the first because `async_create_task` registers in
+        `hass._tasks`, which bootstrap's `async_block_till_done()` drains -- so a
+        box that cannot reach the vendor server would have its startup held up by
+        the whole request budget, and be told a firmware check was "taking over
+        10 seconds". A background task is excluded from that drain and cancelled
+        at shutdown, which is exactly the lifetime this deserves: nothing waits
+        on the answer.
         """
         await super().async_added_to_hass()
-        self.async_schedule_update_ha_state(force_refresh=True)
+        if not self._checking:
+            return
+        self._first_check = self.hass.async_create_background_task(
+            self._async_first_check(),
+            name=f"fermob firmware check {self._entry.data[CONF_ADDRESS]}",
+        )
+        self.async_on_remove(self._async_cancel_first_check)
+
+    def _async_cancel_first_check(self) -> None:
+        """Drop the startup check if the entity goes away mid-request."""
+        if self._first_check is not None and not self._first_check.done():
+            self._first_check.cancel()
+
+    async def _async_first_check(self) -> None:
+        """The one-shot startup check, written to never take the entity down."""
+        try:
+            await self.async_update()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - async_update swallows its own
+            _LOGGER.debug("Fermob: startup firmware check failed", exc_info=True)
+            return
+        self.async_write_ha_state()
 
     async def async_update(self) -> None:
         """Ask the vendor server what the newest build for this model is.

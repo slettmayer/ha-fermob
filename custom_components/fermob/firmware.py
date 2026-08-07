@@ -143,15 +143,22 @@ async def async_get_latest_release(
             _LOGGER.debug("Fermob: firmware check against %s failed: %s", host, err)
             continue
 
-        if status != 200:
-            _LOGGER.debug("Fermob: %s answered HTTP %s for %s", host, status, model)
-            continue
-
+        # **The envelope is read before the status is judged, and that order
+        # matters.** The server answers an unknown model with HTTP **400** --
+        # verified live, 2026-08-07 -- carrying the `code: 400` envelope that is a
+        # real answer about a real lamp. Gating on the status first would discard
+        # it, ask the fallback host the same question, and log a host failure for
+        # what is simply "no such model".
         release, definitive = _parse_release(body)
         if release is not None:
             return release
         if definitive:
             _LOGGER.debug("Fermob: %s has no release for %s", host, model)
             return None
-        _LOGGER.debug("Fermob: %s returned an unusable envelope for %s", host, model)
+        if status != 200:
+            _LOGGER.debug("Fermob: %s answered HTTP %s for %s", host, status, model)
+        else:
+            _LOGGER.debug(
+                "Fermob: %s returned an unusable envelope for %s", host, model
+            )
     return None
