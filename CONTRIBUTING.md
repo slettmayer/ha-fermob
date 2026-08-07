@@ -67,7 +67,7 @@ with the Fermob app.
 ### Testing
 
 - Install test dependencies: `pip install -r requirements_test.txt`
-- Run: `python -m pytest tests/ -q` — 1103 tests, about 12 s, most of it importing Home Assistant
+- Run: `python -m pytest tests/ -q` — 1119 tests, about 12 s, most of it importing Home Assistant
 - **`tests/test_protocol.py` needs neither Home Assistant nor a `hass` fixture**, which is the point of keeping
   `protocol.py` free of `homeassistant` imports. It is the bulk of the suite
 - **`tests/test_light.py` needs a real `hass` fixture**, which is why `requirements_test.txt` installs

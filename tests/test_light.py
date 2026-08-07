@@ -24,6 +24,7 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.fermob import module_info_updates
 from custom_components.fermob.light import (
     DEFAULT_KELVIN,
     FermobBLEConnection,
@@ -172,8 +173,14 @@ async def test_store_module_info_records_and_announces(hass: HomeAssistant):
     ]
 
 
-async def test_store_module_info_announces_only_what_changed(hass: HomeAssistant):
-    """The entry update is a reload, so it must carry no field that is unchanged."""
+async def test_store_module_info_announces_the_full_identity(hass: HomeAssistant):
+    """Everything known, not the delta -- that is what lets the entry self-heal.
+
+    The subscriber diffs against the config entry, which is written through a
+    *delayed* store while the key store is written at once. A delta computed
+    here could never mention a field the entry lost in that window, because the
+    next connect loads it from the key store and sees no change.
+    """
     conn = _conn(hass)
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
@@ -183,11 +190,24 @@ async def test_store_module_info_announces_only_what_changed(hass: HomeAssistant
         ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134", sw_version="2.3.21.0")
     )
 
-    assert seen == [{"sw_version": "2.3.21.0"}]
+    assert seen == [
+        {
+            "module_type": MODULE_TYPE_TW,
+            "model": "MOOON - H134",
+            "sw_version": "2.3.21.0",
+        }
+    ]
 
 
-async def test_store_module_info_is_quiet_when_nothing_changed(hass: HomeAssistant):
-    """Repeat reports must not churn the config entry on every connect."""
+async def test_store_module_info_announces_even_when_nothing_changed(
+    hass: HomeAssistant,
+):
+    """Churn protection belongs to the subscriber, which alone sees the entry.
+
+    Announcing unconditionally is what makes a version missing from
+    `entry.data` recoverable; `module_info_updates` is what keeps it from
+    costing a config-entry write, and a reload, on every connect.
+    """
     conn = _conn(hass)
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
@@ -195,7 +215,20 @@ async def test_store_module_info_is_quiet_when_nothing_changed(hass: HomeAssista
     conn.on_module_info = seen.append
     conn._store_module_info(ModuleInfo(0, 0, 2, MODULE_TYPE_TW, "MOOON - H134"))
 
-    assert seen == []
+    assert seen == [{"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}]
+
+
+async def test_module_info_updates_only_reports_what_the_entry_lacks():
+    """The diff that stands between "reported every connect" and "reload every connect"."""
+    stored = {"module_type": MODULE_TYPE_TW, "model": "MOOON - H134"}
+    reported = {**stored, "sw_version": "3.0.27.0", "hw_version": None}
+
+    assert module_info_updates(stored, reported) == {"sw_version": "3.0.27.0"}
+    assert module_info_updates(reported, reported) == {}
+    # The self-healing case: the key store kept a version the entry never got.
+    assert module_info_updates({}, {"sw_version": "3.0.27.0"}) == {
+        "sw_version": "3.0.27.0"
+    }
 
 
 async def test_store_module_info_keeps_known_values_when_absent(hass: HomeAssistant):

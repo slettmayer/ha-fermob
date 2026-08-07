@@ -13,7 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.components.update import UpdateEntityFeature
+from homeassistant.components.update import UpdateDeviceClass, UpdateEntityFeature
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -60,6 +60,33 @@ async def _update(entity, release: FirmwareRelease | None) -> None:
         AsyncMock(return_value=release),
     ):
         await entity.async_update()
+
+
+def test_it_is_named_after_its_device_class_not_the_device(hass: HomeAssistant):
+    """`_attr_name` must stay *absent*, not be set to None.
+
+    HA returns `self._attr_name` whenever the attribute merely exists, and None
+    declares the entity to be the device's main feature: it then takes the lamp's
+    own name and registers as `update.<lamp>`, indistinguishable from the light in
+    pickers -- while README, ENTITIES-AND-SERVICES and the changelog all promise
+    `update.<lamp>_firmware`. Left unset, UpdateEntity names it from its device
+    class instead.
+    """
+    entity = _entity(hass, _conn(hass), _entry())
+
+    # The attribute must be absent on the *instance*: HA's `_attr_name` is a
+    # class-level property that raises until something assigns it, which is what
+    # `hasattr` is really testing inside `_name_internal`.
+    assert not hasattr(entity, "_attr_name")
+    # And the mechanism itself: "Firmware" here, None (i.e. "use the device
+    # name") if `_attr_name` were set. Verified against HA 2026.8 both ways.
+    assert (
+        entity._name_internal(device_class_name="Firmware", platform_translations={})
+        == "Firmware"
+    )
+    # What makes that fallback produce a name at all rather than nothing.
+    assert entity.device_class is UpdateDeviceClass.FIRMWARE
+    assert entity._default_to_device_class_name() is True
 
 
 def test_it_never_offers_to_install(hass: HomeAssistant):
@@ -120,6 +147,39 @@ async def test_a_fresh_reading_wins_over_the_persisted_one(hass: HomeAssistant):
     assert entity.installed_version == "3.0.27.0"
 
 
+async def test_an_unanswered_check_reads_as_unknown_not_up_to_date(hass: HomeAssistant):
+    """The important one: never claim currency that was never checked.
+
+    `async_get_latest_release` returns None both for "the server does not carry
+    this model" -- true of every Hoopik slug, permanently -- and for "no host
+    answered". Falling back to the installed version there makes HA render
+    "Up-to-date", a positive claim about firmware nobody ever asked about.
+    """
+    conn = _conn(hass, model="HOOPIK - GL1200", sw_version="2.3.21.0")
+    entity = _entity(hass, conn, _entry())
+
+    await _update(entity, None)
+
+    assert entity.installed_version == "2.3.21.0"
+    assert entity.latest_version is None
+    assert entity.state is None
+
+
+async def test_the_first_check_runs_at_startup_not_a_day_later(hass: HomeAssistant):
+    """HA starts the poll timer and does no initial update of its own.
+
+    With SCAN_INTERVAL at one day, without this the entity sits at unknown for
+    24 h after every restart -- and on a box that reloads more often than that,
+    forever. It also repairs the reload that drops `_latest`.
+    """
+    entity = _entity(hass, _conn(hass), _entry())
+    entity.async_schedule_update_ha_state = MagicMock()
+
+    await entity.async_added_to_hass()
+
+    entity.async_schedule_update_ha_state.assert_called_once_with(force_refresh=True)
+
+
 async def test_no_check_before_the_lamp_has_reported_a_model(hass: HomeAssistant):
     """The server path is keyed on the model, and guessing it would 400."""
     entity = _entity(hass, _conn(hass), _entry())
@@ -166,12 +226,14 @@ async def test_the_option_being_off_adds_no_entity(hass: HomeAssistant):
     assert added == []
 
 
-async def test_the_option_being_off_deletes_the_registry_entry(hass: HomeAssistant):
-    """Not adding an entity does not remove it -- HA shows it as unavailable.
+async def test_the_option_being_off_disables_rather_than_deletes(hass: HomeAssistant):
+    """Off must not destroy what the user put on the entity.
 
-    Without this, switching the option off would leave a permanently broken
-    looking row behind that only a manual delete clears, which is not what the
-    option says it does.
+    Not providing an entity leaves HA rendering its row as unavailable, which
+    reads as broken. Deleting the row instead -- which 0.10.0 briefly did --
+    throws away the rename, area, icon and hidden flag, orphans the recorder
+    history and silently breaks any dashboard card or automation pointing at the
+    entity_id. Disabling keeps all of it and says what is true.
     """
     registry = er.async_get(hass)
     existing = registry.async_get_or_create(
@@ -184,7 +246,50 @@ async def test_the_option_being_off_deletes_the_registry_entry(hass: HomeAssista
 
     await async_setup_entry(hass, entry, [].extend)
 
-    assert registry.async_get(existing.entity_id) is None
+    row = registry.async_get(existing.entity_id)
+    assert row is not None
+    assert row.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+
+
+async def test_switching_the_option_back_on_re_enables_the_entity(hass: HomeAssistant):
+    """Our own disable must reverse cleanly, or off is a one-way door."""
+    registry = er.async_get(hass)
+    existing = registry.async_get_or_create(
+        "update",
+        "fermob",
+        firmware_unique_id(ADDRESS),
+        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+    )
+    entry = _entry()
+    entry.entry_id = "abc"
+    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
+    added: list = []
+
+    await async_setup_entry(hass, entry, added.extend)
+
+    assert registry.async_get(existing.entity_id).disabled_by is None
+    assert len(added) == 1
+
+
+async def test_a_user_disabled_entity_is_left_disabled(hass: HomeAssistant):
+    """Only `INTEGRATION` is ours to clear -- a user's choice outranks the option."""
+    registry = er.async_get(hass)
+    existing = registry.async_get_or_create(
+        "update",
+        "fermob",
+        firmware_unique_id(ADDRESS),
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    entry = _entry()
+    entry.entry_id = "abc"
+    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
+
+    await async_setup_entry(hass, entry, [].extend)
+
+    assert (
+        registry.async_get(existing.entity_id).disabled_by
+        is er.RegistryEntryDisabler.USER
+    )
 
 
 async def test_the_option_being_off_is_fine_with_nothing_to_remove(

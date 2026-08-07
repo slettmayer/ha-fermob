@@ -45,8 +45,9 @@ UNKNOWN_MODEL = {
 
 
 class _Response:
-    def __init__(self, body: Any) -> None:
+    def __init__(self, body: Any, status: int = 200) -> None:
         self._body = body
+        self.status = status
 
     async def json(self, content_type: Any = None) -> Any:
         if isinstance(self._body, Exception):
@@ -61,7 +62,11 @@ class _Response:
 
 
 class _Session:
-    """Enough aiohttp to answer one GET per configured host, in order."""
+    """Enough aiohttp to answer one GET per configured host, in order.
+
+    A body may be an exception (raised), or a `(status, body)` pair when the
+    HTTP status matters as well as the payload.
+    """
 
     def __init__(self, *bodies: Any) -> None:
         self._bodies = list(bodies)
@@ -72,6 +77,9 @@ class _Session:
         body = self._bodies.pop(0) if self._bodies else None
         if isinstance(body, ClientError):
             raise body
+        if isinstance(body, tuple):
+            status, body = body
+            return _Response(body, status)
         return _Response(body)
 
 
@@ -114,6 +122,31 @@ async def test_an_unknown_model_is_an_answer_not_a_failure():
     assert len(session.urls) == 1
 
 
+async def test_a_json_error_envelope_still_tries_the_fallback_host():
+    """Only "no such model" is final; a broken-but-reachable host is not.
+
+    The first host answering `code: 500` says nothing about the lamp, so
+    stopping there would turn a one-host outage into a permanent silent "no
+    update available".
+    """
+    session = _Session({"code": 500, "data": {"message": "boom"}}, H134_RELEASE)
+
+    release = await async_get_latest_release(session, "Fermob", "MOOON - H134")
+
+    assert release is not None and release.version == "3.0.27.0"
+    assert [url.split("/")[2] for url in session.urls] == list(DFU_HOSTS)
+
+
+async def test_a_non_200_status_tries_the_fallback_host():
+    """The HTTP status is checked, not just the envelope inside it."""
+    session = _Session((503, {"code": 200}), H134_RELEASE)
+
+    release = await async_get_latest_release(session, "Fermob", "MOOON - H134")
+
+    assert release is not None and release.version == "3.0.27.0"
+    assert len(session.urls) == 2
+
+
 async def test_falls_back_to_the_second_host_on_a_transport_failure():
     session = _Session(ClientError("boom"), H134_RELEASE)
 
@@ -150,8 +183,36 @@ async def test_a_body_that_is_not_json_is_a_transport_failure():
         {"code": 200, "data": {"release": {}}},
         {"code": 200, "data": {"release": {"version": ""}}},
         {"code": 200, "data": {"release": {"version": 3}}},
+        # `data` and `release` are third-party JSON: neither may be assumed to
+        # be a dict, and a raised AttributeError here would escape all the way
+        # to async_update and log a traceback per poll.
+        {"code": 200, "data": "maintenance"},
+        {"code": 200, "data": [{"release": {"version": "3.0.27.0"}}]},
+        {"code": 200, "data": {"release": "3.0.27.0"}},
+        {"code": 200, "data": {"release": ["3.0.27.0"]}},
     ],
 )
 async def test_a_release_without_a_usable_version_is_none(body):
-    """Anything we cannot read a version out of must not become one."""
+    """Anything we cannot read a version out of must not become one, or raise."""
     assert await async_get_latest_release(_Session(body), "Fermob", "X") is None
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_segment"),
+    [
+        ("MOOON - H134", "MOOONH134"),
+        # A lamp-supplied string must not be able to leave its path segment.
+        ("../../files/x", "..%2F..%2Ffiles%2Fx"),
+        ("H134?x=1", "H134%3Fx%3D1"),
+        ("H134#frag", "H134%23frag"),
+    ],
+)
+async def test_lamp_supplied_names_cannot_rewrite_the_path(model, expected_segment):
+    """The model comes off the wire, so it is escaped, not trusted."""
+    session = _Session(UNKNOWN_MODEL)
+
+    await async_get_latest_release(session, "Fermob", model)
+
+    assert session.urls == [
+        f"https://{DFU_HOSTS[0]}/api/dfu/v1/release/Fermob/{expected_segment}/latest"
+    ]

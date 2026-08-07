@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -99,6 +100,18 @@ def _key_store(hass: HomeAssistant, address: str) -> Store:
     return Store(hass, _STORAGE_VERSION, f"fermob_{address.replace(':', '_').lower()}")
 
 
+def module_info_updates(
+    stored: Mapping[str, Any], reported: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The reported fields the config entry does not already hold.
+
+    Module level and pure so it can be tested on its own: it is the only thing
+    standing between a lamp that reports its identity on every connect and a
+    config-entry write -- and therefore a reload -- on every connect.
+    """
+    return {k: v for k, v in reported.items() if v is not None and stored.get(k) != v}
+
+
 def resolve_connection_profile(entry: ConfigEntry) -> ConnectionProfile:
     """Map the connection-mode option onto its timings.
 
@@ -137,16 +150,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data is also what makes this self-limiting -- once stored,
         resolve_light_type agrees with the lamp and nothing changes again.
 
-        The connection reports whatever changed; this filters against what the
-        entry already holds, because the reload is what puts the model and both
-        versions on the device page and an update that changes nothing would
-        still cost one.
+        **The connection sends its full identity and the diff happens here, on
+        purpose.** This is the only place that can see what the *entry* is
+        missing: the key store is written immediately and the entry through a
+        delayed store, so a restart in between leaves the two disagreeing, and a
+        delta computed against the connection's own memory would never mention
+        the field again. Diffing here also keeps the write -- and the reload it
+        schedules -- to the connects that actually change something.
         """
-        updates = {
-            k: v
-            for k, v in reported.items()
-            if v is not None and entry.data.get(k) != v
-        }
+        updates = module_info_updates(entry.data, reported)
         if not updates:
             return
         hass.config_entries.async_update_entry(entry, data={**entry.data, **updates})

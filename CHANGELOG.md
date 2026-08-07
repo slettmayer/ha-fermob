@@ -11,11 +11,16 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
   time it connects.
 
 - **A new *Firmware* entity says whether a newer build exists.** It **cannot
-  install one**: these lamps take a signed firmware image that only Fermob can
+  install** one: these lamps take a signed firmware image that only Fermob can
   produce and only their app can transfer, so the entity reports and points you
   at the app. Updating with the app means releasing the lamp from Home Assistant
   first (`fermob.unpair`) — which is why it is easier to update *before* pairing
   a new lamp. See the [README](README.md#firmware-updates).
+
+  It reads **unknown** rather than "up to date" until a check has actually
+  succeeded. For a lamp the manufacturer's server does not carry — it has no
+  Hoopik entry at all — or an HA that cannot reach it, "up to date" would be a
+  claim nobody ever verified.
 
   A lamp that has never been updated may well have one waiting — our own MOOON!
   H134 was on 2.3.21.0 against 3.0.27.0 on Fermob's server. Note the app names
@@ -25,8 +30,10 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
 
 - **New option: *Check for firmware updates*, on by default.** This is the only
   thing the integration sends outside your network — one small HTTPS request per
-  lamp per day, to the manufacturer's release server, carrying nothing but the
-  model name. Switching it off removes the entity and the request; the firmware
+  lamp per day (plus one when the entity is first added), to the manufacturer's
+  release server, carrying nothing but the model name. Switching it off disables
+  the entity and stops the request — disabled rather than deleted, so a rename,
+  an area and the entity's history survive being switched back on. The firmware
   version stays on the device page either way.
 
 - **The reference firmware is now 3.0.27.0**, the newest build Fermob publish for
