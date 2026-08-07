@@ -16,12 +16,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from custom_components.fermob.config_flow import CONF_CHECK_FIRMWARE
 from custom_components.fermob.firmware import FirmwareRelease
 from custom_components.fermob.light import FermobBLEConnection
 from custom_components.fermob.protocol import LIGHT_TYPE_TW
-from custom_components.fermob.update import FermobFirmwareUpdate, async_setup_entry
+from custom_components.fermob.update import (
+    FermobFirmwareUpdate,
+    async_setup_entry,
+    firmware_unique_id,
+)
 
 ADDRESS = "D6:86:76:E8:7E:75"
 
@@ -159,6 +164,39 @@ async def test_the_option_being_off_adds_no_entity(hass: HomeAssistant):
     await async_setup_entry(hass, entry, added.extend)
 
     assert added == []
+
+
+async def test_the_option_being_off_deletes_the_registry_entry(hass: HomeAssistant):
+    """Not adding an entity does not remove it -- HA shows it as unavailable.
+
+    Without this, switching the option off would leave a permanently broken
+    looking row behind that only a manual delete clears, which is not what the
+    option says it does.
+    """
+    registry = er.async_get(hass)
+    existing = registry.async_get_or_create(
+        "update", "fermob", firmware_unique_id(ADDRESS)
+    )
+    entry = _entry()
+    entry.entry_id = "abc"
+    entry.options = {CONF_CHECK_FIRMWARE: False}
+    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
+
+    await async_setup_entry(hass, entry, [].extend)
+
+    assert registry.async_get(existing.entity_id) is None
+
+
+async def test_the_option_being_off_is_fine_with_nothing_to_remove(
+    hass: HomeAssistant,
+):
+    """The normal case: it was never on, so there is no registry entry."""
+    entry = _entry()
+    entry.entry_id = "abc"
+    entry.options = {CONF_CHECK_FIRMWARE: False}
+    hass.data.setdefault("fermob", {})["abc"] = _conn(hass)
+
+    await async_setup_entry(hass, entry, [].extend)  # must not raise
 
 
 async def test_the_option_defaults_to_on(hass: HomeAssistant):

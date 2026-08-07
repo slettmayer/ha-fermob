@@ -420,10 +420,11 @@ Two things worth knowing before you bother:
   *"Firmware update found…"* or *"The firmware of your lamp is updated."* — the
   version is on its technical-information screen, and on this integration's
   device page.
-- **This integration's protocol was reverse-engineered on firmware 2.3.21.0**
-  (a MOOON! H134), which is what every hardware test to date ran on. Nothing is
-  known to change on newer builds and nothing has been tested on them either. If
-  you update and something misbehaves, please
+- **Updating is not known to break anything.** The protocol here was
+  reverse-engineered on firmware 2.3.21.0 (a MOOON! H134), and that same lamp now
+  runs 3.0.27.0 with no change in behaviour — pairing, on/off and the battery
+  reading all work. That is one lamp across one version jump, so if you update
+  and something misbehaves, please
   [open an issue](https://github.com/slettmayer/ha-fermob/issues) with your
   firmware version.
 

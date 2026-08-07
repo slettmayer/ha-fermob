@@ -108,9 +108,14 @@ for that evening also shows the vendor app taking ownership on the way — `CRYP
 our keys"*, then our automatic re-pair.
 
 So **2.3.21.0 is the build every hardware claim in these docs was established on, and no lamp here runs it any
-more.** What 3.0.27.0 has actually demonstrated is in
-[DEVICES.md](DEVICES.md#confidence): pairing, connect, the battery ACK and `MODULE_INFO_GET` unchanged; the
-light-command path not re-verified, because `send_led` takes no ACK and only eyes on the lamp can confirm it.
+more** — but the major-version jump turned out to change nothing we touch. On 3.0.27.0, pairing, connect, the
+battery ACK, `MODULE_INFO_GET` and switching the lamp on and off all behave exactly as before, the last of
+those confirmed the only way it can be: by its owner watching the lamp over two days, since `send_led` takes no
+ACK. Colour temperature on 3.x is still untested. See [DEVICES.md](DEVICES.md#confidence).
+
+That is one lamp and one version pair, so it is not a general licence to update — but it is the first evidence
+that a firmware jump here is survivable, and it moves *"not known to change anything, not known not to"* to
+*"one major version crossed with no observed change"*.
 
 ## How the app installs one
 

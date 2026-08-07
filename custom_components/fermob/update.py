@@ -25,6 +25,7 @@ from homeassistant.components.update import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -53,6 +54,11 @@ RELEASE_SUMMARY = (
 )
 
 
+def firmware_unique_id(address: str) -> str:
+    """The entity's registry key. Shared, so removal cannot drift from setup."""
+    return f"fermob_{address.replace(':', '_').lower()}_firmware"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -64,8 +70,19 @@ async def async_setup_entry(
     entity exists to answer "is there a newer build" and without the network
     there is no answer -- only the installed version, which is on the device
     page either way.
+
+    **Not adding it is not enough to make it go away.** Home Assistant keeps a
+    registry entry for an entity a platform stops providing and shows it as
+    unavailable, so switching the option off would otherwise leave a permanently
+    broken-looking row that only a manual delete clears. Removing the registry
+    entry here is what makes "off" mean what the option says.
     """
     if not entry.options.get(CONF_CHECK_FIRMWARE, DEFAULT_CHECK_FIRMWARE):
+        registry = er.async_get(hass)
+        unique_id = firmware_unique_id(entry.data[CONF_ADDRESS])
+        if entity_id := registry.async_get_entity_id("update", DOMAIN, unique_id):
+            _LOGGER.debug("Fermob: firmware check off, removing %s", entity_id)
+            registry.async_remove(entity_id)
         return
     conn = hass.data[DOMAIN][entry.entry_id]
     async_add_entities([FermobFirmwareUpdate(hass, entry, conn)])
@@ -91,7 +108,7 @@ class FermobFirmwareUpdate(UpdateEntity):
         self._conn = conn
         self._latest: str | None = None
         address = entry.data[CONF_ADDRESS]
-        self._attr_unique_id = f"fermob_{address.replace(':', '_').lower()}_firmware"
+        self._attr_unique_id = firmware_unique_id(address)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, address)},
             connections={("bluetooth", address)},

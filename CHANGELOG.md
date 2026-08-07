@@ -29,12 +29,13 @@ Nothing about pairing or lamp control changed; no re-pairing needed.
   model name. Switching it off removes the entity and the request; the firmware
   version stays on the device page either way.
 
-- **The protocol was reverse-engineered on firmware 2.3.21.0**, and our
-  reference lamp has since been updated to **3.0.27.0** with the Fermob app.
-  Pairing, connecting, the battery reading and the lamp's self-report all behave
-  the same there; the light commands themselves have not been re-verified on it.
-  If you update a lamp and something misbehaves, please open an issue with the
-  version — which, as of this release, you can read off the device page.
+- **Confirmed working on lamp firmware 3.0.27.0.** The protocol was
+  reverse-engineered on 2.3.21.0, and our reference MOOON! H134 has since been
+  updated to 3.0.27.0 with the Fermob app: pairing, on/off, the battery reading
+  and the lamp's self-report all behave the same. Colour temperature on that
+  build is untested. If you update a lamp and something misbehaves, please open
+  an issue with the version — which, as of this release, you can read off the
+  device page.
 
 ## 0.9.2
 
