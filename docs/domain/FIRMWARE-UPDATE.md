@@ -81,9 +81,13 @@ that it has no updates.
 
 ## The version a lamp reports, and why nobody can see what the app installed
 
-The H134 reported `0xb5 = 00 02 03 15` (*verified on hardware*, most recent capture 2026-08-03). The app reads
-that TLV **reordered** as `[v3, v4, v5, v2]`, giving **2.3.21.0** — against **3.0.27.0** on the server, so its
-own comparison (first three components) would offer the update.
+**The reference H134 runs 3.0.27.0 — the newest build the server has for it — and that is the firmware this
+repository is built and tested against.** See [DEVICES.md](DEVICES.md#the-reference-firmware-is-30270).
+
+The reorder below is what turns four bytes into that string. Before the owner updated the lamp with the vendor
+app in early August 2026 it reported `0xb5 = 00 02 03 15`, which the app reads **reordered** as
+`[v3, v4, v5, v2]` — **2.3.21.0**, older than 3.0.27.0 on the server, so its comparison (first three
+components) offered the update. That older capture is still the verbatim fixture in `tests/test_protocol.py`.
 
 **The reorder is not a guess about the app's intent — it is the same parse its comparison consumes.**
 `parseModuleInfoData` walks the TLVs with `o` on the length byte, so `o+2` is the first value byte:
@@ -100,18 +104,17 @@ evidence about X** — the app names no versions at all. The discriminator is wh
 *"Firmware update found…"* means it flashed something; *"The firmware of your lamp is updated."* means it
 thought the lamp was already current.
 
-**Our reference lamp is on 3.0.27.0 as of 2026-08-06** — *verified on hardware* 2026-08-07, the first connect
-after 0.10.0 was deployed to a live instance. It reports `0xb5` such that `format_sw_version` renders exactly
-the string the server publishes, which is a **cross-check the byte order would have failed** if it were wrong:
-a 2.3.21.0 lamp became a 3.0.27.0 lamp, on the same formatter, matching a version nobody typed in. The HA log
-for that evening also shows the vendor app taking ownership on the way — `CRYPT_MSG`, *"lamp no longer holds
-our keys"*, then our automatic re-pair.
+**3.0.27.0 was confirmed on hardware on 2026-08-07**, the first connect after 0.10.0 reached a live instance.
+The lamp reports `0xb5` such that `format_sw_version` renders exactly the string the server publishes, which is
+a **cross-check the byte order would have failed** if it were wrong: one formatter, two lamps' worth of bytes,
+both matching versions nobody typed in. The HA log for the update evening also shows the vendor app taking
+ownership on the way through — `CRYPT_MSG`, *"lamp no longer holds our keys"*, then our automatic re-pair.
 
-So **2.3.21.0 is the build every hardware claim in these docs was established on, and no lamp here runs it any
-more** — but the major-version jump turned out to change nothing we touch. On 3.0.27.0, pairing, connect, the
-battery ACK, `MODULE_INFO_GET` and switching the lamp on and off all behave exactly as before, the last of
-those confirmed the only way it can be: by its owner watching the lamp over two days, since `send_led` takes no
-ACK. Colour temperature on 3.x is still untested. See [DEVICES.md](DEVICES.md#confidence).
+**The major-version jump changed nothing this integration touches.** Everything the lamp is used for has been
+exercised on 3.0.27.0 — pairing, reconnect, `fermob.unpair`, the battery ACK, `MODULE_INFO_GET`, brightness and
+colour temperature — with the light path confirmed the only way it can be, by its owner watching the lamp,
+since `send_led` takes no ACK. One lamp and one version pair, so not a general licence to update; but the
+version this repository builds against is the vendor's current one, not a stale build.
 
 That is one lamp and one version pair, so it is not a general licence to update — but it is the first evidence
 that a firmware jump here is survivable, and it moves *"not known to change anything, not known not to"* to

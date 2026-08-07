@@ -516,6 +516,11 @@ def test_parse_module_info_defaults_when_absent():
 # over a BLE proxy on 2026-08-02 (lamp D6:86:76:E8:7E:75). It is the one place in
 # this suite where the expected values come from hardware rather than from our
 # reading of the app.
+#
+# One caveat, and only one: that lamp has since been updated with the vendor app
+# and now runs the reference firmware 3.0.27.0, so the `0xb5` bytes here are its
+# *older* version. Everything else in the capture is unchanged by the update --
+# see docs/domain/DEVICES.md#the-reference-firmware-is-30270.
 # ---------------------------------------------------------------------------
 
 H134_MODULE_INFO = bytes.fromhex(
@@ -553,6 +558,17 @@ def test_parse_module_info_real_h134_names_and_versions():
 def test_format_sw_version_moves_the_first_byte_last():
     assert protocol.format_sw_version(bytes([0x00, 0x02, 0x03, 0x15])) == "2.3.21.0"
     assert protocol.format_sw_version(bytes([0x01, 0x03, 0x00, 0x1B])) == "3.0.27.1"
+
+
+def test_format_sw_version_renders_the_reference_firmware():
+    """`00 03 00 1b` is 3.0.27.0 — the build the reference H134 runs.
+
+    Worth its own case because it is the byte order's independent check: the
+    lamp was updated by the vendor's own app, and this formatter then rendered
+    the exact string the vendor's release server publishes for that model. A
+    wrong reordering could not have produced it.
+    """
+    assert protocol.format_sw_version(bytes([0x00, 0x03, 0x00, 0x1B])) == "3.0.27.0"
 
 
 def test_format_versions_return_none_when_too_short():

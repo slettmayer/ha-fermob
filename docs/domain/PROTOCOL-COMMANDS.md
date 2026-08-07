@@ -94,10 +94,15 @@ that were "unidentified" when this table was captured are named as of the APK an
 
 Five of these are consumed, and all five ride the same reply: `0xb1` addresses every later frame, `0xb4` and
 `0xb3` decide the lamp family, and since 0.10.0 `0xb5` and `0xb6` populate the device registry's firmware and
-hardware version — at no extra round trip, since this response is one we already make. **`0xb5` is not read in
-order**: `format_sw_version` moves the first byte last, so the H134's `00 02 03 15` is `2.3.21.0`. `0xb2`
-(`Fermob`) is consumed too, but only as a path segment for the release server — see
+hardware version — at no extra round trip, since this response is one we already make. `0xb2` (`Fermob`) is
+consumed too, but only as a path segment for the release server — see
 [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md).
+
+**`0xb5` is not read in order**: `format_sw_version` moves the first value byte last, so the `00 02 03 15`
+above is `2.3.21.0`. Note that **this capture predates a firmware update** — the lamp was updated with the
+vendor app in early August 2026 and now reports the reference build `3.0.27.0`, i.e. `0xb5 = 00 03 00 1b`
+(*derived*: the bytes that formatter must have been given to render the string the lamp now reports). The rest
+of the table is unchanged by the update. See [DEVICES.md](DEVICES.md#the-reference-firmware-is-30270).
 
 `module_type` (`0xb4`) and the model string (`0xb3`) are what make lamp-family detection exact — see
 [DEVICES.md](DEVICES.md#lamp-family-detection). The API version is parsed and returned but still not branched

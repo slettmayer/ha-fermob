@@ -33,13 +33,26 @@ ignores everything — it is a `MSG_FIRE` write with no ACK to observe.
 |---|---|
 | Hoopik GL1200 works | Confirmed on hardware by upstream's author |
 | MOOON! Moon2AD2 works (on/off, brightness, 3000↔6000 K, reconnect) | Confirmed on hardware by the PR author |
-| **MOOON! H134 works on this build** (pairing, on/off, brightness, colour temperature) | **Confirmed on hardware**, 2026-08-02, on lamp firmware 2.3.21.0 |
+| **MOOON! H134 works on this build** (pairing, on/off, brightness, colour temperature, reconnect, unpair) | **Confirmed on hardware** on **lamp firmware 3.0.27.0**, the reference build — see below |
 | The H134 reports `module_type` 404 and model `MOOON - H134` | **Confirmed on hardware** — full TLV capture in [PROTOCOL-COMMANDS.md](PROTOCOL-COMMANDS.md#module_info_get) |
-| **The H134 works on lamp firmware 3.0.27.0** (pairing, on/off, the battery ACK, `MODULE_INFO_GET`) | **Confirmed on hardware**, 2026-08-07. The reference lamp was updated to 3.0.27.0 with the vendor app and has been switched on and off repeatedly by its owner since — the only way to confirm the light path, since `send_led` takes no ACK. Colour temperature on 3.x is untested. See [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) |
 | Other MOOON! sizes (H63 / Ø15 / 3×Ø15 / Ø25) work | **Inferred** — same `module_type`, same protocol, untested by anyone |
 | The dimmable-white path still works | **Inferred** — unchanged code and pinned by `test_dw_payload_matches_upstream_literal`, but no Hoopik has run *this* build |
 
 Other Fermob lamps advertising `41c13060-6def-11e5-bcde-0002a5d5c51b` may work but are untested.
+
+### The reference firmware is 3.0.27.0
+
+**When a doc here says "confirmed on hardware", assume lamp firmware `3.0.27.0` unless it says otherwise** —
+that is what the reference H134 runs, what the vendor's release server publishes as the newest build for it, and
+what everything from brightness and colour temperature to pairing, reconnect and `fermob.unpair` has been
+exercised against. It is read straight off the lamp and shown on the device page (0.10.0+), so a bug report can
+say which build it came from; see [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md).
+
+One detail worth keeping straight, because a fixture in the test suite depends on it: the lamp was on
+**2.3.21.0** until the owner updated it with the vendor app in early August 2026, so the verbatim
+`MODULE_INFO_GET` capture pinned in `tests/test_protocol.py` — and the TLV table it feeds — carries that older
+version in `0xb5`. Everything *else* is 3.0.27.0. That the two renderings are 2.3.21.0 and 3.0.27.0, from one
+formatter, is also the cross-check on the byte order.
 
 ## Lamp-family detection
 

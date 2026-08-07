@@ -420,13 +420,14 @@ Two things worth knowing before you bother:
   *"Firmware update found…"* or *"The firmware of your lamp is updated."* — the
   version is on its technical-information screen, and on this integration's
   device page.
-- **Updating is not known to break anything.** The protocol here was
-  reverse-engineered on firmware 2.3.21.0 (a MOOON! H134), and that same lamp now
-  runs 3.0.27.0 with no change in behaviour — pairing, on/off and the battery
-  reading all work. That is one lamp across one version jump, so if you update
-  and something misbehaves, please
-  [open an issue](https://github.com/slettmayer/ha-fermob/issues) with your
-  firmware version.
+- **The firmware this integration is tested against is 3.0.27.0** — the newest
+  build Fermob publish for the MOOON! H134, and what the reference lamp here
+  runs. Brightness, colour temperature, pairing, reconnect and unpair have all
+  been exercised on it. Older firmware works too (the protocol was originally
+  reverse-engineered on 2.3.21.0), so there is no need to update on this
+  integration's account. If you do update and something misbehaves, please
+  [open an issue](https://github.com/slettmayer/ha-fermob/issues) with the
+  firmware version from the device page.
 
 Why it is not built, and what it would take, is written up in
 [docs/domain/FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md).

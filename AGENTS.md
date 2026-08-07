@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1102 tests, ~12 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1103 tests, ~12 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -179,6 +179,9 @@ channels whose sum is the total output, which is how colour temperature is expre
 - **Only two lamps have ever been confirmed on hardware** — the MOOON! H134 on this build, and the Moon2AD2 by
   the contributor; the Hoopik only by upstream, on an older build. Every other MOOON! size is inferred from the
   same `module_type`. See [DEVICES.md](docs/domain/DEVICES.md#confidence).
+- **"Confirmed on hardware" means lamp firmware `3.0.27.0`** — the reference build, and the newest the vendor
+  publishes for the H134. The one exception is the `MODULE_INFO_GET` fixture in `tests/test_protocol.py`, whose
+  `0xb5` predates the update. See [DEVICES.md](docs/domain/DEVICES.md#the-reference-firmware-is-30270).
 
 ## Development Workflow
 
