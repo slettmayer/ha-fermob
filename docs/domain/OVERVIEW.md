@@ -19,7 +19,7 @@ official app's JS, and what is inferred — **preserve those markers when you ed
 |---|---|---|
 | **Lamp families** | Two LED families — dimmable white (Hoopik) and tunable white (every MOOON!) — sharing everything but the light-command body | [DEVICES.md](DEVICES.md) |
 | **Family detection** | Override, then the `module_type` the lamp reports, then a name heuristic as first-run fallback | [DEVICES.md](DEVICES.md#lamp-family-detection) |
-| **Entities and services** | One light, two diagnostic battery entities, `check_in` and `unpair`, two options | [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) |
+| **Entities and services** | One light, two diagnostic battery entities, one firmware entity, `check_in` and `unpair`, three options | [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) |
 | **State model** | Push-only; the held-open BLE link is the entire mechanism, and the check-in is the only reconnect | [STATE-MODEL.md](STATE-MODEL.md) |
 | **Connection modes** | One option deriving two coupled timings: idle disconnect and check-in interval | [STATE-MODEL.md](STATE-MODEL.md#connection-modes) |
 | **Pairing and ownership** | A one-time registration making one client the owner; one client at a time, permanently | [PAIRING.md](PAIRING.md) |
@@ -64,7 +64,7 @@ Four decisions shape every page, and each is easy to undo by accident:
 | Guide | Covers |
 |---|---|
 | [DEVICES.md](DEVICES.md) | The two families, the models, family detection, and the confidence table for every "this works" claim |
-| [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) | The light entity, both battery entities, both services, both options |
+| [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) | The light entity, both battery entities, the firmware entity, both services, all three options |
 | [STATE-MODEL.md](STATE-MODEL.md) | Push-only state, connection modes and their timings, the check-in, what holding the link costs |
 | [APP-CAPABILITIES.md](APP-CAPABILITIES.md) | What the official app can and cannot configure, and why parity is not a route to anything |
 | [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) | The DFU server, the reset-into-bootloader command, the cost and risks of installing one |

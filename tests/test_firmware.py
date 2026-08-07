@@ -136,6 +136,22 @@ async def test_the_unknown_model_answer_is_definitive_at_http_400():
     assert len(session.urls) == 1
 
 
+async def test_a_bare_code_400_is_not_the_vendor_saying_unknown_model():
+    """Only the vendor's own envelope shape may suppress the fallback host.
+
+    A WAF, captive portal or reverse proxy in front of dfu1 can answer with a
+    JSON error carrying `code: 400`; accepting that as "no such model" would
+    leave the entity at unknown for as long as the proxy sat there. The real
+    answer carries `data.release` (empty for a model the server lacks).
+    """
+    session = _Session((400, {"code": 400, "data": "blocked"}), H134_RELEASE)
+
+    release = await async_get_latest_release(session, "Fermob", "MOOON - H134")
+
+    assert release is not None and release.version == "3.0.27.0"
+    assert len(session.urls) == 2
+
+
 async def test_a_json_error_envelope_still_tries_the_fallback_host():
     """Only "no such model" is final; a broken-but-reachable host is not.
 

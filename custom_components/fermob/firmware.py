@@ -89,11 +89,18 @@ def _parse_release(body: Any) -> tuple[FirmwareRelease | None, bool]:
     if not isinstance(body, dict):
         return None, False
     code = body.get("code")
+    data = body.get("data")
     if code == MODEL_UNKNOWN_CODE:
-        return None, True
+        # **The envelope's own shape has to agree, not just the code.** Anything
+        # between us and the vendor -- a WAF, a captive portal, a reverse proxy --
+        # can answer with a JSON error carrying `code: 400`, and accepting that as
+        # "no such model" would suppress the fallback host and leave the entity at
+        # *unknown* for as long as the proxy sits there. The real answer is the
+        # vendor's envelope: `data` is a dict and it carries a `release` key (empty
+        # for a model it does not have). Verified against the live response.
+        return None, isinstance(data, dict) and "release" in data
     if code != 200:
         return None, False
-    data = body.get("data")
     release = data.get("release") if isinstance(data, dict) else None
     if not isinstance(release, dict):
         return None, False

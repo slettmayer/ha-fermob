@@ -144,7 +144,7 @@ Changing any of them reloads the integration; none requires re-pairing.
 |---|---|---|
 | **Lamp type** | Auto-detect (by name) | Whether the lamp is treated as dimmable white or tunable white — i.e. whether it gets a colour-temperature slider |
 | **Connection** | Always connected | Whether the BLE link is held open, which is what makes the lamp's own button presses visible in HA |
-| **Check for firmware updates** | On | Whether the firmware entity exists and asks the manufacturer's server, once a day, whether a newer build is published |
+| **Check for firmware updates** | On | Whether the firmware entity asks the manufacturer's server, once a day, whether a newer build is published. Off keeps the entity but stops the request |
 
 ### Lamp type
 

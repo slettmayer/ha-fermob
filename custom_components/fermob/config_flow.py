@@ -45,7 +45,10 @@ CONNECTION_MODE_ON_DEMAND = "on_demand"
 # Whether to ask the vendor's release server for the newest firmware build. On
 # by default: a lamp running old firmware is worth knowing about, and the check
 # is one small GET per lamp per day. It is the integration's only non-local
-# traffic, which is why it is switchable at all -- off removes the entity.
+# traffic, which is why it is switchable at all. **Off stops the request, not the
+# entity**: it is still created and still reports the installed version, with the
+# available one left unknown. See update.async_setup_entry for the three tidier
+# looking alternatives that each broke something a user owns.
 CONF_CHECK_FIRMWARE = "check_firmware_updates"
 DEFAULT_CHECK_FIRMWARE = True
 
@@ -203,8 +206,10 @@ class FermobOptionsFlow(OptionsFlow):
     **Firmware check.** The one thing here that is not about the lamp in the
     room: whether to ask the vendor's release server, once a day, if a newer
     firmware build exists. It is the integration's only non-local traffic, which
-    is the whole reason it is switchable -- off removes the entity along with the
-    request. See docs/domain/FIRMWARE-UPDATE.md.
+    is the whole reason it is switchable. Off stops the request; the entity stays
+    and reports the installed version with the available one unknown, so nothing a
+    user renamed or built a dashboard on breaks. See
+    docs/domain/ENTITIES-AND-SERVICES.md and docs/domain/FIRMWARE-UPDATE.md.
     """
 
     def __init__(self, config_entry: ConfigEntry) -> None:

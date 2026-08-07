@@ -11,7 +11,7 @@
 
 - **Build**: none — pure Python custom component distributed via HACS
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
-- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1121 tests, ~12 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
+- **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1122 tests, ~12 s — `test_protocol.py` needs no Home Assistant, the other six use its test harness)
 - **Lint**: `ruff check . --fix && ruff format .`
 - **Release**: merge to `main` with a bumped `manifest.json` version and a matching `CHANGELOG.md` section — `release.yml` tags and releases it automatically
 
@@ -32,7 +32,7 @@
 | Understand state freshness or connection modes | [STATE-MODEL.md](docs/domain/STATE-MODEL.md) |
 | Change an entity, service or option | [ENTITIES-AND-SERVICES.md](docs/domain/ENTITIES-AND-SERVICES.md) |
 | Debug pairing, ownership or resets | [PAIRING.md](docs/domain/PAIRING.md) |
-| Answer a firmware-update question | [FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md) — analysed, deliberately not implemented |
+| Answer a firmware-update question | [FIRMWARE-UPDATE.md](docs/domain/FIRMWARE-UPDATE.md) — reporting is implemented; *installing* is deliberately not |
 | Check whether something was already tried | [DEAD-ENDS.md](docs/domain/DEAD-ENDS.md) |
 
 ## Architecture Overview
