@@ -118,12 +118,49 @@ instead **does not register the domain there** — it is served by a local proxy
 index. So the branding decision is sound on its own terms and costs the analytics signal; that trade-off was
 not known when it was made.
 
-Appearing in analytics would need a pull request adding `custom_integrations/fermob/icon.png` to brands. The
-folder is marked legacy in its README but still accepts additions. That is an open decision, not an oversight
-— it means shipping an icon into a repository under someone else's terms, which is the exact thing
-BRANDING.md's licence reasoning is about.
+**There is no way to opt in, and this is not a decision we get to make.** Brands stopped accepting
+`custom_integrations/` additions with HA 2026.3 and auto-closes every such pull request:
+
+> we no longer accept brand icons for custom integrations in this repository. Starting with Home Assistant
+> 2026.3.0, custom integrations can provide their own brand icons directly
+
+Roughly a dozen were closed that way in the first week of August 2026 alone. So the analytics filter gates on a
+list that can no longer be joined: **every custom integration first published after March 2026 is permanently
+uncountable**, however many installations report it. That is an upstream bug, not a consequence of anything
+this repository chose — the BRANDING.md decision would have cost us nothing had brands stayed open, and taking
+the other path would not have helped for a domain registered after the freeze.
+
+It is known and there is a fix in flight:
+
+| | |
+|---|---|
+| [analytics#1094](https://github.com/home-assistant/analytics.home-assistant.io/issues/1094) | the report, open since 2026-05-22 |
+| [analytics#1128](https://github.com/home-assistant/analytics.home-assistant.io/pull/1128) | the fix, open since 2026-08-04, awaiting review |
+
+\#1128 adds the **HACS default repository list** as a second source of known domains, on top of brands. This
+repository is in that list, so if it merges, `fermob` starts being counted with no change needed here. Nothing
+to do but watch it.
 
 Until then the release-asset `download_count` above is the only install meter.
+
+### The same assumption breaks the HACS update entity's icon
+
+`hacs/integration` builds its update-entity picture as a raw CDN URL:
+
+```python
+# custom_components/hacs/update.py
+return f"https://brands.home-assistant.io/_/{self.repository.data.domain}/icon.png"
+```
+
+That bypasses the local brands proxy introduced in 2026.3, so it 404s for any domain not in brands — even
+though the integration ships `brand/icon.png` and Home Assistant's own proxy would serve it. HACS's dashboard
+listing does the right thing (it calls the frontend's `brandsUrl()` helper, which routes through the proxy),
+and HACS's `brands` *validation* check already prefers the local asset. Only this one display path still treats
+the CDN as the sole source. No issue is filed for it upstream as of 2026-08-08.
+
+Note the separate, harder case: while **browsing** the HACS store, a repository has not been downloaded yet, so
+there is no local `brand/` directory to serve and no proxy fallback can exist. Fixing that would mean HACS
+reading the icon out of the repository tree. Do not expect a store-listing icon before install.
 
 ## Dependabot
 
