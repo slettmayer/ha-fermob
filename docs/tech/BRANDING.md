@@ -36,6 +36,12 @@ present, the check passes without any `ignore:` entry. That matters because HACS
 requires the action to pass with **no** ignored checks. See
 [INFRASTRUCTURE.md](INFRASTRUCTURE.md#hacs-default-store).
 
+> **It costs the one public usage meter, though.** Home Assistant's analytics counts a custom integration only
+> if its domain is in the brands repository, and a local `brand/` directory does not put it there — so `fermob`
+> can never appear in `analytics.home-assistant.io/custom_integrations.json`. That is a genuine trade-off, not
+> a bug, and it is unpicked in
+> [INFRASTRUCTURE.md](INFRASTRUCTURE.md#why-the-integration-is-invisible-to-ha-analytics).
+
 ## Why it is not Fermob's logo
 
 **This repository is MIT-licensed. Fermob's logo, wordmark and product designs are not ours to relicense.**

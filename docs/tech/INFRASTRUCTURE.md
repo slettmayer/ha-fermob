@@ -70,10 +70,60 @@ Fully automatic. On a **successful `Validate` run on `main`**:
 1. Read `version` from `custom_components/fermob/manifest.json`.
 2. If a release tagged `v<version>` already exists, stop.
 3. Extract the matching `## <version>` section from `CHANGELOG.md` as the release notes.
-4. Create the tag and release at that commit.
+4. Build `fermob.zip` from `custom_components/fermob/`.
+5. Create the tag and release at that commit, with the archive attached.
 
 So **releasing means merging a PR that bumps `manifest.json` and adds the matching `CHANGELOG.md` section.**
 There is nothing to run by hand. Forget the CHANGELOG section and you get a release with empty notes.
+
+### The release archive — `zip_release`
+
+`hacs.json` sets `zip_release: true` and `filename: "fermob.zip"`, so HACS downloads that one asset from the
+release instead of fetching every file through the GitHub API. Two things constrain how it is built:
+
+- **The integration's files must sit at the archive root.** HACS does
+  `zip_file.extractall(<config>/custom_components/fermob)`, so a top-level `fermob/` directory inside the zip
+  would land as `custom_components/fermob/fermob/`. That is why the workflow `cd`s into the integration
+  directory and zips `.`.
+- **The asset name must equal `filename` exactly.** HACS requests that one name from the release and fails the
+  download if it is absent. Renaming one without the other breaks every install.
+
+The HACS action only checks that `filename` is set when `zip_release` is true — it does **not** verify the
+asset exists on the latest release, so a broken archive step fails silently at install time, never in CI.
+
+The motive is measurement as much as speed: GitHub reports a `download_count` per release asset, and that is
+the only install signal this project has. See [the analytics note](#why-the-integration-is-invisible-to-ha-analytics).
+
+Releases before 0.10.1 have no archive. Their tagged `hacs.json` has no `zip_release`, so HACS falls back to
+the file-by-file download for them — downgrades keep working.
+
+## Why the integration is invisible to HA analytics
+
+`analytics.home-assistant.io/custom_integrations.json` publishes an install count per custom-integration
+domain, down to a total of 1 — it is the only public usage meter for a custom integration. **`fermob` does not
+appear in it, and cannot**, because the analytics worker counts a reported custom integration only if its
+domain is listed in [brands](https://github.com/home-assistant/brands):
+
+```ts
+// analytics.home-assistant.io — worker/src/handlers/schedule.ts
+if (!brandsDomains.has(custom_integration.domain)) {
+  continue;
+}
+```
+
+`brandsDomains` is `brands.home-assistant.io/domains.json`, whose `custom` array is the `custom_integrations/`
+directory of the brands repo. The in-repo `brand/` mechanism from HA 2026.3 that
+[BRANDING.md](BRANDING.md#why-the-asset-is-in-this-repo-and-not-in-home-assistantbrands) deliberately uses
+instead **does not register the domain there** — it is served by a local proxy API and never touches the CDN
+index. So the branding decision is sound on its own terms and costs the analytics signal; that trade-off was
+not known when it was made.
+
+Appearing in analytics would need a pull request adding `custom_integrations/fermob/icon.png` to brands. The
+folder is marked legacy in its README but still accepts additions. That is an open decision, not an oversight
+— it means shipping an icon into a repository under someone else's terms, which is the exact thing
+BRANDING.md's licence reasoning is about.
+
+Until then the release-asset `download_count` above is the only install meter.
 
 ## Dependabot
 
@@ -94,7 +144,11 @@ another.
 
 ## Installation into Home Assistant
 
-**HACS custom repository** (this repo is not in the default store):
+**HACS** — the repository is in the default store (`slettmayer/ha-fermob` is listed in
+[hacs/default](https://github.com/hacs/default/blob/master/integration)), so search for *Fermob* in HACS,
+download, and restart. No custom repository is needed.
+
+Adding it as a custom repository still works and is the way to test an unreleased branch:
 
 1. HACS → ⋮ → Custom repositories
 2. Add `https://github.com/slettmayer/ha-fermob`, category **Integration**

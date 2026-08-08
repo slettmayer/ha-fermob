@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.1
+
+**HACS now downloads a single archive instead of file-by-file.** Nothing about
+the lamp, pairing or any entity changed; no re-pairing needed, and there is
+nothing to do on your side.
+
+- **Releases now carry a `fermob.zip` asset, and HACS installs from it.**
+  Previously HACS fetched each file of the integration individually through the
+  GitHub API. One archive is faster, and it makes downloads countable — GitHub
+  reports a download count per release asset, which is the only way this project
+  can see whether anyone besides its author is running it.
+
+  Downgrading to 0.10.0 or earlier still works: those releases have no archive,
+  and HACS falls back to the file-by-file download for them.
+
 ## 0.10.0
 
 **Your lamp's firmware version, and whether Fermob has published a newer one.**
