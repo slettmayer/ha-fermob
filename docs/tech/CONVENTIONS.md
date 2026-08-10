@@ -15,9 +15,14 @@ pushing.
 Consequences worth knowing:
 
 - **The formatter does not preserve column-aligned assignments.** Upstream's style (`self.hass     = hass`) is gone and cannot be kept; don't reintroduce it.
-- **`# noqa` for a rule that isn't selected is an error** (`RUF100`). `BLE001` is not in our rule set, so `# noqa: BLE001` gets flagged as unused. Where a broad `except Exception` needs justifying, write a plain comment on the `except` line instead.
-- **`zip()` needs an explicit `strict=`** (`B905`). In `crypt()` this is `strict=True` on purpose: both sides are always 16 bytes, and silent truncation would produce a mis-parsed payload instead of a visible failure.
-- **`ruff format` also formats Python code blocks inside Markdown.** A ```` ```python ```` snippet in `docs/` that is not format-clean fails the `Ruff` job just like real source would. Run `ruff format .` after editing docs that contain Python, not only after editing code.
+- **`# noqa` for a rule that isn't selected is an error** (`RUF100`). `BLE001` is not in our rule set, so
+  `# noqa: BLE001` gets flagged as unused. Where a broad `except Exception` needs justifying, write a plain
+  comment on the `except` line instead.
+- **`zip()` needs an explicit `strict=`** (`B905`). In `crypt()` this is `strict=True` on purpose: both sides
+  are always 16 bytes, and silent truncation would produce a mis-parsed payload instead of a visible failure.
+- **`ruff format` also formats Python code blocks inside Markdown.** A ```` ```python ```` snippet in `docs/`
+  that is not format-clean fails the `Ruff` job just like real source would. Run `ruff format .` after editing
+  docs that contain Python, not only after editing code.
 
 ## Imports
 
@@ -40,7 +45,9 @@ Two sanctioned exceptions, both deliberate:
 ## Protocol code
 
 - **No `homeassistant` imports in `protocol.py`.** See [ARCHITECTURE.md](ARCHITECTURE.md#why-protocolpy-has-no-ha-imports).
-- **Every protocol constant lives in `protocol.py`** — commands, encryption modes, message types, TLV parameter IDs, the light families, `FADE`, the Kelvin envelope. Never inline a literal like `0x41` or `146` at a call site.
+- **Every protocol constant lives in `protocol.py`** — commands, encryption modes, message types, TLV parameter
+  IDs, the light families, `FADE`, the Kelvin envelope. Never inline a literal like `0x41` or `146` at a call
+  site.
 - **Known exception: `config_flow.py` redeclares the lamp-family strings.** It defines its own
   `LIGHT_TYPE_AUTO`/`LIGHT_TYPE_DW`/`LIGHT_TYPE_TW` rather than importing `LIGHT_TYPE_DW`/`LIGHT_TYPE_TW` from
   `protocol.py`, so the two copies must be kept in sync by hand — the comment above them says so. `light.py` imports
@@ -78,11 +85,20 @@ Two sanctioned exceptions, both deliberate:
 - **Hold the connection lock for the whole connect-and-send.** `ensure_connected()` and `send_led()` assume the caller holds it.
 - **Log lamp identity as the MAC** (`self._entry.data[CONF_ADDRESS]` in the entity, `self._address` in the connection) so log lines are greppable per device.
 
-## Naming
+## Naming and shape
 
 - Classes are `Fermob*` (`FermobLight`, `FermobBLEConnection`, `FermobConfigFlow`, `FermobOptionsFlow`).
 - Private helpers are `_`-prefixed; `protocol.py` is the exception.
 - Frame builders are `build_*`, parsers are `parse_*`, conversions are `<from>_to_<to>`.
+- **Structured return values are `typing.NamedTuple`, not `@dataclass`.** `Ack`, `ConnectionProfile`,
+  `ModuleInfo`, `Battery`, `DeviceRecord` and `FirmwareRelease` all follow this — immutable, unpackable, and
+  free of the decorator machinery. A new parser or profile should return one too.
+- **A multi-way verdict is a `StrEnum`, never a bool or a bare string.** `BatteryVerdict` is the reason the
+  three meanings of the battery ACK cannot be collapsed by accident; if a new result has more than two states,
+  give it an enum rather than a second boolean.
+- **Comments explain *why*, at length, above anything load-bearing.** The long rationale blocks over the
+  connect-attempt constants, the two-pass connect loop and the marker-146 check are the house style, not
+  clutter — match that density rather than trimming it. A comment that restates the code is the one to cut.
 
 ## Commits and PRs
 

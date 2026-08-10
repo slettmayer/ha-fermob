@@ -47,8 +47,9 @@ connection's own memory could never repair a field the entry lost in that window
 ### Why `protocol.py` has no HA imports
 
 It makes the frame layer testable with `pip install pytest cryptography` — no Home Assistant, no `hass`
-fixture, no async. That is what `tests/test_protocol.py` exercises, and it is the reason that
-module runs in about two seconds while `tests/test_light.py` spends most of its time importing HA. The test module even loads `protocol.py` **by file path** rather than as
+fixture, no async. That is what `tests/test_protocol.py` exercises, and it is the reason that module runs in
+about two seconds while `tests/test_light.py` spends most of its time importing HA. The test module even
+loads `protocol.py` **by file path** rather than as
 `custom_components.fermob.protocol`, because importing the package would pull in `__init__.py` and with it
 Home Assistant.
 
@@ -270,7 +271,9 @@ acquires it, and `ensure_connected()`/`send_led()` assume it is already held.
   unavailable and write state. Attribute updates happen only after it reports success, so a failed command never leaves
   HA claiming a state the lamp does not have. `async_unpair()` deliberately does not use it — see
   [CONVENTIONS.md](CONVENTIONS.md#entity-and-connection-code).
-- **Availability is tracked explicitly** — optimistic at startup, `False` after a failed command, `True` after a successful one or an inbound EVENT. It is not derived from the Bluetooth stack's presence cache, which would flap for a lamp that stops advertising while connected.
+- **Availability is tracked explicitly** — optimistic at startup, `False` after a failed command, `True` after a
+  successful one or an inbound EVENT. It is not derived from the Bluetooth stack's presence cache, which would
+  flap for a lamp that stops advertising while connected.
 - **`unique_id`** is `fermob_<mac_with_underscores>`; the device identifier is `("fermob", address)`.
 - **Both services are entity services**, registered in the platform's `async_setup_entry` via
   `entity_platform.async_get_current_platform().async_register_entity_service(...)` — not plain methods and not

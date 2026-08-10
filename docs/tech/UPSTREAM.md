@@ -62,8 +62,13 @@ genuinely enforces the "Hoopik unchanged" guarantee.
 
 Should upstream become active, the hardening is worth offering. Two things must change first:
 
-1. **Flip the lamp-family default.** Our heuristic sends everything not named `hoop*` down the tunable-white path. That is right for a MOOON!-only fork, but upstream's users all have Hoopiks, and a renamed Hoopik would silently break for them. Default to dimmable-white-when-unknown there. This is most likely why a cautious maintainer left PR #2 alone.
-2. **Split the diff.** Offer the correctness fixes (the AES dependency, the BLE unload leak, availability) separately from the restructuring (`protocol.py`, ruff formatting). A maintainer can accept the first without adopting our tooling.
+1. **Flip the lamp-family default.** Our heuristic sends everything not named `hoop*` down the tunable-white
+   path. That is right for a MOOON!-only fork, but upstream's users all have Hoopiks, and a renamed Hoopik would
+   silently break for them. Default to dimmable-white-when-unknown there. This is most likely why a cautious
+   maintainer left PR #2 alone.
+2. **Split the diff.** Offer the correctness fixes (the AES dependency, the BLE unload leak, availability)
+   separately from the restructuring (`protocol.py`, ruff formatting). A maintainer can accept the first without
+   adopting our tooling.
 
 The `ruff format` pass in particular is a fork-local choice: it drops upstream's column-aligned assignment
 style, so any patch crossing that boundary will conflict on whitespace.

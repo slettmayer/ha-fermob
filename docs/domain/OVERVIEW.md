@@ -13,6 +13,16 @@ no hub and no cloud.
 Everything here is reverse-engineered. Each document marks what is verified on hardware, what comes from the
 official app's JS, and what is inferred — **preserve those markers when you edit.**
 
+## Surfaces and audiences
+
+There is no HTTP API here, but there are three distinct surfaces, and only one of them leaves the house:
+
+| Surface | Audience | Shape |
+|---|---|---|
+| Entities, services and options | The Home Assistant user | One light, two diagnostic battery entities, one firmware entity, `fermob.check_in`, `fermob.unpair`, three options — [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md) |
+| The BLE link | The lamp | Local Linkio frames on one GATT characteristic, authenticated by the pairing keys we hold — [LINKIO-PROTOCOL.md](LINKIO-PROTOCOL.md) |
+| The vendor release server | Fermob, outbound only | A daily metadata fetch asking whether a newer firmware exists. **The only non-local traffic in the integration**, and opt-out — [FIRMWARE-UPDATE.md](FIRMWARE-UPDATE.md) |
+
 ## Concept catalog
 
 | Concept | One-liner | Detail |
