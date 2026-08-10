@@ -14,7 +14,7 @@
 - **Run**: load into Home Assistant (HACS custom repository, or copy `custom_components/fermob/`)
 - **Test**: `pip install -r requirements_test.txt && python -m pytest tests/ -q` (1122 tests, ~12 s —
   `test_protocol.py` needs no Home Assistant, the other six use its test harness)
-- **Lint**: `pip install -r requirements_lint.txt && ruff check . --fix && ruff format .`
+- **Lint**: `pip install -r requirements_lint.txt && ruff check . --fix && ruff format .` — autofix; CI enforces the non-mutating form, see Development Workflow
 - **Release**: merge to `main` with a bumped `manifest.json` and a matching `CHANGELOG.md` section — `release.yml` tags, archives and publishes it
 
 ## Where to Find Things
