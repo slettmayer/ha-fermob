@@ -24,7 +24,7 @@ uselessly are in [DEAD-ENDS.md](DEAD-ENDS.md). Framing and encryption are in
 | `CMD_MODULE_INFO_GET` | 48 | TLV list; we read the short address, API version, `module_type` and model |
 | `CMD_DEVICE_INFO_GET` | 50 | Optional info, response ignored |
 | `CMD_DEVICE_DATA_SET` | 65 (`0x41`) | **Set the light** — see [PROTOCOL-LIGHT-COMMAND.md](PROTOCOL-LIGHT-COMMAND.md) |
-| `LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag** — see below |
+| `CMD_MODULES_BATTERY_LEVEL_GET` | 44 (`0x2C`) | **Battery level and charging flag** — see below |
 
 Two commands are defined in `protocol.py` and deliberately **never sent**, because hardware settled that they
 do not work: `CMD_DEVICE_DATA_GET` (66) and `CMD_DEVICES_DATA_LIST_GET` (74). See
@@ -35,7 +35,7 @@ complete table is in the APK analysis.
 
 ## The battery command
 
-`LMP_COMMAND_MODULES_BATTERY_LEVEL_GET` (44) is the only route to data we cannot otherwise get.
+`CMD_MODULES_BATTERY_LEVEL_GET` (44) is the only route to data we cannot otherwise get.
 
 - Payload `[3, 44, addr_lo, addr_hi]`; `255, 255` broadcasts to every module.
 - The reply carries `LMP_PARAM_BATTERY_LEVEL` (192 / `0xC0`) — one byte, `percent = b & 0x7F`,
