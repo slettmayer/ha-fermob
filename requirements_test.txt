@@ -16,7 +16,7 @@ cryptography
 # which is why pyproject.toml sets asyncio_mode = "auto" -- without it every test
 # in the suite errors at setup, including the pure ones. The floor is high because
 # older releases pin pytest 7.x, which nothing else here works with.
-pytest-homeassistant-custom-component>=0.13.353
+pytest-homeassistant-custom-component>=0.13.355
 
 # Transitive requirements of the Home Assistant integrations we import, which a
 # pip-installed HA does *not* pull in but a real HA install always has. Importing
