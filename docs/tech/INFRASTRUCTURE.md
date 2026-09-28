@@ -167,17 +167,15 @@ reading the icon out of the repository tree. Do not expect a store-listing icon 
 `.github/dependabot.yml` — weekly, grouped: all `github-actions` updates in one PR, all `pip` updates in
 another.
 
-`.github/workflows/dependabot-version-bump.yml` then bumps the patch version in `manifest.json` and prepends a
-`CHANGELOG.md` entry on Dependabot's PR, so the merge produces a release.
+**A Dependabot merge does not produce a release**, and must not. Nothing Dependabot updates ships: it bumps
+`requirements_lint.txt`, `requirements_test.txt` and the workflow files, the release archive is built from
+`custom_components/fermob/` alone, and `manifest.json` declares `"requirements": []` — which Dependabot does not
+read in any case. A release for such a bump would differ from the previous one in its version string only, yet
+still prompt every user to update and restart Home Assistant. So the version is left alone, `release.yml` finds
+the tag already exists and stops, and the update ships with the next real release.
 
-> **It needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in BOTH secret stores.**
-> The client ID (`Iv23li…`) is not the numeric App ID — `create-github-app-token` deprecated `app-id`.
-> Dependabot-triggered `pull_request` runs read the **Dependabot** secret store, not the Actions one —
-> Actions-only secrets arrive as empty strings and `actions/create-github-app-token` fails. Set them under
-> Settings → Secrets and variables → **Actions** *and* → **Dependabot**.
->
-> A GitHub App token is used rather than `GITHUB_TOKEN` because a push made with `GITHUB_TOKEN` does not
-> re-trigger workflows, so `gate` would never re-run on the bumped commit.
+A `dependabot-version-bump.yml` workflow used to bump the patch version on every Dependabot PR; v0.10.2 through
+v0.10.8 are all releases of that kind. Do not bring it back.
 
 ## Installation into Home Assistant
 
