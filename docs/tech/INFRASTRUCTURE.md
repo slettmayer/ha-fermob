@@ -164,20 +164,41 @@ reading the icon out of the repository tree. Do not expect a store-listing icon 
 
 ## Dependabot
 
-`.github/dependabot.yml` — weekly, grouped: all `github-actions` updates in one PR, all `pip` updates in
-another.
+`.github/dependabot.yml` — weekly, grouped: all `pip` updates in one PR on Mondays, all `github-actions` updates
+in another on Thursdays.
 
-`.github/workflows/dependabot-version-bump.yml` then bumps the patch version in `manifest.json` and prepends a
-`CHANGELOG.md` entry on Dependabot's PR, so the merge produces a release.
+**A Dependabot merge does not produce a release**, and must not. Nothing Dependabot updates ships: it bumps
+`requirements_lint.txt`, `requirements_test.txt` and the workflow files, the release archive is built from
+`custom_components/fermob/` alone, and `manifest.json` declares `"requirements": []` — which Dependabot does not
+read in any case. A release for such a bump would differ from the previous one in its version string only, yet
+still prompt every user to update and restart Home Assistant. So the version is left alone, `release.yml` finds
+the tag already exists and stops, and the update ships with the next real release.
+
+A `dependabot-version-bump.yml` workflow used to bump the patch version on every Dependabot PR; v0.10.2 through
+v0.10.8 are all releases of that kind. Do not bring it back.
+
+### Auto-merge — `.github/workflows/dependabot-auto-merge.yml`
+
+On every Dependabot PR this enables auto-merge (squash), so the PR lands by itself once `gate` passes. `gate` is
+the whole safety net: a bump that breaks ruff or the tests never merges, and the PR waits for a human. Because a
+Dependabot merge produces no release, nothing reaches users either way.
 
 > **It needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in BOTH secret stores.**
 > The client ID (`Iv23li…`) is not the numeric App ID — `create-github-app-token` deprecated `app-id`.
 > Dependabot-triggered `pull_request` runs read the **Dependabot** secret store, not the Actions one —
 > Actions-only secrets arrive as empty strings and `actions/create-github-app-token` fails. Set them under
-> Settings → Secrets and variables → **Actions** *and* → **Dependabot**.
+> Settings → Secrets and variables → **Actions** *and* → **Dependabot**. The App needs **Contents** and
+> **Pull requests** write.
 >
-> A GitHub App token is used rather than `GITHUB_TOKEN` because a push made with `GITHUB_TOKEN` does not
-> re-trigger workflows, so `gate` would never re-run on the bumped commit.
+> A GitHub App token is used rather than `GITHUB_TOKEN` because a merge made with `GITHUB_TOKEN` triggers no
+> workflows, so `Validate` would never run on `main` after a Dependabot merge.
+
+**A PR that falls behind `main` stalls.** The ruleset requires an up-to-date branch, and auto-merge never updates
+one. That is why the two ecosystems run on different days; if a feature PR merges first anyway, comment
+`@dependabot rebase` on the Dependabot PR.
+
+**Known gap:** an action used only in `release.yml` is not exercised before the merge, so a breaking bump there
+surfaces on the next real release, not on the Dependabot PR.
 
 ## Installation into Home Assistant
 

@@ -29,11 +29,13 @@ empty notes.
 
 ### Dependabot PRs
 
-Dependabot PRs are auto-bumped: a workflow increments the patch version in `manifest.json` and prepends a
-changelog entry. Reviewers only need to approve and merge.
+Dependabot PRs get **no version bump and no `CHANGELOG.md` entry** — they are CI-only changes (see Versioning
+below). Nothing they update is part of the installed integration, so merging one produces no release; the update
+ships with the next real one. See [docs/tech/INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md#dependabot).
 
-That workflow needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in **both** the Actions *and* Dependabot
-secret stores — see [docs/tech/INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md#dependabot).
+They also **merge themselves**: a workflow enables auto-merge, and the PR lands once `gate` passes. One that fails
+`gate` stays open for a human. That workflow needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in
+**both** the Actions *and* Dependabot secret stores.
 
 ### Versioning
 
