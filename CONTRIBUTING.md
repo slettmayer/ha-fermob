@@ -33,6 +33,10 @@ Dependabot PRs get **no version bump and no `CHANGELOG.md` entry** — they are 
 below). Nothing they update is part of the installed integration, so merging one produces no release; the update
 ships with the next real one. See [docs/tech/INFRASTRUCTURE.md](docs/tech/INFRASTRUCTURE.md#dependabot).
 
+They also **merge themselves**: a workflow enables auto-merge, and the PR lands once `gate` passes. One that fails
+`gate` stays open for a human. That workflow needs `GH_ACTION_APP_CLIENT_ID` and `GH_ACTION_APP_PRIVATE_KEY` in
+**both** the Actions *and* Dependabot secret stores.
+
 ### Versioning
 
 - **MAJOR** (1.0.0): Breaking changes — config-entry or options schema changes that require re-adding the lamp, removed entities, changed entity IDs or `unique_id`, or a change to the `.storage/fermob_*` key format that would force re-pairing
