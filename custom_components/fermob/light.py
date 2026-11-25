@@ -458,12 +458,29 @@ class FermobBLEConnection:
         # which would otherwise drop it as "not a state frame".
         battery = parse_battery(pl)
         if battery is not None:
+            # A cold H134 answers 0 % for hours, then reports its real level again
+            # once it warms up. A lamp that can still answer over BLE is not empty,
+            # so 0 means "no reading": keep the last known level rather than show
+            # a flat battery. The charging bit is still real -- the lamp pushes on
+            # every charger change, cold or not -- so it is applied to that level.
+            if battery.percent == 0:
+                _LOGGER.debug(
+                    "Fermob %s: battery reported 0%% (no reading), keeping %s "
+                    "payload=%s",
+                    self._address,
+                    self.battery,
+                    pl.hex(),
+                )
+                if self.battery is None or self.battery.charging == battery.charging:
+                    return
+                battery = self.battery._replace(charging=battery.charging)
             self.battery = battery
             _LOGGER.debug(
-                "Fermob %s: battery %d%% charging=%s",
+                "Fermob %s: battery %d%% charging=%s payload=%s",
                 self._address,
                 battery.percent,
                 battery.charging,
+                pl.hex(),
             )
             self._notify(self._battery_listeners, "battery", battery)
             return

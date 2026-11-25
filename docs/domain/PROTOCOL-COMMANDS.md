@@ -44,6 +44,8 @@ complete table is in the APK analysis.
   [PROTOCOL-TRANSPORT.md](PROTOCOL-TRANSPORT.md#message-types). **Implemented since 0.6.0.**
 - The ACK carries no value (a bare `[2, 0x80, 0x00]` success); the reading arrives separately as a `STATUS`
   push with payload `[2, 0xC0, byte]`. **Confirmed on an H134.**
+- A cold lamp answers the request normally, ACK included, with byte `0x00`. The integration reads that as
+  no reading; see [ENTITIES-AND-SERVICES.md](ENTITIES-AND-SERVICES.md#battery-entities).
 - The app polls it every 20 s and lists the H134 as battery-powered.
 
 **Reading the battery needs a connection and nothing else — no light command, and no lit lamp.** Worth

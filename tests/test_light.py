@@ -755,6 +755,63 @@ async def test_a_battery_push_with_no_subscribers_is_not_an_error(hass: HomeAssi
     assert conn.battery == Battery(percent=42, charging=False)
 
 
+async def test_a_zero_battery_reading_keeps_the_last_known_level(hass: HomeAssistant):
+    """A cold lamp answers 0 % for hours; that is no reading, not a flat battery."""
+    conn = _conn(hass)
+    seen: list[int] = []
+    conn.add_battery_listener(lambda b: seen.append(b.percent))
+
+    _battery_push(conn, 63)
+    _battery_push(conn, 0)
+
+    assert conn.battery == Battery(percent=63, charging=False)
+    assert seen == [63]
+
+
+async def test_a_zero_battery_reading_is_not_a_first_reading(hass: HomeAssistant):
+    """The entities stay unavailable until the lamp reports a real level."""
+    conn = _conn(hass)
+    seen: list[int] = []
+    conn.add_battery_listener(lambda b: seen.append(b.percent))
+
+    _battery_push(conn, 0)
+
+    assert conn.battery is None
+    assert seen == []
+
+
+def _raw_battery_push(conn: FermobBLEConnection, raw: int) -> None:
+    payload = bytes([2, 0xC0, raw]) + bytes(12)
+    with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
+        conn._dispatch_event(bytes(20), 2)
+
+
+async def test_a_zero_reading_while_charging_is_dropped_too(hass: HomeAssistant):
+    """The charging bit does not make the 0 a first reading."""
+    conn = _conn(hass)
+    _raw_battery_push(conn, 0x80)
+
+    assert conn.battery is None
+
+
+@pytest.mark.parametrize(
+    ("before", "raw", "after"), [(False, 0x80, True), (True, 0x00, False)]
+)
+async def test_a_zero_reading_still_carries_a_charger_change(
+    hass: HomeAssistant, before: bool, raw: int, after: bool
+):
+    """A cold lamp put on or taken off its charger: keep the level, take the flag."""
+    conn = _conn(hass)
+    _raw_battery_push(conn, 63 | (0x80 if before else 0))
+    seen: list[Battery] = []
+    conn.add_battery_listener(seen.append)
+
+    _raw_battery_push(conn, raw)
+
+    assert conn.battery == Battery(percent=63, charging=after)
+    assert seen == [Battery(percent=63, charging=after)]
+
+
 # ---------------------------------------------------------------------------
 # Believing (or not) what the lamp pushes
 #

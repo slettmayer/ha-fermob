@@ -34,6 +34,16 @@ reading is best understood as *"as of last contact"* rather than live — a sche
 without turning the lamp on, the lamp pushes an update of its own accord whenever the charger goes on or off,
 and the last known value is held rather than blanked when the lamp is out of range.
 
+**A reported 0 % is treated as no reading, and the last known level is kept.** An H134 on a balcony at or
+below about 1 °C answered `0x00` to every battery request for hours — 79 % → 0 within 30 minutes of
+switching off, and back to 77 % once the day warmed it, or to 63 % after 45 minutes lit — with no restart,
+reload or light command making any difference (hardware observation, 2026-11-23 to 25, one lamp). Cold is
+the inference from the outdoor temperature, not something the lamp says. A lamp that can still answer over
+BLE is not empty, so the integration drops the 0 rather than show a flat battery; a lamp whose first
+reading is 0 stays unavailable. The charging bit in such a push is still applied to the kept level, so a
+cold lamp put on or taken off its charger still updates the charging sensor. The cost: a genuinely near-empty lamp never reads 0 %, only its last
+non-zero level.
+
 **The gauge is a voltage proxy, not a capacity count.** The percentage moves faster than a cell can charge or
 drain around a charger event — 24 % → 33 % in one test, 86 % → 98 % in another, settling back over the
 following minutes once the charger comes off. In between it is stable and slow-moving (see
