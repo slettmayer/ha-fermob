@@ -137,8 +137,7 @@ async def test_both_read_unavailable_until_the_lamp_reports(hass: HomeAssistant)
     assert sensor.native_value is None
     assert charging.is_on is None
 
-    _battery_push(conn, 0, charging=False)
+    _battery_push(conn, 1, charging=False)
 
-    # A reported 0 is a real 0, and must not be confused with "never reported".
     assert sensor.available is True
-    assert sensor.native_value == 0
+    assert sensor.native_value == 1

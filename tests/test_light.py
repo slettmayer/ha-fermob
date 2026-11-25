@@ -755,6 +755,41 @@ async def test_a_battery_push_with_no_subscribers_is_not_an_error(hass: HomeAssi
     assert conn.battery == Battery(percent=42, charging=False)
 
 
+async def test_a_zero_battery_reading_keeps_the_last_known_level(hass: HomeAssistant):
+    """A cold lamp answers 0 % for hours; that is no reading, not a flat battery."""
+    conn = _conn(hass)
+    seen: list[int] = []
+    conn.add_battery_listener(lambda b: seen.append(b.percent))
+
+    _battery_push(conn, 63)
+    _battery_push(conn, 0)
+
+    assert conn.battery == Battery(percent=63, charging=False)
+    assert seen == [63]
+
+
+async def test_a_zero_battery_reading_is_not_a_first_reading(hass: HomeAssistant):
+    """The entities stay unavailable until the lamp reports a real level."""
+    conn = _conn(hass)
+    seen: list[int] = []
+    conn.add_battery_listener(lambda b: seen.append(b.percent))
+
+    _battery_push(conn, 0)
+
+    assert conn.battery is None
+    assert seen == []
+
+
+async def test_a_zero_reading_while_charging_is_dropped_too(hass: HomeAssistant):
+    """The charging bit does not make the 0 a reading."""
+    conn = _conn(hass)
+    payload = bytes([2, 0xC0, 0x80]) + bytes(12)
+    with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
+        conn._dispatch_event(bytes(20), 2)
+
+    assert conn.battery is None
+
+
 # ---------------------------------------------------------------------------
 # Believing (or not) what the lamp pushes
 #
