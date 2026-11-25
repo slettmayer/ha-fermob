@@ -780,14 +780,36 @@ async def test_a_zero_battery_reading_is_not_a_first_reading(hass: HomeAssistant
     assert seen == []
 
 
-async def test_a_zero_reading_while_charging_is_dropped_too(hass: HomeAssistant):
-    """The charging bit does not make the 0 a reading."""
-    conn = _conn(hass)
-    payload = bytes([2, 0xC0, 0x80]) + bytes(12)
+def _raw_battery_push(conn: FermobBLEConnection, raw: int) -> None:
+    payload = bytes([2, 0xC0, raw]) + bytes(12)
     with patch("custom_components.fermob.light.decode_fragment", return_value=payload):
         conn._dispatch_event(bytes(20), 2)
 
+
+async def test_a_zero_reading_while_charging_is_dropped_too(hass: HomeAssistant):
+    """The charging bit does not make the 0 a first reading."""
+    conn = _conn(hass)
+    _raw_battery_push(conn, 0x80)
+
     assert conn.battery is None
+
+
+@pytest.mark.parametrize(
+    ("before", "raw", "after"), [(False, 0x80, True), (True, 0x00, False)]
+)
+async def test_a_zero_reading_still_carries_a_charger_change(
+    hass: HomeAssistant, before: bool, raw: int, after: bool
+):
+    """A cold lamp put on or taken off its charger: keep the level, take the flag."""
+    conn = _conn(hass)
+    _raw_battery_push(conn, 63 | (0x80 if before else 0))
+    seen: list[Battery] = []
+    conn.add_battery_listener(seen.append)
+
+    _raw_battery_push(conn, raw)
+
+    assert conn.battery == Battery(percent=63, charging=after)
+    assert seen == [Battery(percent=63, charging=after)]
 
 
 # ---------------------------------------------------------------------------

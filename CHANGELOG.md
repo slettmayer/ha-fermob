@@ -8,8 +8,9 @@ it warms up. No restart, reload or light switch changes that.
 
 - **A reported 0 % is now treated as no reading.** The battery sensor keeps the
   last real level instead of dropping to 0, and a lamp whose first reading is 0
-  stays unavailable. The trade-off: a lamp that is truly almost empty shows its
-  last non-zero level rather than 0 %.
+  stays unavailable. The charging sensor still follows the charger in such a
+  reading. The trade-off: a lamp that is truly almost empty shows its last
+  non-zero level rather than 0 %.
 - **Debug logging now includes the raw battery payload**, so a future odd
   reading can be checked byte by byte.
 
